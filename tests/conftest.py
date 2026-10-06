@@ -27,6 +27,8 @@ if "DOCKER_HOST" not in os.environ and _SOCKET_COLIMA.exists():
     )
 
 KID_TESTE = "chave-de-teste"
+# O OS emite o id do usuario (UUID) no sub.
+SUB_DO_TESTE = "5f0c7c5e-1b9e-4c3e-9a4e-2d8f6b1a7c11"
 EMISSOR = "pytstop-os-service"
 AUDIENCIA = "pytstop"
 
@@ -56,7 +58,7 @@ def emitir_token(chave_rsa: rsa.RSAPrivateKey) -> Callable[..., str]:
     def emitir(papel: str | None = "admin", *, chave: Any = None, **claims: Any) -> str:
         agora = int(time.time())
         payload: dict[str, Any] = {
-            "sub": "usuario-teste",
+            "sub": SUB_DO_TESTE,
             "iss": EMISSOR,
             "aud": AUDIENCIA,
             "iat": agora,

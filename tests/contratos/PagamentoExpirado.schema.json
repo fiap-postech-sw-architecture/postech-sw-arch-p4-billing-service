@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PagamentoExpirado (dados)",
+  "description": "Campo dados da mensagem PagamentoExpirado (evento, billing-service -> os-service). O prazo de pagamento (PAGAMENTO_VALIDADE_MINUTOS) venceu; o OS compensa a saga.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "pagamento_id",
+    "motivo"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "pagamento_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "motivo": {
+      "$ref": "#/$defs/motivo"
+    }
+  },
+  "$defs": {
+    "motivo": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Texto do participante sobre a falha; nunca vai para log."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

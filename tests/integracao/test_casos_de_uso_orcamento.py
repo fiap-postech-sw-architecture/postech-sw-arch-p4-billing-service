@@ -36,6 +36,7 @@ from src.precos.infraestrutura.repository import (
     MongoPrecoServicoRepository,
 )
 from src.seed import semear
+from tests.factories import ATENDENTE_SUB
 from tests.integracao.apoio import (
     LINK,
     URL_PUBLICA,
@@ -51,7 +52,6 @@ if TYPE_CHECKING:
 
     Banco = Database[dict[str, Any]]
 
-ATENDENTE = "atendente-1"
 ITENS = [
     ItemSolicitado(TipoItem.SERVICO, "SRV-TROCA-OLEO", 1),
     ItemSolicitado(TipoItem.PECA, "PEC-OLEO-5W30", 4),
@@ -312,25 +312,25 @@ class TestDecidirOrcamento:
     ) -> None:
         dto = gerado(banco, relogio)
         recusado = decidir(banco, relogio).por_atendente(
-            dto.id, aprovar=False, decidido_por=ATENDENTE
+            dto.id, aprovar=False, decidido_por=ATENDENTE_SUB
         )
         assert recusado.status == "RECUSADO"
         assert recusado.decisao is not None
-        assert recusado.decisao.decidido_por == ATENDENTE
+        assert recusado.decisao.decidido_por == ATENDENTE_SUB
         [envelope] = eventos_do_outbox(banco, "OrcamentoRecusado")
         assert envelope["dados"]["canal"] == "atendente"
-        assert envelope["dados"]["decidido_por"] == ATENDENTE
+        assert envelope["dados"]["decidido_por"] == ATENDENTE_SUB
 
     def test_segunda_decisao_e_recusada_sem_novo_evento(
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:
         dto = gerado(banco, relogio)
         decidir(banco, relogio).por_atendente(
-            dto.id, aprovar=True, decidido_por=ATENDENTE
+            dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
         )
         with pytest.raises(TransicaoStatusInvalidaError):
             decidir(banco, relogio).por_atendente(
-                dto.id, aprovar=False, decidido_por=ATENDENTE
+                dto.id, aprovar=False, decidido_por=ATENDENTE_SUB
             )
         assert len(eventos_do_outbox(banco)) == 2  # gerado + aprovado
 
@@ -341,7 +341,7 @@ class TestDecidirOrcamento:
         relogio.avancar(hours=72, seconds=1)
         with pytest.raises(OrcamentoVencidoError):
             decidir(banco, relogio).por_atendente(
-                dto.id, aprovar=True, decidido_por=ATENDENTE
+                dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
             )
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
 
@@ -379,7 +379,7 @@ class TestExpirarECancelar:
         vencido_2 = gerado(banco, relogio)
         aprovado = gerado(banco, relogio)
         decidir(banco, relogio).por_atendente(
-            aprovado.id, aprovar=True, decidido_por=ATENDENTE
+            aprovado.id, aprovar=True, decidido_por=ATENDENTE_SUB
         )
         relogio.avancar(hours=1)
         vigente = gerado(banco, relogio)
@@ -436,7 +436,7 @@ class TestExpirarECancelar:
         dto = gerado(banco, relogio)
         if encerramento == "recusa":
             decidir(banco, relogio).por_atendente(
-                dto.id, aprovar=False, decidido_por=ATENDENTE
+                dto.id, aprovar=False, decidido_por=ATENDENTE_SUB
             )
         else:
             relogio.avancar(hours=73)

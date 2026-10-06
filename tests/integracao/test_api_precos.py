@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import criar_app
+from tests.conftest import SUB_DO_TESTE
 from tests.integracao.apoio import configuracao
 
 if TYPE_CHECKING:
@@ -287,6 +288,6 @@ def test_escrita_de_preco_deixa_log_de_auditoria(
         )
     auditoria = [m for m in caplog.messages if "audit_price_changed" in m]
     assert len(auditoria) == 2
-    assert all("usuario-teste" in m and "SRV-TROCA-OLEO" in m for m in auditoria)
+    assert all(SUB_DO_TESTE in m and "SRV-TROCA-OLEO" in m for m in auditoria)
     assert "cadastrar_servico" in auditoria[0]
     assert "desativar_servico" in auditoria[1]

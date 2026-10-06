@@ -40,7 +40,14 @@ from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from src.seed import semear
-from tests.factories import AGORA, confirmar, orcamento, pagamento, situacao
+from tests.factories import (
+    AGORA,
+    ATENDENTE_SUB,
+    confirmar,
+    orcamento,
+    pagamento,
+    situacao,
+)
 from tests.integracao.apoio import (
     LINK,
     GatewayRoteirizado,
@@ -144,7 +151,7 @@ def test_corrida_entre_decisao_e_expiracao_tem_um_so_vencedor(
         )
         try:
             return DecidirOrcamento(uow, repo, LINK, no_limite).por_atendente(
-                gerado.id, aprovar=True, decidido_por="atendente-1"
+                gerado.id, aprovar=True, decidido_por=ATENDENTE_SUB
             )
         finally:
             comitou["decisao"].set()

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OrcamentoCancelado (dados)",
+  "description": "Campo dados da mensagem OrcamentoCancelado (evento, billing-service -> os-service). Confirma a compensação CancelarOrcamento.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "orcamento_id"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "orcamento_id": {
+      "$ref": "#/$defs/uuid"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

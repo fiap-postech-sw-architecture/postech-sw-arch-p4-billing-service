@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GeracaoDeOrcamentoFalhou (dados)",
+  "description": "Campo dados da mensagem GeracaoDeOrcamentoFalhou (evento, billing-service -> os-service). O Billing não conseguiu precificar os itens (código sem preço, por exemplo); o OS compensa a saga.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "motivo",
+    "codigos_invalidos"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "motivo": {
+      "$ref": "#/$defs/motivo"
+    },
+    "codigos_invalidos": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/codigo"
+      },
+      "maxItems": 50
+    }
+  },
+  "$defs": {
+    "codigo": {
+      "type": "string",
+      "maxLength": 50,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "Código do serviço ou SKU da peça na tabela de preços do Billing (até 50 caracteres)."
+    },
+    "motivo": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Texto do participante sobre a falha; nunca vai para log."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

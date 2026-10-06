@@ -29,7 +29,15 @@ from src.orcamento.dominio.orcamento import (
     StatusOrcamento,
     TipoItem,
 )
-from tests.factories import AGORA, LINK, dinheiro, linha, linhas_padrao, orcamento
+from tests.factories import (
+    AGORA,
+    ATENDENTE_SUB,
+    LINK,
+    dinheiro,
+    linha,
+    linhas_padrao,
+    orcamento,
+)
 
 DENTRO_DO_PRAZO = AGORA + timedelta(hours=1)
 DEPOIS_DO_PRAZO = AGORA + timedelta(hours=72, seconds=1)
@@ -199,7 +207,7 @@ class TestGeracao:
             ),
             pytest.param(
                 StatusOrcamento.CANCELADO,
-                Decisao(CanalDecisao.ATENDENTE, AGORA, "atendente-1"),
+                Decisao(CanalDecisao.ATENDENTE, AGORA, ATENDENTE_SUB),
                 "OS cancelada",
                 id="cancelado-depois-de-aprovado",
             ),
@@ -357,7 +365,7 @@ class TestDesfechos:
 class TestDecisao:
     @pytest.mark.parametrize(
         ("canal", "decidido_por"),
-        [(CanalDecisao.LINK, None), (CanalDecisao.ATENDENTE, "atendente-1")],
+        [(CanalDecisao.LINK, None), (CanalDecisao.ATENDENTE, ATENDENTE_SUB)],
         ids=["link", "atendente"],
     )
     def test_aprovar_registra_decisao_e_evento(
@@ -387,7 +395,16 @@ class TestDecisao:
             pytest.param(
                 CanalDecisao.ATENDENTE, " ", "exige", id="atendente-sub-vazio"
             ),
-            pytest.param(CanalDecisao.LINK, "atendente-1", "sem", id="link-com-sub"),
+            pytest.param(
+                CanalDecisao.ATENDENTE, "atendente-1", "exige", id="sub-que-nao-e-uuid"
+            ),
+            pytest.param(
+                CanalDecisao.ATENDENTE,
+                ATENDENTE_SUB.upper(),
+                "exige",
+                id="uuid-fora-da-forma-canonica",
+            ),
+            pytest.param(CanalDecisao.LINK, ATENDENTE_SUB, "sem", id="link-com-sub"),
         ],
     )
     def test_decidido_por_so_e_com_o_atendente(
@@ -440,7 +457,7 @@ class TestDecisao:
             gerado.recusar(
                 canal=CanalDecisao.ATENDENTE,
                 agora=DENTRO_DO_PRAZO,
-                decidido_por="atendente-1",
+                decidido_por=ATENDENTE_SUB,
             )
 
     def test_segunda_decisao_e_transicao_invalida(self) -> None:

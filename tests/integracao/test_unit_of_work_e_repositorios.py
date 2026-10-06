@@ -30,7 +30,15 @@ from src.precos.infraestrutura.repository import (
     MongoPrecoPecaRepository,
     MongoPrecoServicoRepository,
 )
-from tests.factories import AGORA, confirmar, dinheiro, orcamento, pagamento, situacao
+from tests.factories import (
+    AGORA,
+    ATENDENTE_SUB,
+    confirmar,
+    dinheiro,
+    orcamento,
+    pagamento,
+    situacao,
+)
 from tests.integracao.apoio import eventos_do_outbox
 
 if TYPE_CHECKING:
@@ -182,7 +190,7 @@ class TestRepositorioDeOrcamento:
         gerado.aprovar(
             canal=CanalDecisao.ATENDENTE,
             agora=AGORA + timedelta(hours=1),
-            decidido_por="atendente-1",
+            decidido_por=ATENDENTE_SUB,
         )
         uow.executar(lambda: repo.salvar(gerado))
 

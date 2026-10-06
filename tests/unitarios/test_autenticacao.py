@@ -17,7 +17,7 @@ from src.compartilhado.interfaces.autenticacao import (
     exigir_papel,
 )
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
-from tests.conftest import AUDIENCIA, EMISSOR
+from tests.conftest import AUDIENCIA, EMISSOR, SUB_DO_TESTE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,7 +51,7 @@ def test_papel_permitido_passa_e_admin_herda(
 ) -> None:
     resposta = chamar(cliente, emitir_token(papel))
     assert resposta.status_code == 200
-    assert resposta.json() == {"sub": "usuario-teste", "papel": papel}
+    assert resposta.json() == {"sub": SUB_DO_TESTE, "papel": papel}
 
 
 def test_papel_valido_insuficiente_e_403(
@@ -74,6 +74,7 @@ def test_papel_valido_insuficiente_e_403(
         pytest.param({"exp": 1}, id="expirado"),
         pytest.param({"exp": None}, id="sem-exp"),
         pytest.param({"iss": "outro"}, id="outro-emissor"),
+        pytest.param({"sub": "usuario-sem-uuid"}, id="sub-que-nao-e-uuid"),
     ],
 )
 def test_toda_falha_de_credencial_e_o_mesmo_401(

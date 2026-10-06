@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Final
+from uuid import UUID
 
 import structlog
 from fastapi import Depends, HTTPException, status
@@ -96,7 +97,12 @@ def obter_usuario_autenticado(
         papel = Papel(str(claims.get("papel")))
     except ValueError:
         raise _nao_autenticado("papel_invalido") from None
-    return UsuarioAutenticado(sub=str(claims["sub"]), papel=papel)
+    try:
+        # O OS emite o id do usuario (UUID) no sub; ele vira o decidido_por.
+        sub = str(UUID(str(claims["sub"])))
+    except ValueError:
+        raise _nao_autenticado("sub_invalido") from None
+    return UsuarioAutenticado(sub=sub, papel=papel)
 
 
 def exigir_papel(*papeis: Papel) -> Callable[[UsuarioAutenticado], UsuarioAutenticado]:

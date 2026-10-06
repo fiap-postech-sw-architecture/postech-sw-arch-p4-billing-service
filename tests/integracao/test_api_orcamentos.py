@@ -16,6 +16,7 @@ from src.orcamento.dominio.orcamento import TipoItem
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.orcamento.infraestrutura.tabela_de_precos import TabelaDePrecosMongoAdapter
 from src.seed import semear
+from tests.conftest import SUB_DO_TESTE
 from tests.integracao.apoio import (
     URL_PUBLICA,
     RelogioFixo,
@@ -141,9 +142,9 @@ class TestApiInterna:
         assert aprovado.status_code == 200
         assert aprovado.json()["status"] == "APROVADO"
         assert aprovado.json()["decisao"]["canal"] == "atendente"
-        assert aprovado.json()["decisao"]["decidido_por"] == "usuario-teste"
+        assert aprovado.json()["decisao"]["decidido_por"] == SUB_DO_TESTE
         [envelope] = eventos_do_outbox(app.state.banco, "OrcamentoAprovado")
-        assert envelope["dados"]["decidido_por"] == "usuario-teste"
+        assert envelope["dados"]["decidido_por"] == SUB_DO_TESTE
         de_novo = api.post(
             caminho, json={"decisao": "recusar"}, headers=cabecalhos("atendente")
         )

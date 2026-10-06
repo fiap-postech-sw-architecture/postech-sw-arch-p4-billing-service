@@ -21,7 +21,7 @@ from src.compartilhado.infraestrutura.jwks import (
     TokenInvalidoError,
     ValidadorDeTokenJWKS,
 )
-from tests.conftest import AUDIENCIA, EMISSOR, KID_TESTE
+from tests.conftest import AUDIENCIA, EMISSOR, KID_TESTE, SUB_DO_TESTE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -83,7 +83,7 @@ class TestClaims:
     ) -> None:
         claims = validador.validar(emitir_token("mecanico"))
         assert (claims["sub"], claims["papel"], claims["type"]) == (
-            "usuario-teste",
+            SUB_DO_TESTE,
             "mecanico",
             "access",
         )

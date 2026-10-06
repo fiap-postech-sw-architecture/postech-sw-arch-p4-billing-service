@@ -34,6 +34,10 @@ dev = [
     "mypy>=2.4.0",
     "bandit>=1.9.4",
     "import-linter>=2.15",
+    # Contrato dos eventos: cada mensagem valida contra os JSON Schemas da
+    # plataforma copiados em tests/contratos/.
+    "jsonschema>=4.25",
+    "types-jsonschema>=4.25",
 ]
 
 [build-system]

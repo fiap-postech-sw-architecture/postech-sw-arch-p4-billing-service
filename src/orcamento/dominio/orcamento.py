@@ -22,6 +22,7 @@ from functools import reduce
 from operator import add
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
+from uuid import UUID
 
 from src.compartilhado.dominio.aggregate_root import AggregateRoot
 from src.compartilhado.dominio.dinheiro import Dinheiro
@@ -43,7 +44,6 @@ from src.orcamento.dominio.exceptions import OrcamentoVencidoError
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
-    from uuid import UUID
 
 
 class TipoItem(StrEnum):
@@ -137,6 +137,14 @@ class LinhaOrcamento(ValueObject):
         return self.preco_unitario * self.quantidade
 
 
+def _uuid_canonico(valor: str | None) -> bool:
+    """O ``sub`` do OS e o id do usuario: UUID em texto, forma canonica."""
+    try:
+        return valor is not None and str(UUID(valor)) == valor
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class Decisao(ValueObject):
     """Quem decidiu: o cliente pelo link ou o atendente em nome dele (com o
@@ -148,10 +156,10 @@ class Decisao(ValueObject):
 
     def __post_init__(self) -> None:
         _exigir_timezone("decidido_em", self.decidido_em)
-        if self.canal is CanalDecisao.ATENDENTE and not (
-            self.decidido_por and self.decidido_por.strip()
+        if self.canal is CanalDecisao.ATENDENTE and not _uuid_canonico(
+            self.decidido_por
         ):
-            msg = "Decisao do atendente exige decidido_por (sub do atendente)"
+            msg = "Decisao do atendente exige decidido_por (sub do atendente, UUID)"
             raise ValorInvalidoError(msg)
         if self.canal is CanalDecisao.LINK and self.decidido_por is not None:
             msg = "Decisao pelo link e do cliente: sem decidido_por"

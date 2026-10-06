@@ -14,6 +14,8 @@ from src.pagamento.dominio.pagamento import Pagamento
 
 AGORA = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 LINK = "http://billing.teste/api/v1/publico/orcamentos/token"
+# sub (id do usuario no OS) do atendente que decide em nome do cliente.
+ATENDENTE_SUB = "8a6f2b4c-3d1e-4f5a-9b7c-0d2e4f6a8b1c"
 
 
 def dinheiro(valor: str) -> Dinheiro:

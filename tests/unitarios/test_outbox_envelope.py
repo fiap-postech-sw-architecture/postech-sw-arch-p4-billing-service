@@ -1,36 +1,52 @@
-"""Envelope da outbox: formato e catalogo da RFC-004 (secoes 5.2 e 5.3)."""
+"""Envelope da outbox e contrato das mensagens (RFC-004, secoes 5.2 e 5.3)."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, fields
+from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
 from src.compartilhado.aplicacao.outbox import para_envelope
 from src.compartilhado.dominio.events import IntegrationEvent
 from src.orcamento.dominio import events as eventos_orcamento
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.pagamento.dominio import events as eventos_pagamento
-from tests.factories import AGORA, orcamento
+from src.pagamento.dominio.estados import StatusNoProvedor
+from tests.factories import (
+    AGORA,
+    ATENDENTE_SUB,
+    confirmar,
+    orcamento,
+    pagamento,
+    situacao,
+)
 
-CATALOGO_DO_BILLING = {
-    "OrcamentoGerado",
-    "GeracaoDeOrcamentoFalhou",
-    "OrcamentoAprovado",
-    "OrcamentoRecusado",
-    "OrcamentoExpirado",
-    "OrcamentoCancelado",
-    "PagamentoSolicitado",
-    "PagamentoConfirmado",
-    "PagamentoRecusado",
-    "PagamentoExpirado",
-    "PagamentoCancelado",
-    "PagamentoEstornado",
-    "EstornoDePagamentoFalhou",
+# JSON Schemas do catalogo (RFC-004, secao 5.3) copiados do repositorio da
+# plataforma (postech-sw-arch-p4-platform, contratos/schemas @ 99c6ca6): uma
+# mensagem que o Billing publica precisa validar no schema que os
+# consumidores usam.
+CONTRATOS = Path(__file__).parent.parent / "contratos"
+SCHEMAS = {
+    caminho.name.removesuffix(".schema.json"): json.loads(caminho.read_text())
+    for caminho in CONTRATOS.glob("*.schema.json")
 }
+CATALOGO_DO_BILLING = set(SCHEMAS) - {"envelope"}
+
+
+def _classe_do_evento(tipo: str) -> type[IntegrationEvent]:
+    return next(
+        valor
+        for modulo in (eventos_orcamento, eventos_pagamento)
+        for valor in vars(modulo).values()
+        if isinstance(valor, type) and valor.__name__ == f"{tipo}Event"
+    )
 
 
 def test_classes_de_evento_cobrem_exatamente_o_catalogo() -> None:
@@ -43,76 +59,125 @@ def test_classes_de_evento_cobrem_exatamente_o_catalogo() -> None:
         and valor is not IntegrationEvent
     ]
     assert {c.__name__.removesuffix("Event") for c in classes} == CATALOGO_DO_BILLING
+    assert len(CATALOGO_DO_BILLING) == 13
 
 
-# Campos de `dados` do catalogo da RFC-004 (secao 5.3), por mensagem.
-DADOS_DO_CATALOGO = {
-    "OrcamentoGerado": {
-        "ordem_id",
-        "orcamento_id",
-        "linhas",
-        "total",
-        "moeda",
-        "valido_ate",
-        "link_decisao",
-    },
-    "GeracaoDeOrcamentoFalhou": {"ordem_id", "motivo", "codigos_invalidos"},
-    "OrcamentoAprovado": {
-        "ordem_id",
-        "orcamento_id",
-        "decidido_em",
-        "canal",
-        "decidido_por",
-    },
-    "OrcamentoRecusado": {
-        "ordem_id",
-        "orcamento_id",
-        "decidido_em",
-        "canal",
-        "decidido_por",
-    },
-    "OrcamentoExpirado": {"ordem_id", "orcamento_id"},
-    "OrcamentoCancelado": {"ordem_id", "orcamento_id"},
-    "PagamentoSolicitado": {
-        "ordem_id",
-        "pagamento_id",
-        "valor",
-        "moeda",
-        "checkout_url",
-        "expira_em",
-    },
-    "PagamentoConfirmado": {
-        "ordem_id",
-        "pagamento_id",
-        "valor",
-        "moeda",
-        "confirmado_em",
-        "referencia_provedor",
-    },
-    "PagamentoRecusado": {"ordem_id", "pagamento_id", "motivo"},
-    "PagamentoExpirado": {"ordem_id", "pagamento_id", "motivo"},
-    "PagamentoCancelado": {"ordem_id", "pagamento_id", "cancelado_em"},
-    "PagamentoEstornado": {"ordem_id", "pagamento_id", "estornado_em", "motivo"},
-    "EstornoDePagamentoFalhou": {"ordem_id", "pagamento_id", "motivo"},
-}
-LINHA_DO_CATALOGO = {"codigo", "descricao", "quantidade", "preco_unitario", "subtotal"}
+@pytest.mark.parametrize("tipo", sorted(CATALOGO_DO_BILLING))
+def test_campos_de_cada_evento_sao_os_do_contrato(tipo: str) -> None:
+    campos = {campo.name for campo in fields(_classe_do_evento(tipo))}
+    schema = SCHEMAS[tipo]
+    assert campos - {"ocorrido_em"} == set(schema["properties"])
+    assert set(schema["required"]) <= campos
 
 
-@pytest.mark.parametrize("tipo", sorted(DADOS_DO_CATALOGO))
-def test_dados_de_cada_evento_sao_exatamente_os_do_catalogo(tipo: str) -> None:
-    classe = next(
-        valor
-        for modulo in (eventos_orcamento, eventos_pagamento)
-        for valor in vars(modulo).values()
-        if isinstance(valor, type) and valor.__name__ == f"{tipo}Event"
-    )
-    campos = {campo.name for campo in fields(classe)} - {"ocorrido_em"}
-    assert campos == DADOS_DO_CATALOGO[tipo]
-
-
-def test_linha_do_orcamento_gerado_segue_o_catalogo() -> None:
+def test_linha_do_orcamento_gerado_segue_o_contrato() -> None:
     campos = {campo.name for campo in fields(eventos_orcamento.LinhaOrcamentoGerado)}
-    assert campos == LINHA_DO_CATALOGO
+    assert campos == set(SCHEMAS["OrcamentoGerado"]["$defs"]["linha"]["properties"])
+
+
+def _violacoes(envelope: dict[str, Any]) -> list[str]:
+    formatos = FormatChecker()
+    validadores = (
+        (Draft202012Validator(SCHEMAS["envelope"], format_checker=formatos), envelope),
+        (
+            Draft202012Validator(SCHEMAS[envelope["tipo"]], format_checker=formatos),
+            envelope["dados"],
+        ),
+    )
+    return [
+        f"{'/'.join(map(str, erro.absolute_path))}: {erro.message}"
+        for validador, instancia in validadores
+        for erro in validador.iter_errors(instancia)
+    ]
+
+
+def _eventos_de_orcamento() -> list[IntegrationEvent]:
+    gerado = orcamento()
+    aprovado_pelo_atendente = orcamento()
+    aprovado_pelo_atendente.aprovar(
+        canal=CanalDecisao.ATENDENTE, agora=AGORA, decidido_por=ATENDENTE_SUB
+    )
+    recusado = orcamento()
+    recusado.recusar(canal=CanalDecisao.LINK, agora=AGORA)
+    expirado = orcamento()
+    expirado.expirar(agora=AGORA + timedelta(hours=73))
+    cancelado = orcamento()
+    cancelado.cancelar(motivo="OS cancelada")
+    falha = eventos_orcamento.GeracaoDeOrcamentoFalhouEvent(
+        ordem_id=uuid4(),
+        motivo="Itens inexistentes ou inativos na tabela de precos",
+        codigos_invalidos=("SRV-NAO-EXISTE", "PEC-VELA"),
+    )
+    return [
+        *gerado.coletar_eventos(),
+        *aprovado_pelo_atendente.coletar_eventos(),
+        *recusado.coletar_eventos(),
+        *expirado.coletar_eventos(),
+        *cancelado.coletar_eventos(),
+        falha,
+    ]
+
+
+def _eventos_de_pagamento() -> list[IntegrationEvent]:
+    # Motivos vindos do provedor maiores que o maxLength do contrato (500).
+    recusado = pagamento()
+    recusado.aplicar_notificacao(
+        situacao(recusado, status=StatusNoProvedor.RECUSADO, detalhe="x" * 600),
+        agora=AGORA,
+        max_recusas=1,
+    )
+    expirado = pagamento()
+    expirado.expirar(agora=AGORA + timedelta(minutes=61))
+    cancelado = pagamento()
+    cancelado.concluir_compensacao(agora=AGORA, motivo="OS cancelada")
+    estornado = pagamento()
+    confirmar(estornado)
+    estornado.concluir_compensacao(agora=AGORA, motivo="OS cancelada")
+    falha_de_estorno = pagamento()
+    confirmar(falha_de_estorno)
+    falha_de_estorno.registrar_falha_de_estorno("y" * 600)
+    estorno_automatico = pagamento()
+    estorno_automatico.expirar(agora=AGORA + timedelta(minutes=61))
+    estorno_automatico.registrar_estorno_automatico("9", agora=AGORA)
+    return [
+        evento
+        for agregado in (
+            recusado,
+            expirado,
+            cancelado,
+            estornado,
+            falha_de_estorno,
+            estorno_automatico,
+        )
+        for evento in agregado.coletar_eventos()
+    ]
+
+
+EVENTOS = [*_eventos_de_orcamento(), *_eventos_de_pagamento()]
+
+
+def test_os_exemplos_cobrem_todo_o_catalogo() -> None:
+    assert {evento.tipo for evento in EVENTOS} == CATALOGO_DO_BILLING
+
+
+@pytest.mark.parametrize(
+    "evento",
+    EVENTOS,
+    ids=[f"{i:02d}-{evento.tipo}" for i, evento in enumerate(EVENTOS)],
+)
+def test_cada_evento_valida_no_contrato_da_plataforma(evento: IntegrationEvent) -> None:
+    envelope = para_envelope(evento, mensagem_id=uuid4())
+    assert _violacoes(envelope) == []
+
+
+def test_ocorrido_em_do_evento_vai_para_o_envelope() -> None:
+    evento = eventos_orcamento.OrcamentoExpiradoEvent(
+        ordem_id=uuid4(),
+        orcamento_id=uuid4(),
+        ocorrido_em=AGORA + timedelta(seconds=5, microseconds=123456),
+    )
+    envelope = para_envelope(evento, mensagem_id=uuid4())
+    assert envelope["ocorrido_em"] == "2026-10-06T12:00:05.123Z"
 
 
 def test_envelope_do_orcamento_gerado() -> None:
@@ -170,12 +235,12 @@ def test_enum_vira_valor_e_tupla_vira_lista() -> None:
         orcamento_id=uuid4(),
         decidido_em=AGORA,
         canal=CanalDecisao.ATENDENTE,
-        decidido_por="atendente-1",
+        decidido_por=ATENDENTE_SUB,
     )
     dados = para_envelope(evento, mensagem_id=uuid4())["dados"]
     assert dados["canal"] == "atendente"
     assert dados["decidido_em"] == "2026-10-06T12:00:00.000Z"
-    assert dados["decidido_por"] == "atendente-1"
+    assert dados["decidido_por"] == ATENDENTE_SUB
 
     falha = eventos_orcamento.GeracaoDeOrcamentoFalhouEvent(
         ordem_id=uuid4(), motivo="x", codigos_invalidos=("SRV-X",)
