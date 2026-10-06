@@ -1,0 +1,7 @@
+title = "PytStop fase 4 gitleaks config"
+
+# Herda as regras padrao do gitleaks 8.x. Valores de demonstracao, quando
+# existirem, entram na allowlist com comentario explicando por que nao sao
+# segredo (mesmo padrao da fase 3).
+[extend]
+useDefault = true
