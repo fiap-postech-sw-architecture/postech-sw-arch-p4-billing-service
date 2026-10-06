@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 from src.configuracao import Configuracao
+from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
+from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
 from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
 
@@ -24,6 +26,14 @@ URL_PUBLICA = "http://billing.teste"
 SEGREDO_WEBHOOK = "segredo-do-webhook-de-teste"
 # Valor de teste (ENVIRONMENT=test aceita qualquer segredo nao vazio).
 SEGREDO_LINK = "segredo-do-link-de-teste-32-bytes!!"
+
+
+LINK = LinkDeDecisao(segredo=SEGREDO_LINK, url_base=f"{URL_PUBLICA}{PREFIXO_DO_LINK}")
+
+
+def token_do_link(orcamento_id: UUID, valido_ate: datetime) -> str:
+    """Token do link de decisao que o ``OrcamentoGerado`` leva."""
+    return LINK.gerar(orcamento_id, valido_ate).rsplit("/", 1)[1]
 
 
 def token_do_checkout(checkout_url: str) -> str:

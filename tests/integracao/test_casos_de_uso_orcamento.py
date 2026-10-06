@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -13,7 +13,6 @@ import pytest
 from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.orcamento.aplicacao.dtos import ItemSolicitado
-from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
 from src.orcamento.aplicacao.use_cases import (
     MOTIVO_ITENS_INVALIDOS,
     MOTIVO_SEM_ITENS,
@@ -24,7 +23,6 @@ from src.orcamento.aplicacao.use_cases import (
     GerarOrcamento,
 )
 from src.orcamento.dominio.exceptions import (
-    LinkDeDecisaoExpiradoError,
     LinkDeDecisaoInvalidoError,
     OrcamentoNaoEncontradoError,
     OrcamentoVencidoError,
@@ -38,7 +36,13 @@ from src.precos.infraestrutura.repository import (
     MongoPrecoServicoRepository,
 )
 from src.seed import semear
-from tests.integracao.apoio import URL_PUBLICA, RelogioFixo, eventos_do_outbox
+from tests.integracao.apoio import (
+    LINK,
+    URL_PUBLICA,
+    RelogioFixo,
+    eventos_do_outbox,
+    token_do_link,
+)
 
 if TYPE_CHECKING:
     from pymongo.database import Database
@@ -47,9 +51,6 @@ if TYPE_CHECKING:
 
     Banco = Database[dict[str, Any]]
 
-LINK = LinkDeDecisao(
-    segredo="segredo-do-link-de-teste-32-bytes!!", url_base=URL_PUBLICA
-)
 ITENS = [
     ItemSolicitado(TipoItem.SERVICO, "SRV-TROCA-OLEO", 1),
     ItemSolicitado(TipoItem.PECA, "PEC-OLEO-5W30", 4),
@@ -123,10 +124,21 @@ class TestGerarOrcamento:
             "preco_unitario": "45.00",
             "subtotal": "180.00",
         }
-        token = dados["link_decisao"].removeprefix(
+        emitido = dados["link_decisao"].removeprefix(
             f"{URL_PUBLICA}/api/v1/publico/orcamentos/"
         )
-        assert LINK.validar(token, agora=relogio.agora) == dto.id
+        assert LINK.validar(emitido, agora=relogio.agora) == dto.id
+
+    def test_valido_ate_em_segundo_cheio_mesmo_com_relogio_em_milissegundos(
+        self, banco: Banco
+    ) -> None:
+        relogio = RelogioFixo(datetime(2026, 10, 6, 12, 0, 0, 123000, tzinfo=UTC))
+        dto = gerar(banco, relogio).executar(ordem_id=uuid4(), itens=ITENS)
+        assert dto is not None
+        # Para cima: o link nunca vence antes do orcamento.
+        assert dto.valido_ate == datetime(2026, 10, 9, 12, 0, 1, tzinfo=UTC)
+        emitido = token_do_link(dto.id, dto.valido_ate)
+        assert LINK.validar(emitido, agora=dto.valido_ate) == dto.id
 
     def test_mudanca_na_tabela_nao_altera_orcamento_gerado(
         self, banco: Banco, relogio: RelogioFixo
@@ -194,10 +206,10 @@ class TestGerarOrcamento:
 class TestDecidirOrcamento:
     def test_aprovacao_pelo_link(self, banco: Banco, relogio: RelogioFixo) -> None:
         dto = gerado(banco, relogio)
-        token = LINK.token(dto.id, dto.valido_ate)
+        emitido = token_do_link(dto.id, dto.valido_ate)
         relogio.avancar(hours=1)
 
-        aprovado = decidir(banco, relogio).por_link(token, aprovar=True)
+        aprovado = decidir(banco, relogio).por_link(emitido, aprovar=True)
 
         assert aprovado.status == "APROVADO"
         assert aprovado.decisao is not None
@@ -238,18 +250,30 @@ class TestDecidirOrcamento:
             decidir(banco, relogio).por_atendente(dto.id, aprovar=True)
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
 
-    def test_link_invalido_expirado_ou_de_orcamento_inexistente(
+    def test_link_invalido_expirado_inexistente_ou_decidido_e_o_mesmo_erro(
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:
         dto = gerado(banco, relogio)
+        decidido = gerado(banco, relogio)
+        decidir(banco, relogio).por_link(
+            token_do_link(decidido.id, decidido.valido_ate), aprovar=False
+        )
         caso = decidir(banco, relogio)
-        with pytest.raises(LinkDeDecisaoInvalidoError):
-            caso.por_link("adulterado.1.x", aprovar=True)
-        with pytest.raises(OrcamentoNaoEncontradoError):
-            caso.por_link(LINK.token(uuid4(), dto.valido_ate), aprovar=True)
+        tokens = [
+            "adulterado.1.x",
+            token_do_link(uuid4(), dto.valido_ate),
+            token_do_link(decidido.id, decidido.valido_ate),
+        ]
+        for emitido in tokens:
+            with pytest.raises(LinkDeDecisaoInvalidoError):
+                caso.por_link(emitido, aprovar=True)
+            with pytest.raises(LinkDeDecisaoInvalidoError):
+                consultar(banco, relogio).por_link(emitido)
         relogio.avancar(hours=73)
-        with pytest.raises(LinkDeDecisaoExpiradoError):
-            caso.por_link(LINK.token(dto.id, dto.valido_ate), aprovar=True)
+        with pytest.raises(LinkDeDecisaoInvalidoError):
+            caso.por_link(token_do_link(dto.id, dto.valido_ate), aprovar=True)
+        assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
+        assert len(eventos_do_outbox(banco, "OrcamentoRecusado")) == 1
 
 
 class TestExpirarECancelar:
@@ -358,6 +382,6 @@ class TestConsultar:
         assert consulta.por_id(dto.id) == dto
         assert consulta.por_ordem(dto.ordem_id) == [dto]
         assert consulta.por_ordem(uuid4()) == []
-        assert consulta.por_link(LINK.token(dto.id, dto.valido_ate)) == dto
+        assert consulta.por_link(token_do_link(dto.id, dto.valido_ate)) == dto
         with pytest.raises(OrcamentoNaoEncontradoError):
             consulta.por_id(uuid4())

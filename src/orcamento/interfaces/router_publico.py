@@ -1,7 +1,8 @@
 """Link publico do cliente: consulta e decisao sem login, pelo token assinado.
 
-O token e a credencial (HMAC com expiracao). Rate limiting dessas rotas fica
-no Kong (RFC-004 §5).
+O token e a credencial (HMAC com expiracao). Token adulterado ou expirado,
+orcamento inexistente ou ja decidido: o mesmo 404 (ADR-039). Rate limiting
+dessas rotas fica no Kong (ADR-038).
 """
 
 from __future__ import annotations
@@ -18,11 +19,16 @@ from src.orcamento.interfaces.dependencies import (
 )
 from src.orcamento.interfaces.schemas import DecisaoRequest, OrcamentoPublicoResponse
 
-router = APIRouter(prefix="/api/v1/publico/orcamentos", tags=["publico"])
+PREFIXO = "/api/v1/publico/orcamentos"
+
+router = APIRouter(prefix=PREFIXO, tags=["publico"])
 
 _RESPOSTAS_LINK: dict[int | str, dict[str, object]] = {
-    404: {"description": "Link invalido (assinatura nao confere)."},
-    410: {"description": "Link ou prazo de decisao expirado."},
+    404: {
+        "description": (
+            "Link invalido, expirado ou ja utilizado (mesma resposta para todos)."
+        )
+    },
 }
 
 
@@ -43,10 +49,7 @@ def consultar_pelo_link(
 @router.post(
     "/{token}/decisao",
     summary="Aprova ou recusa o orcamento pelo link enviado ao cliente",
-    responses={
-        **_RESPOSTAS_LINK,
-        409: {"description": "Orcamento ja decidido ou cancelado."},
-    },
+    responses=_RESPOSTAS_LINK,
 )
 def decidir_pelo_link(
     token: str,

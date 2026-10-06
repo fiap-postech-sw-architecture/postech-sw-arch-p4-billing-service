@@ -7,26 +7,31 @@ transacao (ver ``UnitOfWork``).
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
 from src.compartilhado.dominio.relogio import agora_utc
 from src.orcamento.aplicacao.dtos import OrcamentoDTO
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.exceptions import (
+    LinkDeDecisaoInvalidoError,
     OrcamentoJaGeradoError,
     OrcamentoNaoEncontradoError,
+    OrcamentoVencidoError,
 )
 from src.orcamento.dominio.orcamento import (
     CanalDecisao,
     LinhaOrcamento,
     Orcamento,
+    StatusOrcamento,
     TipoItem,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import datetime, timedelta
+    from datetime import datetime
     from uuid import UUID
 
     from src.compartilhado.aplicacao.unit_of_work import UnitOfWork
@@ -118,8 +123,7 @@ class GerarOrcamento:
                 )
             )
         agora = self._relogio()
-        # Segundo cheio: a expiracao do link (epoch em segundos) bate exata.
-        valido_ate = (agora + self._validade).replace(microsecond=0)
+        valido_ate = _segundo_cheio_acima(agora + self._validade)
         orcamento_id = uuid4()
         orcamento = Orcamento.gerar(
             id=orcamento_id,
@@ -138,6 +142,14 @@ class GerarOrcamento:
                 ordem_id=ordem_id, motivo=motivo, codigos_invalidos=tuple(invalidos)
             )
         )
+
+
+def _segundo_cheio_acima(instante: datetime) -> datetime:
+    """``valido_ate`` em segundo cheio: o token do link assina ``exp`` em epoch
+    de segundos (``exp = valido_ate``). Para cima, nunca antes de ``agora``."""
+    if not instante.microsecond:
+        return instante
+    return instante.replace(microsecond=0) + timedelta(seconds=1)
 
 
 def _codigos(itens: Sequence[ItemSolicitado], tipo: TipoItem) -> list[str]:
@@ -161,8 +173,16 @@ class DecidirOrcamento:
         self._relogio = relogio
 
     def por_link(self, token: str, *, aprovar: bool) -> OrcamentoDTO:
+        """Decisao unica pelo link; qualquer falha e o mesmo 404 (ADR-039)."""
         orcamento_id = self._link.validar(token, agora=self._relogio())
-        return self._decidir(orcamento_id, aprovar=aprovar, canal=CanalDecisao.LINK)
+        try:
+            return self._decidir(orcamento_id, aprovar=aprovar, canal=CanalDecisao.LINK)
+        except (
+            OrcamentoNaoEncontradoError,
+            OrcamentoVencidoError,
+            TransicaoStatusInvalidaError,
+        ):
+            raise LinkDeDecisaoInvalidoError from None
 
     def por_atendente(self, orcamento_id: UUID, *, aprovar: bool) -> OrcamentoDTO:
         return self._decidir(
@@ -266,5 +286,10 @@ class ConsultarOrcamentos:
         return [OrcamentoDTO.de(orcamento)] if orcamento else []
 
     def por_link(self, token: str) -> OrcamentoDTO:
+        """So o orcamento ainda PENDENTE; decidido, encerrado ou inexistente e o
+        mesmo 404 do link invalido (o token nao vira oraculo de estado)."""
         orcamento_id = self._link.validar(token, agora=self._relogio())
-        return OrcamentoDTO.de(_obter(self._orcamentos, orcamento_id))
+        orcamento = self._orcamentos.obter_por_id(orcamento_id)
+        if orcamento is None or orcamento.status is not StatusOrcamento.PENDENTE:
+            raise LinkDeDecisaoInvalidoError
+        return OrcamentoDTO.de(orcamento)

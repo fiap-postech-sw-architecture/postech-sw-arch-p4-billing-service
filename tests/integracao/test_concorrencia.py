@@ -16,7 +16,6 @@ import pytest
 
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.orcamento.aplicacao.dtos import ItemSolicitado
-from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
 from src.orcamento.aplicacao.use_cases import (
     DecidirOrcamento,
     ExpirarOrcamentosVencidos,
@@ -42,7 +41,7 @@ from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from src.seed import semear
 from tests.factories import AGORA, confirmar, orcamento, pagamento, situacao
 from tests.integracao.apoio import (
-    URL_PUBLICA,
+    LINK,
     GatewayRoteirizado,
     MetricasEspia,
     RelogioFixo,
@@ -55,10 +54,6 @@ if TYPE_CHECKING:
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
-
-LINK = LinkDeDecisao(
-    segredo="segredo-do-link-de-teste-32-bytes!!", url_base=URL_PUBLICA
-)
 
 
 class ComBarreira:

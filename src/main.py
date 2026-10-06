@@ -21,6 +21,7 @@ from src.compartilhado.interfaces.router_saude import router as router_saude
 from src.configuracao import Configuracao, ModoMercadoPago
 from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
 from src.orcamento.interfaces.router import router as router_orcamentos
+from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
 from src.orcamento.interfaces.router_publico import router as router_publico
 from src.pagamento.infraestrutura.mercadopago import (
     ConfiguracaoMercadoPago,
@@ -115,7 +116,7 @@ def criar_app(
     app.state.gateway_pagamento = gateway
     app.state.metricas_pagamento = MetricasPrometheus()
     app.state.link_decisao = LinkDeDecisao(
-        segredo=config.link_segredo, url_base=config.url_publica
+        segredo=config.link_segredo, url_base=f"{config.url_publica}{PREFIXO_DO_LINK}"
     )
     app.state.verificador_de_token = VerificadorDeToken(
         jwks_url=config.jwks_url,

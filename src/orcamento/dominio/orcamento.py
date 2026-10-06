@@ -134,6 +134,10 @@ class Orcamento(AggregateRoot):
         if self._valido_ate <= self._criado_em:
             msg = "valido_ate deve ser posterior a criado_em"
             raise ValueError(msg)
+        if self._valido_ate.microsecond:
+            # O token do link assina exp = valido_ate em epoch de segundos.
+            msg = "valido_ate deve estar em segundo cheio"
+            raise ValueError(msg)
 
     @classmethod
     def gerar(

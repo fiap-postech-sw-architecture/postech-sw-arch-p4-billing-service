@@ -65,12 +65,15 @@ def orcamento(
     validade: timedelta = timedelta(hours=72),
 ) -> Orcamento:
     """Orcamento PENDENTE recem-gerado (com o evento OrcamentoGerado pendente)."""
+    valido_ate = criado_em + validade
+    if valido_ate.microsecond:  # segundo cheio, como o GerarOrcamento grava
+        valido_ate = valido_ate.replace(microsecond=0) + timedelta(seconds=1)
     return Orcamento.gerar(
         id=uuid4(),
         ordem_id=ordem_id or uuid4(),
         linhas=linhas or linhas_padrao(),
         criado_em=criado_em,
-        valido_ate=criado_em + validade,
+        valido_ate=valido_ate,
         link_decisao=LINK,
     )
 

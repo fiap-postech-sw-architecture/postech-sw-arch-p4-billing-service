@@ -23,12 +23,8 @@ class OrcamentoVencidoError(RecursoExpiradoError):
 
 
 class LinkDeDecisaoInvalidoError(EntidadeNaoEncontradaError):
-    """Token adulterado ou malformado: 404, sem dizer o que falhou."""
+    """Mesmo 404 para token adulterado, expirado, orcamento inexistente ou ja
+    decidido: o link nao revela o que falhou (ADR-039)."""
 
     codigo = "LINK_DECISAO_INVALIDO"
-    mensagem_padrao = "Link de decisao invalido"
-
-
-class LinkDeDecisaoExpiradoError(RecursoExpiradoError):
-    codigo = "LINK_DECISAO_EXPIRADO"
-    mensagem_padrao = "Link de decisao expirado"
+    mensagem_padrao = "Link de decisao invalido, expirado ou ja utilizado"

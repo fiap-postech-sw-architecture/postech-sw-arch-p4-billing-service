@@ -1,93 +1,67 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 from datetime import timedelta
 from uuid import uuid4
 
 import pytest
 
-from src.orcamento.aplicacao.link_decisao import CAMINHO_PUBLICO, LinkDeDecisao
-from src.orcamento.dominio.exceptions import (
-    LinkDeDecisaoExpiradoError,
-    LinkDeDecisaoInvalidoError,
-)
+from src.compartilhado.aplicacao.token_assinado import TokenAssinado
+from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
+from src.orcamento.dominio.exceptions import LinkDeDecisaoInvalidoError
+from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from tests.factories import AGORA
 
 SEGREDO = "segredo-de-teste-com-mais-de-32-bytes!!"
 EXPIRA_EM = AGORA + timedelta(hours=72)
+BASE = "http://billing.teste/api/v1/publico/orcamentos"
 
 
 @pytest.fixture
 def link() -> LinkDeDecisao:
-    return LinkDeDecisao(segredo=SEGREDO, url_base="http://billing.teste/")
+    return LinkDeDecisao(segredo=SEGREDO, url_base=f"{BASE}/")
 
 
-def test_url_completa_aponta_para_a_rota_publica(link: LinkDeDecisao) -> None:
+def test_url_e_a_base_com_o_token(link: LinkDeDecisao) -> None:
     orcamento_id = uuid4()
     url = link.gerar(orcamento_id, EXPIRA_EM)
-    assert url == (
-        f"http://billing.teste{CAMINHO_PUBLICO}/{link.token(orcamento_id, EXPIRA_EM)}"
-    )
+    assert url.startswith(f"{BASE}/{orcamento_id}.{int(EXPIRA_EM.timestamp())}.")
+    assert link.validar(url.removeprefix(f"{BASE}/"), agora=AGORA) == orcamento_id
 
 
-def test_token_e_hmac_sha256_sobre_id_e_expiracao(link: LinkDeDecisao) -> None:
+def test_vale_ate_a_validade_do_orcamento(link: LinkDeDecisao) -> None:
     orcamento_id = uuid4()
-    corpo = f"{orcamento_id}.{int(EXPIRA_EM.timestamp())}"
-    assinatura = hmac.new(SEGREDO.encode(), corpo.encode(), hashlib.sha256).digest()
-    esperado = base64.urlsafe_b64encode(assinatura).rstrip(b"=").decode()
-    assert link.token(orcamento_id, EXPIRA_EM) == f"{corpo}.{esperado}"
-
-
-def test_token_valido_devolve_o_orcamento_ate_a_expiracao(link: LinkDeDecisao) -> None:
-    orcamento_id = uuid4()
-    token = link.token(orcamento_id, EXPIRA_EM)
-    assert link.validar(token, agora=AGORA) == orcamento_id
-    assert link.validar(token, agora=EXPIRA_EM) == orcamento_id
-
-
-def test_token_expirado(link: LinkDeDecisao) -> None:
-    emitido = link.token(uuid4(), EXPIRA_EM)
-    with pytest.raises(LinkDeDecisaoExpiradoError):
+    emitido = link.gerar(orcamento_id, EXPIRA_EM).removeprefix(f"{BASE}/")
+    assert link.validar(emitido, agora=EXPIRA_EM) == orcamento_id
+    with pytest.raises(LinkDeDecisaoInvalidoError):
         link.validar(emitido, agora=EXPIRA_EM + timedelta(seconds=1))
 
 
-def test_expiracao_adulterada_invalida_a_assinatura(link: LinkDeDecisao) -> None:
-    orcamento_id, _, assinatura = link.token(uuid4(), EXPIRA_EM).split(".")
-    adulterado = f"{orcamento_id}.{int(EXPIRA_EM.timestamp()) + 86400}.{assinatura}"
-    with pytest.raises(LinkDeDecisaoInvalidoError):
-        link.validar(adulterado, agora=AGORA)
-
-
-def test_outro_orcamento_com_a_mesma_assinatura_e_invalido(link: LinkDeDecisao) -> None:
-    _, expiracao, assinatura = link.token(uuid4(), EXPIRA_EM).split(".")
-    with pytest.raises(LinkDeDecisaoInvalidoError):
-        link.validar(f"{uuid4()}.{expiracao}.{assinatura}", agora=AGORA)
-
-
-def test_token_de_outro_segredo_e_invalido(link: LinkDeDecisao) -> None:
-    outro = LinkDeDecisao(segredo="outro-segredo-qualquer", url_base="http://x")
-    with pytest.raises(LinkDeDecisaoInvalidoError):
-        link.validar(outro.token(uuid4(), EXPIRA_EM), agora=AGORA)
-
-
 @pytest.mark.parametrize(
-    "token", ["", "abc", "a.b", "a.b.c.d", "ação.123.çã", "nao-uuid.123.xyz"]
+    "token",
+    [
+        pytest.param("", id="vazio"),
+        pytest.param("nao-e-token", id="malformado"),
+        pytest.param(f"{uuid4()}.4102444800.assinatura-falsa", id="assinatura-falsa"),
+    ],
 )
-def test_token_malformado_e_invalido(link: LinkDeDecisao, token: str) -> None:
+def test_token_invalido_e_o_mesmo_erro(link: LinkDeDecisao, token: str) -> None:
     with pytest.raises(LinkDeDecisaoInvalidoError):
         link.validar(token, agora=AGORA)
 
 
-def test_conteudo_assinado_mas_nao_parseavel_e_invalido() -> None:
-    # Assinatura valida sobre id/expiracao que nao sao UUID/inteiro: so quem
-    # tem o segredo produz isso, mas o parse nao pode estourar 500.
-    link = LinkDeDecisao(segredo=SEGREDO, url_base="http://x")
-    corpo = "nao-e-uuid.amanha"
-    token = f"{corpo}.{link._assinar(corpo)}"
+def test_token_de_outro_uso_do_mesmo_segredo_nao_vale(link: LinkDeDecisao) -> None:
+    """O token do checkout simulado (mesmo segredo) nao decide orcamento."""
+    pagamento_id = uuid4()
+    simulador = GatewayPagamentoSimulado(url_checkout="http://x", segredo=SEGREDO)
+    cobranca = simulador.criar_cobranca(
+        pagamento_id=pagamento_id, itens=[], expira_em=EXPIRA_EM
+    )
+    do_checkout = cobranca.checkout_url.split("token=")[1]
     with pytest.raises(LinkDeDecisaoInvalidoError):
-        link.validar(token, agora=AGORA)
+        link.validar(do_checkout, agora=AGORA)
+    sem_dominio = TokenAssinado(segredo=SEGREDO, dominio="outro")
+    with pytest.raises(LinkDeDecisaoInvalidoError):
+        link.validar(sem_dominio.emitir(pagamento_id, EXPIRA_EM), agora=AGORA)
 
 
 def test_segredo_vazio_e_recusado() -> None:

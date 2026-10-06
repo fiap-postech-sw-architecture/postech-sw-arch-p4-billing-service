@@ -129,6 +129,33 @@ class TestGeracao:
         with pytest.raises(ValueError, match="posterior"):
             orcamento(validade=timedelta(0))
 
+    def test_validade_em_segundo_cheio_como_o_exp_do_link(self) -> None:
+        with pytest.raises(ValueError, match="segundo cheio"):
+            Orcamento(
+                _ordem_id=uuid4(),
+                _linhas=tuple(linhas_padrao()),
+                _criado_em=AGORA,
+                _valido_ate=AGORA + timedelta(hours=1, milliseconds=1),
+            )
+
+    @pytest.mark.parametrize(
+        ("criado_em", "valido_ate"),
+        [
+            pytest.param(datetime(2026, 10, 6, 12, 0), AGORA, id="so-criado-em-naive"),
+            pytest.param(AGORA, datetime(2026, 10, 9, 12, 0), id="so-valido-ate-naive"),
+        ],
+    )
+    def test_cada_data_exige_timezone(
+        self, criado_em: datetime, valido_ate: datetime
+    ) -> None:
+        with pytest.raises(ValueError, match="timezone"):
+            Orcamento(
+                _ordem_id=uuid4(),
+                _linhas=tuple(linhas_padrao()),
+                _criado_em=criado_em,
+                _valido_ate=valido_ate,
+            )
+
 
 class TestDecisao:
     @pytest.mark.parametrize("canal", list(CanalDecisao))
