@@ -13,23 +13,36 @@ class NotificacaoResponse(BaseModel):
     status_provedor: str
 
 
+class EstornoAutomaticoResponse(BaseModel):
+    referencia_pagamento: str
+    registrado_em: datetime
+    falha: str | None
+
+
 class PagamentoResponse(BaseModel):
+    """Pagamento; campos da cobranca nulos so na lapide (compensacao que
+    chegou antes do ``SolicitarPagamento``)."""
+
     id: UUID
     ordem_id: UUID
-    orcamento_id: UUID
-    valor: Decimal
-    moeda: str
     status: str
-    provedor: str
-    referencia_preferencia: str
-    referencia_pagamento: str | None
-    checkout_url: str
+    orcamento_id: UUID | None
+    valor: Decimal | None
+    moeda: str | None
+    provedor: str | None
+    referencia_preferencia: str | None
+    checkout_url: str | None
+    expira_em: datetime | None
     criado_em: datetime
-    expira_em: datetime
+    recusas: int
+    referencia_pagamento: str | None
     confirmado_em: datetime | None
-    estornado_em: datetime | None
+    encerrado_em: datetime | None
     motivo: str | None
+    estornado_em: datetime | None
+    motivo_estorno: str | None
     notificacoes: list[NotificacaoResponse]
+    estornos_automaticos: list[EstornoAutomaticoResponse]
 
 
 class DadosDaNotificacao(BaseModel):

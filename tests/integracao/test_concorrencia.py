@@ -29,19 +29,22 @@ from src.orcamento.dominio.exceptions import (
 from src.orcamento.dominio.orcamento import CanalDecisao, TipoItem
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.orcamento.infraestrutura.tabela_de_precos import TabelaDePrecosMongoAdapter
+from src.pagamento.aplicacao.ports import GatewayPagamentoRecusouError
 from src.pagamento.aplicacao.use_cases import (
     EstornarPagamento,
     ExpirarPagamentosVencidos,
+    ProcessarNotificacaoPagamento,
     SolicitarPagamento,
 )
 from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from src.seed import semear
-from tests.factories import AGORA, confirmar, orcamento, pagamento
+from tests.factories import AGORA, confirmar, orcamento, pagamento, situacao
 from tests.integracao.apoio import (
     URL_PUBLICA,
     GatewayRoteirizado,
+    MetricasEspia,
     RelogioFixo,
     eventos_do_outbox,
 )
@@ -372,25 +375,122 @@ def test_estorno_concluido_por_outro_consumidor_nao_gera_segundo_evento(
             def concluir() -> None:
                 atual = outro_repo.obter_por_id(pago.id)
                 assert atual is not None
-                atual.estornar(
-                    estornado_em=AGORA,
-                    chave_idempotencia=chave_idempotencia,
-                    motivo="outro consumidor",
-                )
+                atual.concluir_compensacao(agora=AGORA, motivo="outro consumidor")
                 outro_repo.salvar(atual)
 
             outro.executar(concluir)
 
     uow = MongoUnitOfWork(banco)
+    metricas = MetricasEspia()
     resultado = EstornarPagamento(
-        uow, MongoPagamentoRepository(uow), EstornoConcorrente()
-    ).executar(
-        ordem_id=pago.ordem_id,
-        pagamento_id=pago.id,
-        motivo="este consumidor",
-        chave_idempotencia="msg-1",
-    )
+        uow, MongoPagamentoRepository(uow), EstornoConcorrente(), metricas
+    ).executar(ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="este consumidor")
 
     assert resultado.status == "ESTORNADO"
     assert resultado.motivo == "outro consumidor"
+    # O comando repetido republica o desfecho que o outro consumidor gravou.
+    estornos = eventos_do_outbox(banco, "PagamentoEstornado")
+    assert len(estornos) == 2
+    assert estornos[0]["dados"] == estornos[1]["dados"]
+    assert metricas.estornos == []
+
+
+def test_estorno_automatico_registrado_por_outro_consumidor_conta_uma_vez(
+    banco: Banco,
+) -> None:
+    """Webhook e conciliacao veem a mesma aprovacao tardia ao mesmo tempo."""
+    cancelado = pagamento(criado_em=AGORA)
+    cancelado.concluir_compensacao(agora=AGORA, motivo="cancelamento")
+    uow = MongoUnitOfWork(banco)
+    uow.executar(lambda: MongoPagamentoRepository(uow).salvar(cancelado))
+    tardia = situacao(cancelado, referencia="tardia")
+
+    class OutroConsumidorRegistraAntes(GatewayRoteirizado):
+        def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
+            super().estornar(referencia, chave_idempotencia=chave_idempotencia)
+            outro = MongoUnitOfWork(banco)
+            outro_repo = MongoPagamentoRepository(outro)
+
+            def registrar() -> None:
+                atual = outro_repo.obter_por_id(cancelado.id)
+                assert atual is not None
+                atual.registrar_estorno_automatico(referencia, agora=AGORA)
+                outro_repo.salvar(atual)
+
+            outro.executar(registrar)
+
+    metricas = MetricasEspia()
+    uow = MongoUnitOfWork(banco)
+    resultado = ProcessarNotificacaoPagamento(
+        uow, MongoPagamentoRepository(uow), OutroConsumidorRegistraAntes(), metricas, 3
+    ).aplicar(tardia)
+
+    assert resultado is not None
+    assert resultado.status == "ESTORNADO"
     assert len(eventos_do_outbox(banco, "PagamentoEstornado")) == 1
+    assert metricas.estornos == []
+
+
+def test_estorno_recusado_mas_concluido_por_outro_consumidor_republica(
+    banco: Banco,
+) -> None:
+    pago = pagamento(criado_em=AGORA)
+    confirmar(pago, referencia="123")
+    uow = MongoUnitOfWork(banco)
+    uow.executar(lambda: MongoPagamentoRepository(uow).salvar(pago))
+
+    class RecusaDepoisDoOutro(GatewayRoteirizado):
+        def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
+            outro = MongoUnitOfWork(banco)
+            outro_repo = MongoPagamentoRepository(outro)
+
+            def concluir() -> None:
+                atual = outro_repo.obter_por_id(pago.id)
+                assert atual is not None
+                atual.concluir_compensacao(agora=AGORA, motivo="outro consumidor")
+                outro_repo.salvar(atual)
+
+            outro.executar(concluir)
+            raise GatewayPagamentoRecusouError("already refunded")
+
+    uow = MongoUnitOfWork(banco)
+    resultado = EstornarPagamento(
+        uow, MongoPagamentoRepository(uow), RecusaDepoisDoOutro(), MetricasEspia()
+    ).executar(ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x")
+
+    assert resultado.status == "ESTORNADO"
+    assert eventos_do_outbox(banco, "EstornoDePagamentoFalhou") == []
+    assert len(eventos_do_outbox(banco, "PagamentoEstornado")) == 2
+
+
+def test_compensacao_que_nunca_estabiliza_falha_alto(banco: Banco) -> None:
+    """Defeito (leitura sempre velha): para depois de 3 replanejamentos."""
+    pendente = pagamento(criado_em=AGORA)
+    uow = MongoUnitOfWork(banco)
+    repo = MongoPagamentoRepository(uow)
+    uow.executar(lambda: repo.salvar(pendente))
+    antes = repo.obter_por_id(pendente.id)
+    pago = repo.obter_por_id(pendente.id)
+    assert pago is not None
+    confirmar(pago, referencia="123")
+    uow.executar(lambda: repo.salvar(pago))
+
+    class LeituraVelhaForaDaTransacao:
+        def __init__(self, uow: MongoUnitOfWork) -> None:
+            self._uow = uow
+            self._repo = MongoPagamentoRepository(uow)
+
+        def __getattr__(self, nome: str) -> Any:
+            return getattr(self._repo, nome)
+
+        def obter_por_id(self, pagamento_id: Any) -> Any:
+            if self._uow.sessao is None:
+                return antes
+            return self._repo.obter_por_id(pagamento_id)
+
+    uow = MongoUnitOfWork(banco)
+    caso = EstornarPagamento(
+        uow, LeituraVelhaForaDaTransacao(uow), GatewayRoteirizado(), MetricasEspia()
+    )
+    with pytest.raises(RuntimeError, match="nao estabilizou"):
+        caso.executar(ordem_id=pendente.ordem_id, pagamento_id=pendente.id, motivo="x")

@@ -2,7 +2,8 @@
 
 Chamadas ao provedor ficam fora da transacao do MongoDB: a transacao nao
 segura conexao enquanto espera a rede e pode ser repetida sem refazer a
-chamada externa.
+chamada externa. As regras (o que cada notificacao e cada compensacao fazem)
+ficam no agregado; aqui so a orquestracao do I/O.
 """
 
 from __future__ import annotations
@@ -21,34 +22,40 @@ from src.pagamento.aplicacao.ports import (
     EstornoEmProcessamentoError,
     GatewayPagamentoRecusouError,
 )
+from src.pagamento.dominio.cobranca import Cobranca
+from src.pagamento.dominio.estados import (
+    MotivoEstorno,
+    PlanoDeCompensacao,
+    ResultadoNotificacao,
+    StatusNoProvedor,
+    StatusPagamento,
+)
 from src.pagamento.dominio.exceptions import (
     OrcamentoNaoAprovadoError,
     PagamentoJaSolicitadoError,
     PagamentoNaoEncontradoError,
 )
-from src.pagamento.dominio.pagamento import (
-    ESTORNO_AUTOMATICO,
-    NotificacaoRecebida,
-    Pagamento,
-    ResultadoAprovacao,
-    StatusPagamento,
-)
+from src.pagamento.dominio.pagamento import Pagamento
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from datetime import datetime, timedelta
 
     from src.compartilhado.aplicacao.unit_of_work import UnitOfWork
     from src.compartilhado.dominio.relogio import Relogio
     from src.pagamento.aplicacao.ports import (
         GatewayPagamento,
+        MetricasDePagamento,
         OrcamentosPort,
         SimuladorDePagamento,
-        SituacaoNoProvedor,
     )
+    from src.pagamento.dominio.cobranca import SituacaoNoProvedor
     from src.pagamento.dominio.repository import PagamentoRepository
 
 _log = logging.getLogger(__name__)
+
+# O estado so avanca (SOLICITADO -> CONFIRMADO -> ESTORNADO): replanejar a
+# compensacao mais vezes que isso seria defeito, nao corrida.
+_TENTATIVAS_DE_COMPENSACAO = 3
 
 
 class CheckoutNaoEncontradoError(EntidadeNaoEncontradaError):
@@ -56,6 +63,21 @@ class CheckoutNaoEncontradoError(EntidadeNaoEncontradaError):
 
     codigo = "CHECKOUT_NAO_ENCONTRADO"
     mensagem_padrao = "Checkout nao encontrado ou expirado"
+
+
+class _PlanoMudouError(Exception):
+    """O pagamento mudou entre a leitura e a gravacao: replanejar."""
+
+
+def chave_de_estorno(pagamento_id: UUID) -> str:
+    """``X-Idempotency-Key`` do estorno da compensacao (ADR-040, RFC-004 8)."""
+    return f"estorno-{pagamento_id}"
+
+
+def chave_de_estorno_automatico(pagamento_id: UUID, referencia: str) -> str:
+    """Uma chave por tentativa estornada: uma segunda tentativa aprovada do
+    mesmo checkout nao pode reaproveitar a resposta de outro estorno."""
+    return f"estorno-{pagamento_id}-{referencia}"
 
 
 def _obter(pagamentos: PagamentoRepository, pagamento_id: UUID) -> Pagamento:
@@ -73,6 +95,13 @@ def _obter_da_ordem(
         msg = "Pagamento nao pertence a ordem de servico informada"
         raise PagamentoNaoEncontradoError(msg)
     return pagamento
+
+
+def _uuid(valor: str | None) -> UUID | None:
+    try:
+        return UUID(valor) if valor else None
+    except ValueError:
+        return None
 
 
 class SolicitarPagamento:
@@ -109,19 +138,21 @@ class SolicitarPagamento:
         agora = self._relogio()
         expira_em = agora + self._validade
         pagamento_id = uuid4()
-        cobranca = self._gateway.criar_cobranca(
+        criada = self._gateway.criar_cobranca(
             pagamento_id=pagamento_id, itens=orcamento.itens, expira_em=expira_em
         )
         pagamento = Pagamento.solicitar(
             id=pagamento_id,
             ordem_id=ordem_id,
-            orcamento_id=orcamento_id,
-            valor=orcamento.total,
-            provedor=self._gateway.provedor,
-            referencia_preferencia=cobranca.referencia,
-            checkout_url=cobranca.checkout_url,
+            cobranca=Cobranca(
+                orcamento_id=orcamento_id,
+                valor=orcamento.total,
+                provedor=self._gateway.provedor,
+                referencia_preferencia=criada.referencia,
+                checkout_url=criada.checkout_url,
+                expira_em=expira_em,
+            ),
             criado_em=agora,
-            expira_em=expira_em,
         )
         try:
             self._uow.executar(lambda: self._pagamentos.salvar(pagamento))
@@ -136,12 +167,12 @@ class SolicitarPagamento:
 
 
 class ProcessarNotificacaoPagamento:
-    """Webhook do Mercado Pago (e o simulador): consulta o provedor e aplica.
+    """Webhook do Mercado Pago, simulador e conciliacao: consulta e aplica.
 
-    O status vem sempre de ``consultar_pagamento``; o corpo da notificacao so
-    diz qual pagamento consultar. Dinheiro que entrou numa cobranca que nao o
-    aceita (valor diferente ou cobranca ja encerrada) e estornado na hora,
-    fora da transacao, com chave de idempotencia derivada da referencia.
+    O status vem sempre da consulta ao provedor; o corpo da notificacao so diz
+    qual tentativa consultar. Dinheiro que entrou numa cobranca que nao o aceita
+    (encerrada, ou valor/moeda diferentes) e estornado na hora, fora da
+    transacao, e o resultado fica gravado no agregado.
     """
 
     def __init__(
@@ -149,100 +180,111 @@ class ProcessarNotificacaoPagamento:
         uow: UnitOfWork,
         pagamentos: PagamentoRepository,
         gateway: GatewayPagamento,
+        metricas: MetricasDePagamento,
+        max_recusas: int,
         relogio: Relogio = agora_utc,
     ) -> None:
         self._uow = uow
         self._pagamentos = pagamentos
         self._gateway = gateway
+        self._metricas = metricas
+        self._max_recusas = max_recusas
         self._relogio = relogio
 
     def executar(self, referencia: str) -> PagamentoDTO | None:
         """``None`` quando a referencia nao corresponde a pagamento nosso."""
         situacao = self._gateway.consultar_pagamento(referencia)
-        pagamento_id = _uuid(situacao.referencia_externa) if situacao else None
-        if situacao is None or pagamento_id is None:
-            _log.warning(
-                "notificacao_pagamento_ignorada",
-                extra={"referencia": referencia, "motivo": "desconhecido_no_provedor"},
-            )
+        if situacao is None:
+            _ignorada(referencia, "unknown_at_provider")
             return None
-        consultado: SituacaoNoProvedor = situacao
+        return self.aplicar(situacao)
 
-        def trabalho() -> tuple[Pagamento, ResultadoAprovacao | None] | None:
+    def aplicar(self, situacao: SituacaoNoProvedor) -> PagamentoDTO | None:
+        """Aplica uma tentativa ja consultada (a conciliacao chega por aqui)."""
+        pagamento_id = _uuid(situacao.referencia_externa)
+        if pagamento_id is None:
+            _ignorada(situacao.referencia, "unknown_at_provider")
+            return None
+
+        def trabalho() -> tuple[Pagamento, ResultadoNotificacao] | None:
             pagamento = self._pagamentos.obter_por_id(pagamento_id)
             if pagamento is None:
                 return None
-            agora = self._relogio()
-            pagamento.registrar_notificacao(
-                NotificacaoRecebida(
-                    recebida_em=agora,
-                    referencia_pagamento=consultado.referencia,
-                    status_provedor=consultado.status_provedor,
-                )
+            resultado = pagamento.aplicar_notificacao(
+                situacao, agora=self._relogio(), max_recusas=self._max_recusas
             )
-            resultado = None
-            if consultado.status is StatusPagamento.APROVADO:
-                resultado = pagamento.aplicar_aprovacao(
-                    referencia_pagamento=consultado.referencia,
-                    valor_cobrado=consultado.valor,
-                    agora=agora,
-                )
-            elif (
-                consultado.status is StatusPagamento.RECUSADO
-                and pagamento.status is StatusPagamento.PENDENTE
-            ):
-                pagamento.recusar(
-                    motivo=consultado.detalhe or consultado.status_provedor
-                )
-            # PENDENTE ou ESTORNADO no provedor: so entra no historico.
-            self._pagamentos.salvar(pagamento)
+            # Notificacao repetida sem novidade nao grava nada.
+            if resultado is not ResultadoNotificacao.SEM_MUDANCA:
+                self._pagamentos.salvar(pagamento)
             return pagamento, resultado
 
         aplicado = self._uow.executar(trabalho)
         if aplicado is None:
-            _log.warning(
-                "notificacao_pagamento_ignorada",
-                extra={"referencia": referencia, "motivo": "pagamento_inexistente"},
-            )
+            _ignorada(situacao.referencia, "payment_not_found")
             return None
         pagamento, resultado = aplicado
-        if resultado in ESTORNO_AUTOMATICO:
-            self._estornar_automaticamente(pagamento, consultado, resultado)
+        if resultado is ResultadoNotificacao.ESTORNO_AUTOMATICO:
+            pagamento = self._estornar_automaticamente(pagamento, situacao.referencia)
         return PagamentoDTO.de(pagamento)
 
     def _estornar_automaticamente(
-        self,
-        pagamento: Pagamento,
-        situacao: SituacaoNoProvedor,
-        resultado: ResultadoAprovacao | None,
+        self, pagamento: Pagamento, referencia: str
+    ) -> Pagamento:
+        # Falha transitoria propaga: o provedor reenvia a notificacao (ou a
+        # conciliacao repete) e o estorno sai de novo com a mesma chave.
+        falha: str | None = None
+        try:
+            self._gateway.estornar(
+                referencia,
+                chave_idempotencia=chave_de_estorno_automatico(
+                    pagamento.id, referencia
+                ),
+            )
+        except GatewayPagamentoRecusouError as exc:
+            if not _estornado_no_provedor(self._gateway, referencia):
+                falha = exc.mensagem
+
+        def trabalho() -> tuple[Pagamento, bool]:
+            atual = _obter(self._pagamentos, pagamento.id)
+            novo = atual.registrar_estorno_automatico(
+                referencia, agora=self._relogio(), falha=falha
+            )
+            if novo:
+                self._pagamentos.salvar(atual)
+            return atual, novo
+
+        atual, novo = self._uow.executar(trabalho)
+        if novo:
+            self._registrar_estorno_automatico(atual, referencia, falha)
+        return atual
+
+    def _registrar_estorno_automatico(
+        self, pagamento: Pagamento, referencia: str, falha: str | None
     ) -> None:
         contexto = {
             "pagamento_id": str(pagamento.id),
-            "referencia": situacao.referencia,
+            "referencia": referencia,
             "status": pagamento.status.value,
-            "resultado": str(resultado),
         }
-        # Falha transitoria propaga: o provedor reenvia a notificacao e o
-        # estorno e repetido com a mesma chave.
-        try:
-            self._gateway.estornar(
-                situacao.referencia,
-                chave_idempotencia=f"estorno-automatico-{situacao.referencia}",
-            )
-        except GatewayPagamentoRecusouError as exc:
-            _log.error(
-                "estorno_automatico_recusado",
-                extra={**contexto, "motivo": exc.mensagem},
-            )
-            return
-        _log.warning("pagamento_estornado_automaticamente", extra=contexto)
+        if falha is None:
+            self._metricas.estorno_concluido(MotivoEstorno.PAGAMENTO_APOS_ENCERRAMENTO)
+            _log.warning("automatic_refund_done", extra=contexto)
+        else:
+            # Ninguem espera por esse estorno: a devolucao fica para o operador.
+            self._metricas.estorno_automatico_falhou()
+            _log.error("automatic_refund_refused", extra=contexto)
 
 
-def _uuid(valor: str | None) -> UUID | None:
-    try:
-        return UUID(valor) if valor else None
-    except ValueError:
-        return None
+def _ignorada(referencia: str, motivo: str) -> None:
+    _log.warning(
+        "payment_notification_ignored",
+        extra={"referencia": referencia, "motivo": motivo},
+    )
+
+
+def _estornado_no_provedor(gateway: GatewayPagamento, referencia: str) -> bool:
+    situacao = gateway.consultar_pagamento(referencia)
+    return situacao is not None and situacao.status is StatusNoProvedor.ESTORNADO
 
 
 class SimularResultadoPagamento:
@@ -250,7 +292,8 @@ class SimularResultadoPagamento:
 
     So com o token do ``checkout_url`` (o mesmo 404 para token ausente,
     invalido, expirado ou de outro pagamento). Percorre o mesmo
-    ``ProcessarNotificacaoPagamento`` do webhook real.
+    ``ProcessarNotificacaoPagamento`` do webhook real, entao a recusa conta
+    como a do provedor (``PAGAMENTO_MAX_RECUSAS``).
     """
 
     def __init__(
@@ -273,11 +316,12 @@ class SimularResultadoPagamento:
         self, pagamento_id: UUID, *, token: str | None, aprovar: bool
     ) -> PagamentoDTO:
         pagamento = self._autorizado(pagamento_id, token)
-        if pagamento.status is not StatusPagamento.PENDENTE:
+        cobranca = pagamento.cobranca
+        if pagamento.status is not StatusPagamento.SOLICITADO or cobranca is None:
             msg = f"Pagamento {pagamento.status} ja foi processado"
             raise TransicaoStatusInvalidaError(msg)
         referencia = self._simulador.registrar_resultado(
-            pagamento_id=pagamento.id, valor=pagamento.valor, aprovado=aprovar
+            pagamento_id=pagamento.id, valor=cobranca.valor, aprovado=aprovar
         )
         dto = self._processar.executar(referencia)
         if dto is None:  # referencia que o proprio provedor simulado nao conhece
@@ -295,7 +339,7 @@ class SimularResultadoPagamento:
 
 
 class ExpirarPagamentosVencidos:
-    """Expira os pendentes com prazo esgotado (processo ``prazos``)."""
+    """Expira os solicitados com prazo esgotado (processo ``prazos``)."""
 
     def __init__(
         self,
@@ -316,7 +360,8 @@ class ExpirarPagamentosVencidos:
     def _expirar(self, pagamento_id: UUID, agora: datetime) -> bool:
         def trabalho() -> bool:
             pagamento = self._pagamentos.obter_por_id(pagamento_id)
-            # Confirmado ou recusado depois da listagem: a notificacao venceu.
+            # Confirmado, recusado ou cancelado depois da listagem: a outra
+            # escrita venceu (atualizacao condicional pelo status relido).
             if pagamento is None or not pagamento.vencido(agora):
                 return False
             pagamento.expirar(agora=agora)
@@ -327,20 +372,21 @@ class ExpirarPagamentosVencidos:
             return self._uow.executar(trabalho)
         except Exception:  # noqa: BLE001 - um documento com defeito nao trava a fila
             _log.exception(
-                "expiracao_falhou", extra={"pagamento_id": str(pagamento_id)}
+                "payment_expiration_failed", extra={"pagamento_id": str(pagamento_id)}
             )
             return False
 
 
 class EstornarPagamento:
-    """Compensacao ``EstornarPagamento`` da saga, idempotente pela chave.
+    """Compensacao ``EstornarPagamento`` da saga, em qualquer estado (ADR-040).
 
-    Pagamento aprovado e estornado no provedor; cobranca ainda pendente e
-    encerrada sem dinheiro a devolver. Os dois respondem ``PagamentoEstornado``.
-    Recusa do provedor vira ``EstornoDePagamentoFalhou`` (a saga vai para
-    intervencao manual); falha transitoria, inclusive estorno ainda em
-    processamento no provedor, propaga para o consumidor repetir com a mesma
-    chave.
+    O agregado diz o plano: SOLICITADO fecha o checkout no provedor e responde
+    ``PagamentoCancelado``; CONFIRMADO confere no provedor (estornado pelo
+    painel = so registra), estorna com ``X-Idempotency-Key = estorno-{id}`` e
+    responde ``PagamentoEstornado``; ja encerrado republica o desfecho
+    registrado, sem chamar o provedor. Recusa do provedor vira
+    ``EstornoDePagamentoFalhou``; falha transitoria (inclusive estorno ainda em
+    processamento) propaga para o consumidor repetir.
     """
 
     def __init__(
@@ -348,99 +394,99 @@ class EstornarPagamento:
         uow: UnitOfWork,
         pagamentos: PagamentoRepository,
         gateway: GatewayPagamento,
+        metricas: MetricasDePagamento,
         relogio: Relogio = agora_utc,
     ) -> None:
         self._uow = uow
         self._pagamentos = pagamentos
         self._gateway = gateway
+        self._metricas = metricas
         self._relogio = relogio
 
     def executar(
-        self,
-        *,
-        ordem_id: UUID,
-        pagamento_id: UUID,
-        motivo: str,
-        chave_idempotencia: str,
+        self, *, ordem_id: UUID, pagamento_id: UUID, motivo: str
     ) -> PagamentoDTO:
-        pagamento = _obter_da_ordem(self._pagamentos, pagamento_id, ordem_id)
-        if pagamento.status is StatusPagamento.ESTORNADO:
-            return PagamentoDTO.de(pagamento)
-        if pagamento.status is StatusPagamento.PENDENTE:
+        for _ in range(_TENTATIVAS_DE_COMPENSACAO):
+            pagamento = _obter_da_ordem(self._pagamentos, pagamento_id, ordem_id)
+            plano = pagamento.compensar()
             try:
-                return self._executar(
-                    pagamento_id,
-                    lambda atual: atual.encerrar_cobranca(
-                        encerrado_em=self._relogio(),
-                        motivo=f"Cobranca encerrada antes do pagamento: {motivo}",
-                    ),
-                )
-            except TransicaoStatusInvalidaError:
-                # A aprovacao comitou entre a leitura e a transacao: refaz pelo
-                # estado atual (agora o caminho do estorno no provedor).
-                return self.executar(
-                    ordem_id=ordem_id,
-                    pagamento_id=pagamento_id,
-                    motivo=motivo,
-                    chave_idempotencia=chave_idempotencia,
-                )
-        referencia = pagamento.referencia_pagamento
-        if pagamento.status is not StatusPagamento.APROVADO or referencia is None:
-            return self._falhar(
-                pagamento_id, f"Pagamento {pagamento.status} nao pode ser estornado"
-            )
-        try:
-            self._gateway.estornar(referencia, chave_idempotencia=chave_idempotencia)
-        except EstornoEmProcessamentoError:
-            # Conclui so quando o provedor ja mostra o pagamento estornado;
-            # senao o consumidor repete com a mesma chave.
-            if not self._estornado_no_provedor(referencia):
-                raise
-        except GatewayPagamentoRecusouError as exc:
-            # Uma tentativa anterior pode ter estornado no provedor e caido antes
-            # de gravar aqui: o provedor recusa o segundo estorno, mas o
-            # pagamento la ja consta estornado.
-            if not self._estornado_no_provedor(referencia):
-                return self._falhar(pagamento_id, exc.mensagem)
-        return self._executar(
-            pagamento_id,
-            lambda atual: atual.estornar(
-                estornado_em=self._relogio(),
-                chave_idempotencia=chave_idempotencia,
-                motivo=motivo,
-            ),
+                if plano is PlanoDeCompensacao.CANCELAR_COBRANCA:
+                    return self._cancelar(pagamento, motivo)
+                if plano is PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR:
+                    return self._estornar(pagamento, motivo)
+                return self._republicar(pagamento.id)
+            except _PlanoMudouError:
+                continue
+        msg = f"Compensacao do pagamento {pagamento_id} nao estabilizou"
+        raise RuntimeError(msg)
+
+    def _cancelar(self, pagamento: Pagamento, motivo: str) -> PagamentoDTO:
+        # SOLICITADO sempre tem cobranca (so a lapide nao tem, e ela e CANCELADA).
+        cobranca = pagamento.cobranca
+        self._gateway.cancelar_cobranca(
+            cobranca.referencia_preferencia if cobranca else ""
+        )
+        return self._concluir(
+            pagamento.id, PlanoDeCompensacao.CANCELAR_COBRANCA, motivo
         )
 
-    def _estornado_no_provedor(self, referencia: str) -> bool:
-        situacao = self._gateway.consultar_pagamento(referencia)
-        return situacao is not None and situacao.status is StatusPagamento.ESTORNADO
+    def _estornar(self, pagamento: Pagamento, motivo: str) -> PagamentoDTO:
+        referencia = pagamento.referencia_pagamento or ""
+        # Estornado pelo painel (intervencao manual): so registra e responde.
+        if not _estornado_no_provedor(self._gateway, referencia):
+            try:
+                self._gateway.estornar(
+                    referencia, chave_idempotencia=chave_de_estorno(pagamento.id)
+                )
+            except EstornoEmProcessamentoError:
+                if not _estornado_no_provedor(self._gateway, referencia):
+                    raise
+            except GatewayPagamentoRecusouError as exc:
+                # Uma tentativa anterior pode ter estornado e caido antes de
+                # gravar aqui: o provedor recusa o segundo estorno.
+                if not _estornado_no_provedor(self._gateway, referencia):
+                    return self._falhar(pagamento.id, exc.mensagem)
+        dto = self._concluir(
+            pagamento.id, PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR, motivo
+        )
+        self._metricas.estorno_concluido(MotivoEstorno.COMPENSACAO)
+        return dto
 
-    def _executar(
-        self, pagamento_id: UUID, mudanca: Callable[[Pagamento], object]
+    def _concluir(
+        self, pagamento_id: UUID, plano: PlanoDeCompensacao, motivo: str
     ) -> PagamentoDTO:
         def trabalho() -> Pagamento:
             atual = _obter(self._pagamentos, pagamento_id)
-            # Outro consumidor ja concluiu o mesmo estorno: nada a gravar.
-            if atual.status is not StatusPagamento.ESTORNADO:
-                mudanca(atual)
-                self._pagamentos.salvar(atual)
+            if atual.compensar() is not plano:
+                raise _PlanoMudouError
+            atual.concluir_compensacao(agora=self._relogio(), motivo=motivo)
+            self._pagamentos.salvar(atual)
+            return atual
+
+        return PagamentoDTO.de(self._uow.executar(trabalho))
+
+    def _republicar(self, pagamento_id: UUID) -> PagamentoDTO:
+        def trabalho() -> Pagamento:
+            # Encerrado so pode virar ESTORNADO (aprovacao tardia): o desfecho
+            # relido aqui e o atual. So a resposta vai de novo para a outbox.
+            atual = _obter(self._pagamentos, pagamento_id)
+            self._uow.registrar_evento(atual.desfecho_da_compensacao())
             return atual
 
         return PagamentoDTO.de(self._uow.executar(trabalho))
 
     def _falhar(self, pagamento_id: UUID, motivo: str) -> PagamentoDTO:
-        _log.error(
-            "estorno_de_pagamento_falhou",
-            extra={"pagamento_id": str(pagamento_id), "motivo": motivo},
-        )
-
         def trabalho() -> Pagamento:
             atual = _obter(self._pagamentos, pagamento_id)
+            if atual.compensar() is not PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR:
+                raise _PlanoMudouError
             atual.registrar_falha_de_estorno(motivo)
             self._pagamentos.salvar(atual)
             return atual
 
-        return PagamentoDTO.de(self._uow.executar(trabalho))
+        atual = self._uow.executar(trabalho)
+        _log.error("refund_refused", extra={"pagamento_id": str(pagamento_id)})
+        return PagamentoDTO.de(atual)
 
 
 class ConsultarPagamentos:

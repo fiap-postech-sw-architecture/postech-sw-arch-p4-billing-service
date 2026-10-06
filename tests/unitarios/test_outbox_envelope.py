@@ -1,4 +1,4 @@
-"""Envelope do outbox: formato da RFC-004 §4 e os tipos do catalogo."""
+"""Envelope da outbox: formato e catalogo da RFC-004 (secoes 5.2 e 5.3)."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ CATALOGO_DO_BILLING = {
     "PagamentoConfirmado",
     "PagamentoRecusado",
     "PagamentoExpirado",
+    "PagamentoCancelado",
     "PagamentoEstornado",
     "EstornoDePagamentoFalhou",
 }
@@ -44,7 +45,7 @@ def test_classes_de_evento_cobrem_exatamente_o_catalogo() -> None:
     assert {c.__name__.removesuffix("Event") for c in classes} == CATALOGO_DO_BILLING
 
 
-# Campos de `dados` do catalogo do brief da fase 4 (secao 4), por mensagem.
+# Campos de `dados` do catalogo da RFC-004 (secao 5.3), por mensagem.
 DADOS_DO_CATALOGO = {
     "OrcamentoGerado": {
         "ordem_id",
@@ -78,7 +79,8 @@ DADOS_DO_CATALOGO = {
     },
     "PagamentoRecusado": {"ordem_id", "pagamento_id", "motivo"},
     "PagamentoExpirado": {"ordem_id", "pagamento_id", "motivo"},
-    "PagamentoEstornado": {"ordem_id", "pagamento_id", "estornado_em"},
+    "PagamentoCancelado": {"ordem_id", "pagamento_id", "cancelado_em"},
+    "PagamentoEstornado": {"ordem_id", "pagamento_id", "estornado_em", "motivo"},
     "EstornoDePagamentoFalhou": {"ordem_id", "pagamento_id", "motivo"},
 }
 LINHA_DO_CATALOGO = {"codigo", "descricao", "quantidade", "preco_unitario", "subtotal"}

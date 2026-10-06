@@ -1,8 +1,8 @@
-"""Portas de saida do pagamento: provedor de pagamento e orcamentos.
+"""Portas de saida do pagamento: provedor de pagamento, orcamentos e metricas.
 
-``GatewayPagamento`` tem dois adapters (RFC-004 §8): ``MercadoPagoGateway``
-(Checkout Pro real) e ``GatewayPagamentoSimulado`` (default em dev, CI e
-demo). A aplicacao nao sabe qual esta ligado.
+``GatewayPagamento`` tem dois adapters (ADR-040): ``MercadoPagoGateway``
+(Checkout Pro real) e ``GatewayPagamentoSimulado`` (CI, compose e E2E). A
+aplicacao nao sabe qual esta ligado.
 """
 
 from __future__ import annotations
@@ -21,11 +21,13 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from src.compartilhado.dominio.dinheiro import Dinheiro
-    from src.pagamento.dominio.pagamento import StatusPagamento
+    from src.pagamento.dominio.cobranca import SituacaoNoProvedor
+    from src.pagamento.dominio.estados import MotivoEstorno
 
 
 class GatewayPagamentoIndisponivelError(DependenciaIndisponivelError):
-    """Falha transitoria (timeout, 5xx, circuito aberto): repetir mais tarde."""
+    """Falha transitoria (timeout, 5xx, resposta fora do contrato, circuito
+    aberto): repetir mais tarde."""
 
     codigo = "GATEWAY_PAGAMENTO_INDISPONIVEL"
     mensagem_padrao = "Provedor de pagamento indisponivel; tente novamente"
@@ -55,21 +57,11 @@ class ItemCobranca:
 
 
 @dataclass(frozen=True, slots=True)
-class Cobranca:
+class CobrancaCriada:
+    """Resposta do provedor a criacao da cobranca (preferencia + checkout)."""
+
     referencia: str
     checkout_url: str
-
-
-@dataclass(frozen=True, slots=True)
-class SituacaoNoProvedor:
-    """Pagamento como o provedor o ve na consulta (fonte de verdade do status)."""
-
-    referencia: str
-    referencia_externa: str | None
-    status: StatusPagamento
-    status_provedor: str
-    detalhe: str | None
-    valor: Dinheiro | None
 
 
 class GatewayPagamento(Protocol):
@@ -82,11 +74,15 @@ class GatewayPagamento(Protocol):
         pagamento_id: UUID,
         itens: Sequence[ItemCobranca],
         expira_em: datetime,
-    ) -> Cobranca:
+    ) -> CobrancaCriada:
         """Cria a cobranca com ``pagamento_id`` como referencia externa.
 
         Nao e idempotente: sem retry automatico.
         """
+        ...
+
+    def cancelar_cobranca(self, referencia_preferencia: str) -> None:
+        """Fecha o checkout no provedor (idempotente): nada mais e pago nele."""
         ...
 
     def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:
@@ -128,3 +124,12 @@ class OrcamentoParaPagamento:
 
 class OrcamentosPort(Protocol):
     def obter(self, orcamento_id: UUID) -> OrcamentoParaPagamento | None: ...
+
+
+class MetricasDePagamento(Protocol):
+    """Contadores do pagamento (``pytstop_pagamentos_estornados_total`` e a
+    falha do estorno automatico), implementados na infraestrutura."""
+
+    def estorno_concluido(self, motivo: MotivoEstorno) -> None: ...
+
+    def estorno_automatico_falhou(self) -> None: ...

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pymongo.errors import DuplicateKeyError
 
@@ -10,12 +10,14 @@ from src.compartilhado.infraestrutura.mongo import (
     dinheiro_de_bson,
     dinheiro_para_bson,
 )
-from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
-from src.pagamento.dominio.pagamento import (
+from src.pagamento.dominio.cobranca import (
+    Cobranca,
+    EstornoAutomatico,
     NotificacaoRecebida,
-    Pagamento,
-    StatusPagamento,
 )
+from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
+from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
+from src.pagamento.dominio.pagamento import Pagamento
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -52,7 +54,7 @@ class MongoPagamentoRepository:
 
     def listar_vencidos(self, agora: datetime, limite: int) -> list[UUID]:
         cursor = self._colecao.find(
-            {"status": StatusPagamento.PENDENTE.value, "expira_em": {"$lt": agora}},
+            {"status": StatusPagamento.SOLICITADO.value, "expira_em": {"$lt": agora}},
             {"_id": 1},
             session=self._uow.sessao,
         )
@@ -72,22 +74,21 @@ class MongoPagamentoRepository:
 
 
 def _para_documento(pagamento: Pagamento) -> Documento:
-    return {
+    cobranca = pagamento.cobranca
+    documento: Documento = {
         "_id": pagamento.id,
         "ordem_id": pagamento.ordem_id,
-        "orcamento_id": pagamento.orcamento_id,
-        "valor": dinheiro_para_bson(pagamento.valor),
         "status": pagamento.status.value,
-        "provedor": pagamento.provedor,
-        "referencia_preferencia": pagamento.referencia_preferencia,
-        "referencia_pagamento": pagamento.referencia_pagamento,
-        "checkout_url": pagamento.checkout_url,
         "criado_em": pagamento.criado_em,
-        "expira_em": pagamento.expira_em,
+        "recusas": pagamento.recusas,
+        "referencia_pagamento": pagamento.referencia_pagamento,
         "confirmado_em": pagamento.confirmado_em,
-        "estornado_em": pagamento.estornado_em,
-        "chave_estorno": pagamento.chave_estorno,
+        "encerrado_em": pagamento.encerrado_em,
         "motivo": pagamento.motivo,
+        "estornado_em": pagamento.estornado_em,
+        "motivo_estorno": (
+            pagamento.motivo_estorno.value if pagamento.motivo_estorno else None
+        ),
         "notificacoes": [
             {
                 "recebida_em": n.recebida_em,
@@ -96,32 +97,72 @@ def _para_documento(pagamento: Pagamento) -> Documento:
             }
             for n in pagamento.notificacoes
         ],
+        "estornos_automaticos": [
+            {
+                "referencia_pagamento": e.referencia_pagamento,
+                "registrado_em": e.registrado_em,
+                "falha": e.falha,
+            }
+            for e in pagamento.estornos_automaticos
+        ],
     }
+    # A lapide nao tem cobranca: os campos ficam fora do documento.
+    if cobranca is not None:
+        documento |= {
+            "orcamento_id": cobranca.orcamento_id,
+            "valor": dinheiro_para_bson(cobranca.valor),
+            "provedor": cobranca.provedor,
+            "referencia_preferencia": cobranca.referencia_preferencia,
+            "checkout_url": cobranca.checkout_url,
+            "expira_em": cobranca.expira_em,
+        }
+    return documento
 
 
-def _de_documento(doc: dict[str, Any]) -> Pagamento:
+def _de_documento(doc: Documento) -> Pagamento:
+    # Campos opcionais lidos com ``get``: documento gravado por versao anterior
+    # (sem um campo novo) continua legivel (expand/contract).
+    motivo_estorno = doc.get("motivo_estorno")
     return Pagamento(
         id=doc["_id"],
         _ordem_id=doc["ordem_id"],
-        _orcamento_id=doc["orcamento_id"],
-        _valor=dinheiro_de_bson(doc["valor"]),
-        _status=StatusPagamento(doc["status"]),
-        _provedor=doc["provedor"],
-        _referencia_preferencia=doc["referencia_preferencia"],
-        _referencia_pagamento=doc["referencia_pagamento"],
-        _checkout_url=doc["checkout_url"],
         _criado_em=doc["criado_em"],
-        _expira_em=doc["expira_em"],
-        _confirmado_em=doc["confirmado_em"],
-        _estornado_em=doc["estornado_em"],
-        _chave_estorno=doc["chave_estorno"],
-        _motivo=doc["motivo"],
+        _cobranca=_cobranca(doc),
+        _status=StatusPagamento(doc["status"]),
+        _recusas=doc.get("recusas", 0),
+        _referencia_pagamento=doc.get("referencia_pagamento"),
+        _confirmado_em=doc.get("confirmado_em"),
+        _encerrado_em=doc.get("encerrado_em"),
+        _motivo=doc.get("motivo"),
+        _estornado_em=doc.get("estornado_em"),
+        _motivo_estorno=MotivoEstorno(motivo_estorno) if motivo_estorno else None,
         _notificacoes=[
             NotificacaoRecebida(
                 recebida_em=n["recebida_em"],
                 referencia_pagamento=n["referencia_pagamento"],
                 status_provedor=n["status_provedor"],
             )
-            for n in doc["notificacoes"]
+            for n in doc.get("notificacoes", [])
         ],
+        _estornos_automaticos=[
+            EstornoAutomatico(
+                referencia_pagamento=e["referencia_pagamento"],
+                registrado_em=e["registrado_em"],
+                falha=e.get("falha"),
+            )
+            for e in doc.get("estornos_automaticos", [])
+        ],
+    )
+
+
+def _cobranca(doc: Documento) -> Cobranca | None:
+    if doc.get("checkout_url") is None:
+        return None
+    return Cobranca(
+        orcamento_id=doc["orcamento_id"],
+        valor=dinheiro_de_bson(doc["valor"]),
+        provedor=doc["provedor"],
+        referencia_preferencia=doc["referencia_preferencia"],
+        checkout_url=doc["checkout_url"],
+        expira_em=doc["expira_em"],
     )

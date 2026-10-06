@@ -16,11 +16,9 @@ if TYPE_CHECKING:
 
     from pymongo.database import Database
 
-    from src.pagamento.aplicacao.ports import (
-        Cobranca,
-        ItemCobranca,
-        SituacaoNoProvedor,
-    )
+    from src.pagamento.aplicacao.ports import CobrancaCriada, ItemCobranca
+    from src.pagamento.dominio.cobranca import SituacaoNoProvedor
+    from src.pagamento.dominio.estados import MotivoEstorno
 
 URL_PUBLICA = "http://billing.teste"
 SEGREDO_WEBHOOK = "segredo-do-webhook-de-teste"
@@ -70,6 +68,20 @@ def configuracao(**extra: str) -> Configuracao:
     )
 
 
+class MetricasEspia:
+    """``MetricasDePagamento`` que guarda as chamadas (sem Prometheus)."""
+
+    def __init__(self) -> None:
+        self.estornos: list[MotivoEstorno] = []
+        self.estornos_automaticos_recusados = 0
+
+    def estorno_concluido(self, motivo: MotivoEstorno) -> None:
+        self.estornos.append(motivo)
+
+    def estorno_automatico_falhou(self) -> None:
+        self.estornos_automaticos_recusados += 1
+
+
 class GatewayRoteirizado(GatewayPagamentoSimulado):
     """Simulador real com ganchos: falhas programadas, respostas fixas e espias."""
 
@@ -78,20 +90,28 @@ class GatewayRoteirizado(GatewayPagamentoSimulado):
             url_checkout=f"{URL_PUBLICA}{CAMINHO_CHECKOUT}", segredo=SEGREDO_LINK
         )
         self.cobrancas: list[UUID] = []
+        self.cancelamentos: list[str] = []
         self.estornos: list[tuple[str, str]] = []
         self.erro_na_cobranca: Exception | None = None
+        self.erro_no_cancelamento: Exception | None = None
         self.erro_no_estorno: Exception | None = None
         self.respostas: dict[str, SituacaoNoProvedor | None] = {}
 
     def criar_cobranca(
         self, *, pagamento_id: UUID, itens: Sequence[ItemCobranca], expira_em: datetime
-    ) -> Cobranca:
+    ) -> CobrancaCriada:
         self.cobrancas.append(pagamento_id)
         if self.erro_na_cobranca:
             raise self.erro_na_cobranca
         return super().criar_cobranca(
             pagamento_id=pagamento_id, itens=itens, expira_em=expira_em
         )
+
+    def cancelar_cobranca(self, referencia_preferencia: str) -> None:
+        self.cancelamentos.append(referencia_preferencia)
+        if self.erro_no_cancelamento:
+            raise self.erro_no_cancelamento
+        super().cancelar_cobranca(referencia_preferencia)
 
     def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:
         if referencia in self.respostas:

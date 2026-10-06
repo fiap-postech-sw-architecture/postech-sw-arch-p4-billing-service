@@ -22,12 +22,9 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from src.compartilhado.aplicacao.token_assinado import TokenAssinado
-from src.pagamento.aplicacao.ports import (
-    Cobranca,
-    GatewayPagamentoRecusouError,
-    SituacaoNoProvedor,
-)
-from src.pagamento.dominio.pagamento import StatusPagamento
+from src.pagamento.aplicacao.ports import CobrancaCriada, GatewayPagamentoRecusouError
+from src.pagamento.dominio.cobranca import SituacaoNoProvedor
+from src.pagamento.dominio.estados import StatusNoProvedor
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -38,6 +35,7 @@ if TYPE_CHECKING:
     from src.pagamento.aplicacao.ports import ItemCobranca
 
 _DOMINIO_DE_ASSINATURA = "checkout-simulado"
+_PREFIXO_PREFERENCIA = "sim-pref-"
 
 
 class GatewayPagamentoSimulado:
@@ -58,12 +56,16 @@ class GatewayPagamentoSimulado:
         pagamento_id: UUID,
         itens: Sequence[ItemCobranca],
         expira_em: datetime,
-    ) -> Cobranca:
-        token = self._token.emitir(pagamento_id, expira_em)
-        return Cobranca(
-            referencia=f"sim-pref-{pagamento_id}",
-            checkout_url=f"{self._url_checkout}/{pagamento_id}?token={token}",
+    ) -> CobrancaCriada:
+        assinado = self._token.emitir(pagamento_id, expira_em)
+        return CobrancaCriada(
+            referencia=f"{_PREFIXO_PREFERENCIA}{pagamento_id}",
+            checkout_url=f"{self._url_checkout}/{pagamento_id}?token={assinado}",
         )
+
+    def cancelar_cobranca(self, referencia_preferencia: str) -> None:
+        """Nada a fechar aqui: o checkout simulado so aceita pagamento
+        SOLICITADO, e o status gravado vale para todos os processos."""
 
     def checkout_autorizado(
         self, pagamento_id: UUID, token: str | None, *, agora: datetime
@@ -80,13 +82,13 @@ class GatewayPagamentoSimulado:
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
         with self._trava:
             situacao = self._pagamentos.get(referencia)
-            if situacao is None or situacao.status is StatusPagamento.ESTORNADO:
+            if situacao is None or situacao.status is StatusNoProvedor.ESTORNADO:
                 return
-            if situacao.status is not StatusPagamento.APROVADO:
+            if situacao.status is not StatusNoProvedor.APROVADO:
                 msg = "Simulador: so pagamento aprovado pode ser estornado"
                 raise GatewayPagamentoRecusouError(msg)
             self._pagamentos[referencia] = replace(
-                situacao, status=StatusPagamento.ESTORNADO, status_provedor="refunded"
+                situacao, status=StatusNoProvedor.ESTORNADO, status_provedor="refunded"
             )
 
     def registrar_resultado(
@@ -96,7 +98,7 @@ class GatewayPagamentoSimulado:
         situacao = SituacaoNoProvedor(
             referencia=referencia,
             referencia_externa=str(pagamento_id),
-            status=StatusPagamento.APROVADO if aprovado else StatusPagamento.RECUSADO,
+            status=StatusNoProvedor.APROVADO if aprovado else StatusNoProvedor.RECUSADO,
             status_provedor="approved" if aprovado else "rejected",
             detalhe="accredited" if aprovado else "cc_rejected_other_reason",
             valor=valor,

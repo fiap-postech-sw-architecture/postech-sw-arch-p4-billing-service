@@ -94,10 +94,11 @@ class TestConsulta:
         )
         assert resposta.status_code == 200
         corpo = resposta.json()
-        assert (corpo["status"], corpo["valor"], corpo["moeda"]) == (
-            "PENDENTE",
+        assert (corpo["status"], corpo["valor"], corpo["moeda"], corpo["recusas"]) == (
+            "SOLICITADO",
             "335.00",
             "BRL",
+            0,
         )
         assert corpo["checkout_url"] == dto.checkout_url
         assert dto.checkout_url.startswith(
@@ -145,7 +146,9 @@ class TestWebhook:
             WEBHOOK, json=notificacao(referencia), headers=assinatura(referencia)
         )
         assert resposta.json() == {"processado": True}
-        assert len(eventos_do_outbox(app.state.banco, "PagamentoRecusado")) == 1
+        documento = app.state.banco["pagamentos"].find_one({"_id": dto.id})
+        assert documento is not None
+        assert documento["recusas"] == 1
 
     @pytest.mark.parametrize(
         "cabecalhos_do_mp",
@@ -226,16 +229,20 @@ class TestSimulador:
         caminho = f"/api/v1/simulador/pagamentos/{aprovado.id}"
         resposta = api.post(f"{caminho}/aprovar", params=token)
         assert resposta.status_code == 200
-        assert resposta.json()["status"] == "APROVADO"
+        assert resposta.json()["status"] == "CONFIRMADO"
         assert resposta.json()["notificacoes"][0]["status_provedor"] == "approved"
         assert api.post(f"{caminho}/recusar", params=token).status_code == 409
 
         recusado = solicitado(app)
-        resposta = api.post(
-            f"/api/v1/simulador/pagamentos/{recusado.id}/recusar",
-            params={"token": token_do_checkout(recusado.checkout_url)},
-        )
-        assert resposta.json()["status"] == "RECUSADO"
+        caminho = f"/api/v1/simulador/pagamentos/{recusado.id}/recusar"
+        token = {"token": token_do_checkout(recusado.checkout_url)}
+        # Cada recusa conta como a do provedor, ate PAGAMENTO_MAX_RECUSAS (3).
+        corpos = [api.post(caminho, params=token).json() for _ in range(3)]
+        assert [(c["status"], c["recusas"]) for c in corpos] == [
+            ("SOLICITADO", 1),
+            ("SOLICITADO", 2),
+            ("RECUSADO", 3),
+        ]
 
     @pytest.mark.parametrize(
         "token",
@@ -311,7 +318,7 @@ class TestModoMercadoPago:
         assert resposta.json()["erro"]["codigo"] == "NAO_ENCONTRADO"
         documento = banco["pagamentos"].find_one({"_id": pendente.id})
         assert documento is not None
-        assert documento["status"] == "PENDENTE"
+        assert documento["status"] == "SOLICITADO"
         assert api_mp.get("/api/v1/saude").json()["modo"] == "mercadopago"
 
     def test_webhook_consulta_o_mercado_pago_de_verdade(

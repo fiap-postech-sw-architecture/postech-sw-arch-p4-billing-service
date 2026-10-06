@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 
 from src.compartilhado.dominio.dinheiro import Dinheiro
 from src.orcamento.dominio.orcamento import LinhaOrcamento, Orcamento, TipoItem
-from src.pagamento.dominio.pagamento import Pagamento, ResultadoAprovacao
+from src.pagamento.dominio.cobranca import Cobranca, SituacaoNoProvedor
+from src.pagamento.dominio.estados import ResultadoNotificacao, StatusNoProvedor
+from src.pagamento.dominio.pagamento import Pagamento
 
 AGORA = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 LINK = "http://billing.teste/api/v1/publico/orcamentos/token"
@@ -81,24 +83,53 @@ def pagamento(
     criado_em: datetime = AGORA,
     validade: timedelta = timedelta(minutes=60),
 ) -> Pagamento:
-    """Pagamento PENDENTE recem-solicitado (com PagamentoSolicitado pendente)."""
+    """Pagamento SOLICITADO recem-criado (com PagamentoSolicitado pendente)."""
     pagamento_id = uuid4()
     return Pagamento.solicitar(
         id=pagamento_id,
         ordem_id=ordem_id or uuid4(),
-        orcamento_id=orcamento_id or uuid4(),
-        valor=dinheiro(valor),
-        provedor="simulado",
-        referencia_preferencia=f"sim-pref-{pagamento_id}",
-        checkout_url=f"http://billing.teste/simulador/checkout/{pagamento_id}",
+        cobranca=Cobranca(
+            orcamento_id=orcamento_id or uuid4(),
+            valor=dinheiro(valor),
+            provedor="simulado",
+            referencia_preferencia=f"sim-pref-{pagamento_id}",
+            checkout_url=f"http://billing.teste/simulador/checkout/{pagamento_id}",
+            expira_em=criado_em + validade,
+        ),
         criado_em=criado_em,
-        expira_em=criado_em + validade,
+    )
+
+
+def situacao(
+    p: Pagamento | None = None,
+    *,
+    referencia: str = "1",
+    status: StatusNoProvedor = StatusNoProvedor.APROVADO,
+    bruto: str | None = None,
+    valor: Dinheiro | None = None,
+    detalhe: str | None = None,
+) -> SituacaoNoProvedor:
+    """Tentativa como a consulta ao provedor devolve; valor padrao = o cobrado."""
+    brutos = {
+        StatusNoProvedor.APROVADO: "approved",
+        StatusNoProvedor.RECUSADO: "rejected",
+        StatusNoProvedor.ESTORNADO: "refunded",
+        StatusNoProvedor.EM_ANDAMENTO: "in_process",
+    }
+    cobranca = p.cobranca if p else None
+    return SituacaoNoProvedor(
+        referencia=referencia,
+        referencia_externa=str(p.id) if p else None,
+        status=status,
+        status_provedor=bruto or brutos[status],
+        detalhe=detalhe,
+        valor=valor or (cobranca.valor if cobranca else None),
     )
 
 
 def confirmar(p: Pagamento, *, referencia: str = "1", agora: datetime = AGORA) -> None:
     """Aprovacao do provedor pelo valor exato (o caminho feliz do webhook)."""
-    resultado = p.aplicar_aprovacao(
-        referencia_pagamento=referencia, valor_cobrado=p.valor, agora=agora
+    resultado = p.aplicar_notificacao(
+        situacao(p, referencia=referencia), agora=agora, max_recusas=3
     )
-    assert resultado is ResultadoAprovacao.CONFIRMADO
+    assert resultado is ResultadoNotificacao.CONFIRMADO

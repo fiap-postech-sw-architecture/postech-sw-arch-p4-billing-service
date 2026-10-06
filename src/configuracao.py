@@ -53,6 +53,7 @@ class Configuracao:
     link_segredo: str = field(repr=False)
     orcamento_validade: timedelta
     pagamento_validade: timedelta
+    pagamento_max_recusas: int
     mp_modo: ModoMercadoPago
     mp_access_token: str | None = field(repr=False)
     mp_webhook_secret: str | None = field(repr=False)
@@ -113,6 +114,7 @@ class Configuracao:
             pagamento_validade=timedelta(
                 minutes=_positivo(env, "PAGAMENTO_VALIDADE_MINUTOS", 60)
             ),
+            pagamento_max_recusas=_inteiro_positivo(env, "PAGAMENTO_MAX_RECUSAS", 3),
             mp_modo=modo,
             mp_access_token=access_token,
             mp_webhook_secret=webhook_secret,
@@ -155,6 +157,18 @@ def _modo(valor: str) -> ModoMercadoPago:
     except ValueError:
         msg = f"MP_MODE invalido: {valor!r} (use simulado ou mercadopago)"
         raise ValueError(msg) from None
+
+
+def _inteiro_positivo(env: Mapping[str, str], nome: str, padrao: int) -> int:
+    try:
+        valor = int(env.get(nome, padrao))
+    except ValueError:
+        msg = f"{nome} deve ser um inteiro"
+        raise ValueError(msg) from None
+    if valor < 1:
+        msg = f"{nome} deve ser maior que zero"
+        raise ValueError(msg)
+    return valor
 
 
 def _positivo(env: Mapping[str, str], nome: str, padrao: float) -> float:

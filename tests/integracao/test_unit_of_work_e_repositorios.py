@@ -16,8 +16,13 @@ from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.exceptions import OrcamentoJaGeradoError
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
+from src.pagamento.dominio.estados import (
+    MotivoEstorno,
+    StatusNoProvedor,
+    StatusPagamento,
+)
 from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
-from src.pagamento.dominio.pagamento import NotificacaoRecebida
+from src.pagamento.dominio.pagamento import Pagamento
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from src.precos.dominio.exceptions import PrecoJaCadastradoError
 from src.precos.dominio.preco import PrecoPeca, PrecoServico
@@ -25,7 +30,7 @@ from src.precos.infraestrutura.repository import (
     MongoPrecoPecaRepository,
     MongoPrecoServicoRepository,
 )
-from tests.factories import AGORA, confirmar, dinheiro, orcamento, pagamento
+from tests.factories import AGORA, confirmar, dinheiro, orcamento, pagamento, situacao
 from tests.integracao.apoio import eventos_do_outbox
 
 if TYPE_CHECKING:
@@ -229,37 +234,84 @@ class TestRepositorioDeOrcamento:
 
 
 class TestRepositorioDePagamento:
-    def test_ida_e_volta_com_historico(self, banco: Banco) -> None:
+    CAMPOS = (
+        "ordem_id",
+        "criado_em",
+        "cobranca",
+        "status",
+        "recusas",
+        "referencia_pagamento",
+        "confirmado_em",
+        "encerrado_em",
+        "motivo",
+        "estornado_em",
+        "motivo_estorno",
+        "notificacoes",
+        "estornos_automaticos",
+    )
+
+    def ida_e_volta(self, banco: Banco, original: Pagamento) -> Pagamento:
         uow = MongoUnitOfWork(banco)
         repo = MongoPagamentoRepository(uow)
-        solicitado = pagamento()
-        solicitado.registrar_notificacao(
-            NotificacaoRecebida(
-                recebida_em=AGORA, referencia_pagamento="1", status_provedor="approved"
-            )
-        )
-        confirmar(solicitado)
-        uow.executar(lambda: repo.salvar(solicitado))
-
-        lido = repo.obter_por_id(solicitado.id)
-
+        uow.executar(lambda: repo.salvar(original))
+        lido = repo.obter_por_id(original.id)
         assert lido is not None
-        for campo in (
-            "ordem_id",
-            "orcamento_id",
-            "valor",
-            "status",
-            "provedor",
-            "referencia_preferencia",
-            "referencia_pagamento",
-            "checkout_url",
-            "criado_em",
-            "expira_em",
-            "confirmado_em",
-            "notificacoes",
-        ):
-            assert getattr(lido, campo) == getattr(solicitado, campo), campo
-        assert repo.obter_por_orcamento(solicitado.orcamento_id) == lido
+        for campo in self.CAMPOS:
+            assert getattr(lido, campo) == getattr(original, campo), campo
+        return lido
+
+    def test_ida_e_volta_com_historico_recusas_e_estornos(self, banco: Banco) -> None:
+        p = pagamento()
+        p.aplicar_notificacao(
+            situacao(p, referencia="r1", status=StatusNoProvedor.RECUSADO),
+            agora=AGORA,
+            max_recusas=3,
+        )
+        confirmar(p, referencia="2")
+        p.registrar_estorno_automatico("3", agora=AGORA, falha="payment too old")
+        p.concluir_compensacao(agora=AGORA + timedelta(hours=1), motivo="cancelamento")
+
+        lido = self.ida_e_volta(banco, p)
+
+        assert (lido.status, lido.recusas, lido.motivo_estorno) == (
+            StatusPagamento.ESTORNADO,
+            1,
+            MotivoEstorno.COMPENSACAO,
+        )
+        assert p.cobranca is not None
+        repo = MongoPagamentoRepository(MongoUnitOfWork(banco))
+        assert repo.obter_por_orcamento(p.cobranca.orcamento_id) == lido
+
+    def test_ida_e_volta_da_lapide_sem_cobranca(self, banco: Banco) -> None:
+        tumulo = Pagamento.lapide(
+            id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="cancelamento"
+        )
+        lido = self.ida_e_volta(banco, tumulo)
+        assert lido.cobranca is None
+        documento = banco["pagamentos"].find_one({"_id": tumulo.id})
+        assert documento is not None
+        assert "checkout_url" not in documento
+
+    def test_documento_antigo_sem_campos_novos_continua_legivel(
+        self, banco: Banco
+    ) -> None:
+        p = pagamento()
+        uow = MongoUnitOfWork(banco)
+        repo = MongoPagamentoRepository(uow)
+        uow.executar(lambda: repo.salvar(p))
+        banco["pagamentos"].update_one(
+            {"_id": p.id},
+            {
+                "$unset": {
+                    "recusas": "",
+                    "estornos_automaticos": "",
+                    "motivo_estorno": "",
+                }
+            },
+        )
+        lido = repo.obter_por_id(p.id)
+        assert lido is not None
+        assert (lido.recusas, lido.estornos_automaticos) == (0, ())
 
     def test_um_pagamento_por_orcamento(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)

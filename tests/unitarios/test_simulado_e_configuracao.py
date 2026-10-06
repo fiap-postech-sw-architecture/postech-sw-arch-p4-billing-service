@@ -9,7 +9,7 @@ import pytest
 from src.configuracao import SEGREDO_LINK_DEMO, Configuracao, ModoMercadoPago
 from src.main import criar_gateway
 from src.pagamento.aplicacao.ports import GatewayPagamentoRecusouError
-from src.pagamento.dominio.pagamento import StatusPagamento
+from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from tests.factories import AGORA, dinheiro
@@ -58,15 +58,16 @@ class TestGatewaySimulado:
     @pytest.mark.parametrize(
         ("aprovado", "status", "bruto"),
         [
-            (True, StatusPagamento.APROVADO, "approved"),
-            (False, StatusPagamento.RECUSADO, "rejected"),
+            (True, StatusNoProvedor.APROVADO, "approved"),
+            (False, StatusNoProvedor.RECUSADO, "rejected"),
         ],
+        ids=["aprovado", "recusado"],
     )
     def test_resultado_simulado_aparece_na_consulta(
         self,
         simulado: GatewayPagamentoSimulado,
         aprovado: bool,
-        status: StatusPagamento,
+        status: StatusNoProvedor,
         bruto: str,
     ) -> None:
         pagamento_id = uuid4()
@@ -88,9 +89,15 @@ class TestGatewaySimulado:
         simulado.estornar(aprovado, chave_idempotencia="k")  # idempotente
         situacao = simulado.consultar_pagamento(aprovado)
         assert situacao is not None
-        assert situacao.status is StatusPagamento.ESTORNADO
+        assert situacao.status is StatusNoProvedor.ESTORNADO
         # Pagamento anterior a um restart do processo: aceito.
         simulado.estornar("sim-perdido", chave_idempotencia="k")
+
+    def test_cancelar_cobranca_nao_tem_estado_a_fechar(
+        self, simulado: GatewayPagamentoSimulado
+    ) -> None:
+        # O checkout simulado so aceita pagamento SOLICITADO (status gravado).
+        assert simulado.cancelar_cobranca("sim-pref-qualquer") is None
 
     def test_estorno_de_recusado_e_recusado(
         self, simulado: GatewayPagamentoSimulado
@@ -235,6 +242,16 @@ class TestConfiguracao:
     def test_prazos_devem_ser_numeros_finitos_positivos(self, valor: str) -> None:
         with pytest.raises(ValueError, match="ORCAMENTO_VALIDADE_HORAS"):
             Configuracao.do_ambiente({**DEV, "ORCAMENTO_VALIDADE_HORAS": valor})
+
+    @pytest.mark.parametrize("valor", ["abc", "0", "-1", "1.5"])
+    def test_maximo_de_recusas_e_inteiro_positivo(self, valor: str) -> None:
+        with pytest.raises(ValueError, match="PAGAMENTO_MAX_RECUSAS"):
+            Configuracao.do_ambiente({**DEV, "PAGAMENTO_MAX_RECUSAS": valor})
+
+    def test_maximo_de_recusas_padrao_3_e_configuravel(self) -> None:
+        assert Configuracao.do_ambiente(DEV).pagamento_max_recusas == 3
+        config = Configuracao.do_ambiente({**DEV, "PAGAMENTO_MAX_RECUSAS": "1"})
+        assert config.pagamento_max_recusas == 1
 
     def test_prazos_curtos_para_demo(self) -> None:
         config = Configuracao.do_ambiente(

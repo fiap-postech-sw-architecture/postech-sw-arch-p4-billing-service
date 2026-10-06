@@ -26,6 +26,7 @@ from src.pagamento.infraestrutura.mercadopago import (
     ConfiguracaoMercadoPago,
     MercadoPagoGateway,
 )
+from src.pagamento.infraestrutura.metricas import MetricasPrometheus
 from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from src.pagamento.interfaces.router import router as router_pagamentos
 from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
@@ -112,6 +113,7 @@ def criar_app(
     app.state.config = config
     app.state.relogio = relogio
     app.state.gateway_pagamento = gateway
+    app.state.metricas_pagamento = MetricasPrometheus()
     app.state.link_decisao = LinkDeDecisao(
         segredo=config.link_segredo, url_base=config.url_publica
     )

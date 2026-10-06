@@ -4,6 +4,8 @@ Contrato (documentacao oficial, referencias nos testes de contrato):
 
 - ``POST /checkout/preferences``: itens, ``external_reference`` = id do
   pagamento, ``notification_url`` e expiracao -> ``id`` + ``init_point``;
+- ``PUT /checkout/preferences/{id}``: expira a preferencia agora (cancela o
+  checkout na compensacao);
 - ``GET /v1/payments/{id}``: status do pagamento (fonte de verdade);
 - ``POST /v1/payments/{id}/refunds``: estorno total com ``X-Idempotency-Key``.
 
@@ -11,8 +13,8 @@ A assinatura do webhook (``x-signature``) e validada na borda HTTP, em
 ``src/pagamento/interfaces/assinatura_webhook.py``.
 
 Resiliencia: timeout em toda chamada, retry com backoff e jitter so nas
-operacoes idempotentes (consulta e estorno com chave) e circuit breaker
-compartilhado pelas tres operacoes.
+operacoes idempotentes (consulta, cancelamento e estorno com chave) e circuit
+breaker compartilhado por todas as operacoes.
 """
 
 from __future__ import annotations
@@ -26,28 +28,33 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
+import structlog
 from prometheus_client import Counter
 
 from src.compartilhado.dominio.dinheiro import Dinheiro
+from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.circuit_breaker import (
     CircuitBreaker,
     CircuitoAbertoError,
 )
 from src.pagamento.aplicacao.ports import (
-    Cobranca,
+    CobrancaCriada,
     EstornoEmProcessamentoError,
     GatewayPagamentoIndisponivelError,
     GatewayPagamentoRecusouError,
-    SituacaoNoProvedor,
 )
-from src.pagamento.dominio.pagamento import StatusPagamento
+from src.pagamento.dominio.cobranca import SituacaoNoProvedor
+from src.pagamento.dominio.estados import StatusNoProvedor
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import datetime
     from uuid import UUID
 
+    from src.compartilhado.dominio.relogio import Relogio
     from src.pagamento.aplicacao.ports import ItemCobranca
+
+_log = structlog.get_logger(__name__)
 
 MERCADOPAGO_REQUISICOES = Counter(
     "pytstop_mercadopago_requisicoes_total",
@@ -55,15 +62,20 @@ MERCADOPAGO_REQUISICOES = Counter(
     ["operacao", "resultado"],
 )
 
-# Status de uma TENTATIVA de pagamento no Mercado Pago -> status da cobranca.
-# No Checkout Pro o comprador tenta de novo depois de uma recusa (outro cartao,
-# pix, boleto), entao `rejected` e `cancelled` nao encerram a cobranca: ela so
-# fecha sem pagamento quando expira. Os demais (pending, in_process,
-# authorized, in_mediation) tambem seguem pendentes.
+# Status de uma TENTATIVA de pagamento no Mercado Pago. `rejected` e uma recusa
+# (o agregado conta ate PAGAMENTO_MAX_RECUSAS); `refunded` e estorno. Os demais
+# nao mudam a cobranca: pendente ou em analise, tentativa cancelada (boleto ou
+# pix vencido) e `charged_back`, que e contestacao do portador, nao estorno.
 _STATUS: Final = {
-    "approved": StatusPagamento.APROVADO,
-    "refunded": StatusPagamento.ESTORNADO,
-    "charged_back": StatusPagamento.ESTORNADO,
+    "approved": StatusNoProvedor.APROVADO,
+    "rejected": StatusNoProvedor.RECUSADO,
+    "refunded": StatusNoProvedor.ESTORNADO,
+    "pending": StatusNoProvedor.EM_ANDAMENTO,
+    "in_process": StatusNoProvedor.EM_ANDAMENTO,
+    "authorized": StatusNoProvedor.EM_ANDAMENTO,
+    "in_mediation": StatusNoProvedor.EM_ANDAMENTO,
+    "cancelled": StatusNoProvedor.EM_ANDAMENTO,
+    "charged_back": StatusNoProvedor.EM_ANDAMENTO,
 }
 _ESTORNO_CONCLUIDO = "approved"
 _ESTORNO_RECUSADO = frozenset({"rejected", "cancelled"})
@@ -102,12 +114,14 @@ class MercadoPagoGateway:
         *,
         breaker: CircuitBreaker | None = None,
         dormir: Callable[[float], None] = time.sleep,
+        relogio: Relogio = agora_utc,
     ) -> None:
         self._config = config
         self._breaker = breaker or CircuitBreaker(
             "mercadopago", falha=_FalhaTransitoriaError
         )
         self._dormir = dormir
+        self._relogio = relogio
         self._http = httpx.Client(
             base_url=config.base_url,
             timeout=config.timeout_segundos,
@@ -123,7 +137,7 @@ class MercadoPagoGateway:
         pagamento_id: UUID,
         itens: Sequence[ItemCobranca],
         expira_em: datetime,
-    ) -> Cobranca:
+    ) -> CobrancaCriada:
         corpo = {
             "items": [
                 {
@@ -148,7 +162,28 @@ class MercadoPagoGateway:
             "criar_cobranca", "POST", "/checkout/preferences", repetir=False, json=corpo
         )
         dados = resposta.json()
-        return Cobranca(referencia=str(dados["id"]), checkout_url=dados["init_point"])
+        return CobrancaCriada(
+            referencia=str(dados["id"]), checkout_url=dados["init_point"]
+        )
+
+    def cancelar_cobranca(self, referencia_preferencia: str) -> None:
+        """Expira a preferencia agora: o checkout e os pix/boletos gerados nele
+        deixam de aceitar pagamento. Repetir da o mesmo resultado (retry ok)."""
+        if not _REFERENCIA_VALIDA.fullmatch(referencia_preferencia):
+            msg = "Referencia de preferencia invalida para cancelamento"
+            raise GatewayPagamentoRecusouError(msg)
+        agora = _data_mp(self._relogio())
+        self._enviar(
+            "cancelar_cobranca",
+            "PUT",
+            f"/checkout/preferences/{referencia_preferencia}",
+            repetir=True,
+            json={
+                "expires": True,
+                "expiration_date_to": agora,
+                "date_of_expiration": agora,
+            },
+        )
 
     def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:
         if not _REFERENCIA_VALIDA.fullmatch(referencia):
@@ -169,7 +204,7 @@ class MercadoPagoGateway:
         return SituacaoNoProvedor(
             referencia=str(dados["id"]),
             referencia_externa=str(externa) if externa else None,
-            status=_STATUS.get(status, StatusPagamento.PENDENTE),
+            status=_status_no_provedor(status),
             status_provedor=status,
             detalhe=dados.get("status_detail"),
             valor=_valor(dados),
@@ -253,6 +288,18 @@ class MercadoPagoGateway:
             raise GatewayPagamentoRecusouError(_mensagem_de_erro(resposta))
         MERCADOPAGO_REQUISICOES.labels(operacao, "sucesso").inc()
         return resposta
+
+
+def _status_no_provedor(status: str) -> StatusNoProvedor:
+    conhecido = _STATUS.get(status)
+    if conhecido is None:
+        # Status novo no provedor: nao muda a cobranca, mas fica visivel.
+        MERCADOPAGO_REQUISICOES.labels(
+            "consultar_pagamento", "status_desconhecido"
+        ).inc()
+        _log.warning("mercadopago_unknown_status", status=status)
+        return StatusNoProvedor.EM_ANDAMENTO
+    return conhecido
 
 
 def _data_mp(instante: datetime) -> str:

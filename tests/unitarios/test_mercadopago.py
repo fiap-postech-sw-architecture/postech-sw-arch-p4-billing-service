@@ -3,6 +3,7 @@
 Payloads no formato da documentacao oficial do Mercado Pago:
 
 - Criar preferencia (Checkout Pro): https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-pro-preferences/create-preference/post
+- Atualizar preferencia: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-pro-preferences/update-preference/put
 - Obter pagamento: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api-payments/get-payment/get
 - Criar reembolso: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api-payments/create-refund/post
 - Notificacoes (x-signature): https://www.mercadopago.com.br/developers/pt/docs/checkout-pro-preferences/payment-notifications
@@ -29,7 +30,7 @@ from src.pagamento.aplicacao.ports import (
     GatewayPagamentoRecusouError,
     ItemCobranca,
 )
-from src.pagamento.dominio.pagamento import StatusPagamento
+from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.mercadopago import (
     ConfiguracaoMercadoPago,
     MercadoPagoGateway,
@@ -241,7 +242,7 @@ class TestConsultarPagamento:
         assert situacao is not None
         assert situacao.referencia == "1234567890"
         assert situacao.referencia_externa == resposta["external_reference"]
-        assert situacao.status is StatusPagamento.APROVADO
+        assert situacao.status is StatusNoProvedor.APROVADO
         assert situacao.status_provedor == "approved"
         assert situacao.detalhe == "accredited"
         assert situacao.valor == dinheiro("335.00")
@@ -262,18 +263,22 @@ class TestConsultarPagamento:
     @pytest.mark.parametrize(
         ("status", "esperado"),
         [
-            # Tentativa recusada nao encerra a cobranca do Checkout Pro: o
-            # comprador pode pagar de novo ate o prazo.
-            ("rejected", StatusPagamento.PENDENTE),
-            ("cancelled", StatusPagamento.PENDENTE),
-            ("refunded", StatusPagamento.ESTORNADO),
-            ("charged_back", StatusPagamento.ESTORNADO),
-            ("pending", StatusPagamento.PENDENTE),
-            ("in_process", StatusPagamento.PENDENTE),
+            # Recusa e contada pelo agregado ate PAGAMENTO_MAX_RECUSAS; o resto
+            # nao muda a cobranca (contestacao nao e estorno).
+            ("approved", StatusNoProvedor.APROVADO),
+            ("rejected", StatusNoProvedor.RECUSADO),
+            ("refunded", StatusNoProvedor.ESTORNADO),
+            ("charged_back", StatusNoProvedor.EM_ANDAMENTO),
+            ("cancelled", StatusNoProvedor.EM_ANDAMENTO),
+            ("pending", StatusNoProvedor.EM_ANDAMENTO),
+            ("in_process", StatusNoProvedor.EM_ANDAMENTO),
+            ("authorized", StatusNoProvedor.EM_ANDAMENTO),
+            ("in_mediation", StatusNoProvedor.EM_ANDAMENTO),
         ],
+        ids=lambda valor: str(valor),
     )
     def test_mapa_de_status(
-        self, gateway: MercadoPagoGateway, status: str, esperado: StatusPagamento
+        self, gateway: MercadoPagoGateway, status: str, esperado: StatusNoProvedor
     ) -> None:
         with respx.mock(base_url=API) as mp:
             mp.get("/v1/payments/1").respond(
@@ -283,6 +288,29 @@ class TestConsultarPagamento:
         assert situacao is not None
         assert situacao.status is esperado
         assert situacao.status_provedor == status
+
+    def test_status_desconhecido_nao_muda_a_cobranca_e_e_contado(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        antes = contador("consultar_pagamento", "status_desconhecido")
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/1").respond(
+                200, json=pagamento_no_provedor(status="novo_status")
+            )
+            situacao = gateway.consultar_pagamento("1")
+        assert situacao is not None
+        assert situacao.status is StatusNoProvedor.EM_ANDAMENTO
+        assert contador("consultar_pagamento", "status_desconhecido") == antes + 1
+
+    def test_moeda_vem_do_provedor(self, gateway: MercadoPagoGateway) -> None:
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/1").respond(
+                200, json=pagamento_no_provedor(currency_id="USD")
+            )
+            situacao = gateway.consultar_pagamento("1")
+        assert situacao is not None
+        assert situacao.valor is not None
+        assert situacao.valor.moeda == "USD"
 
     def test_sem_valor_e_sem_referencia_externa(
         self, gateway: MercadoPagoGateway
@@ -420,6 +448,42 @@ class TestEstornar:
     ) -> None:
         with pytest.raises(GatewayPagamentoRecusouError, match="invalida"):
             gateway.estornar("../1", chave_idempotencia="msg")
+
+
+class TestCancelarCobranca:
+    PREFERENCIA = "202809963-920c288b-4ebb-40be-966f-700250fa5370"
+
+    def test_expira_a_preferencia_agora(self, esperas: Esperas) -> None:
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO),
+            breaker=CircuitBreaker("mp-cancelar", falha=_FalhaTransitoriaError),
+            dormir=esperas,
+            relogio=lambda: AGORA,
+        )
+        try:
+            with respx.mock(base_url=API) as mp:
+                rota = mp.put(f"/checkout/preferences/{self.PREFERENCIA}").mock(
+                    side_effect=[
+                        httpx.Response(500),
+                        httpx.Response(200, json=PREFERENCIA_CRIADA),
+                    ]
+                )
+                gateway.cancelar_cobranca(self.PREFERENCIA)
+        finally:
+            gateway.fechar()
+        # Idempotente: a falha transitoria e repetida.
+        assert rota.call_count == 2
+        assert json.loads(rota.calls.last.request.content) == {
+            "expires": True,
+            "expiration_date_to": "2026-10-06T12:00:00.000+00:00",
+            "date_of_expiration": "2026-10-06T12:00:00.000+00:00",
+        }
+
+    def test_referencia_invalida_e_recusada_sem_chamar(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        with pytest.raises(GatewayPagamentoRecusouError, match="invalida"):
+            gateway.cancelar_cobranca("../preferences")
 
 
 class TestCircuitBreaker:

@@ -75,7 +75,7 @@ def checkout(
     return HTMLResponse(
         _PAGINA.format(
             pagamento_id=html.escape(str(pagamento.id)),
-            moeda=html.escape(pagamento.moeda),
+            moeda=html.escape(pagamento.moeda or ""),
             valor=html.escape(str(pagamento.valor)),
             status=html.escape(pagamento.status),
             aprovar=html.escape(f"{base}/aprovar{consulta}"),
