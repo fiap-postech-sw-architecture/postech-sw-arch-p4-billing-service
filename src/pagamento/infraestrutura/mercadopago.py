@@ -1,4 +1,4 @@
-"""Adapter real do ``GatewayPagamento``: Mercado Pago Checkout Pro (RFC-004 §8).
+"""Adapter real do ``GatewayPagamento``: Mercado Pago Checkout Pro (ADR-040).
 
 Contrato (documentacao oficial, referencias nos testes de contrato):
 

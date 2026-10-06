@@ -1,7 +1,7 @@
-"""Envelope das mensagens do outbox (RFC-004 §4).
+"""Envelope das mensagens da outbox (RFC-004, secao 5.2).
 
-``para_envelope`` e pura: transforma o evento no corpo JSON que o relay vai
-publicar sem nenhuma conversao adicional (UUID, data e Decimal ja viram
+``para_envelope`` e pura: transforma o evento no corpo JSON que o relay publica
+sem nenhuma conversao adicional (UUID, data e Decimal ja viram
 string; dinheiro nunca vira float). A gravacao fica na unidade de trabalho.
 """
 
@@ -24,8 +24,9 @@ VERSAO_DO_ENVELOPE = 1
 def para_envelope(evento: IntegrationEvent, *, mensagem_id: UUID) -> dict[str, Any]:
     """Monta o envelope ``{id, tipo, versao, origem, correlation_id, ...}``.
 
-    ``causation_id`` fica nulo: hoje todo evento nasce de chamada HTTP; o
-    consumidor de comandos (PR da mensageria) passa o id do comando.
+    ``causation_id`` fica nulo enquanto o evento nasce de chamada HTTP, webhook
+    ou prazo; quando a causa for um comando da saga, o consumidor de comandos
+    (ADR-036) passa o id dele.
     """
     # Campo opcional sem valor fica fora de ``dados`` (ex.: ``decidido_por`` so
     # existe com canal=atendente), como o contrato de cada mensagem o define.
@@ -72,5 +73,5 @@ def _serializar(valor: object) -> Any:  # noqa: ANN401 - payload JSON heterogene
             campo.name: _serializar(getattr(valor, campo.name))
             for campo in fields(valor)
         }
-    msg = f"Tipo nao suportado no envelope do outbox: {type(valor).__name__}"
+    msg = f"Tipo nao suportado no envelope da outbox: {type(valor).__name__}"
     raise TypeError(msg)

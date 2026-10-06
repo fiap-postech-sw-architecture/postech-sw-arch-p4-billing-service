@@ -1,6 +1,7 @@
-"""Casos de uso do orcamento (API agora; consumidor de comandos no PR seguinte).
+"""Casos de uso do orcamento: os da API e os dos comandos da saga, que o
+consumidor de comandos (ADR-036) chama.
 
-Cada mudanca de estado grava o evento do catalogo no outbox na mesma
+Cada mudanca de estado grava o evento do catalogo na outbox na mesma
 transacao (ver ``UnitOfWork``).
 """
 

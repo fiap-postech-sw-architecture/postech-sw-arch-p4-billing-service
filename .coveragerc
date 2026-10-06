@@ -1,5 +1,5 @@
-# Gate de cobertura do servico (RFC-004 §10: fail_under = 90; o enunciado pede
-# 80). Mede ramos, nao so linhas: if/for exercitados de um lado so aparecem.
+# Gate de cobertura do servico (ADR-041 e RFC-004, secao 10.2: fail_under =
+# 90; o enunciado pede 80). Mede ramos, nao so linhas: if/for exercitados de um lado so aparecem.
 # Herdado do p3 @ 08dcffe, sem os caminhos de UI e relay.
 
 [run]

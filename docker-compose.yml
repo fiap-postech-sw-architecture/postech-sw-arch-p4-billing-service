@@ -1,4 +1,4 @@
-# Ambiente de desenvolvimento do Billing (RFC-004 §11): API, processo de prazos
+# Ambiente de desenvolvimento do Billing (RFC-004, secao 10.1): API, prazos
 # e MongoDB 7 em replica set de um no (transacoes exigem replica set). Sem
 # credencial externa: o Mercado Pago roda no modo simulado. A stack completa
 # (OS, Execucao, RabbitMQ, Kong) fica no compose do repo platform.

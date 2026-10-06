@@ -1,6 +1,7 @@
 """Evento de integracao: fato do Billing publicado aos outros servicos.
 
-Todo evento do Billing cruza a fronteira do servico (catalogo da RFC-004 §4)
+Todo evento do Billing cruza a fronteira do servico (catalogo da RFC-004,
+secao 5.3)
 e e entregue pela outbox transacional; nao ha consumidor in-process. Por isso
 ha uma base unica, sem a separacao DomainEvent/IntegrationEvent do p3.
 """

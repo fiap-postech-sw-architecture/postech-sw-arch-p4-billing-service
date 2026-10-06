@@ -47,7 +47,7 @@ def token_do_checkout(checkout_url: str | None) -> str:
 def eventos_do_outbox(
     banco: Database[dict[str, Any]], tipo: str | None = None
 ) -> list[dict[str, Any]]:
-    """Envelopes gravados no outbox, na ordem do relay (``_id`` UUIDv7)."""
+    """Envelopes gravados na outbox, na ordem do relay (``_id`` UUIDv7)."""
     filtro = {"tipo": tipo} if tipo else {}
     return [doc["envelope"] for doc in banco["outbox"].find(filtro).sort("_id")]
 

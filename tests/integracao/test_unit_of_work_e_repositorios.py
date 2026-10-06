@@ -113,7 +113,7 @@ class TestUnidadeDeTrabalho:
         assert documento["tentativas"] == 0
         assert documento["envelope"]["id"] == str(documento["_id"])
         assert documento["_id"].version == 7  # ordem de publicacao do relay
-        assert gerado.coletar_eventos() == []  # entregues ao outbox
+        assert gerado.coletar_eventos() == []  # entregues a outbox
 
     def test_excecao_desfaz_estado_e_outbox(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)

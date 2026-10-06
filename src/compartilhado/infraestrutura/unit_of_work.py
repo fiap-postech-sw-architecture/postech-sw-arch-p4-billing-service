@@ -90,7 +90,7 @@ class MongoUnitOfWork:
         return resultado
 
     def registrar(self, agregado: AggregateRoot) -> None:
-        """Chamado pelos repositorios ao salvar: os eventos vao para o outbox."""
+        """Chamado pelos repositorios ao salvar: os eventos vao para a outbox."""
         self._exigir_transacao()
         if agregado not in self._agregados:
             self._agregados.append(agregado)

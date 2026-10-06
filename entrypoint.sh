@@ -1,7 +1,8 @@
 #!/bin/bash
 # Um container, processos diferentes (RFC-004 secao 10.2): `api` (padrao),
 # `prazos` e `banco` (preparacao idempotente do MongoDB, antes dos outros).
-# O relay da outbox e o consumidor de comandos entram com a mensageria.
+# O relay da outbox e o consumidor dos comandos da saga (ADR-036) nao fazem
+# parte desta versao da imagem.
 set -euo pipefail
 
 processo="${1:-api}"

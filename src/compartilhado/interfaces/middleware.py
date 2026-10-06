@@ -3,7 +3,7 @@
 Reaproveitado do p3 @ 08dcffe (``SecurityHeadersMiddleware`` de
 ``src/compartilhado/interfaces/middleware.py``). CORS, rate limiting e proxy
 headers ficaram de fora: o Billing nao tem front-end no navegador e o rate
-limiting das rotas publicas fica no Kong (RFC-004 §5).
+limiting das rotas publicas fica no Kong (RFC-004, secao 6; ADR-038).
 """
 
 from __future__ import annotations

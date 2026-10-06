@@ -1,4 +1,4 @@
-"""Sondas da API (RFC-004 secao 6, D27): liveness sem dependencias e readiness
+"""Sondas da API (RFC-004, secao 6): liveness sem dependencias e readiness
 so com o banco (o broker fora do ar nao tira a API do Service: a outbox segura
 as mensagens)."""
 

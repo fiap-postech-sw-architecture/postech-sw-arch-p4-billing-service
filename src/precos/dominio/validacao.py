@@ -1,7 +1,7 @@
 """Servico de dominio: validacao de itens contra a tabela de precos.
 
 Usado pela validacao sincrona da Execucao (``POST /api/v1/precos/validacao``,
-RFC-004 §5) e pela geracao do orcamento. Recebe os precos ja carregados; nao
+RFC-004, secao 6) e pela geracao do orcamento. Recebe os precos ja carregados; nao
 conhece repositorio.
 """
 

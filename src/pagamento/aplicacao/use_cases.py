@@ -71,7 +71,7 @@ class _PlanoMudouError(Exception):
 
 
 def chave_de_estorno(pagamento_id: UUID) -> str:
-    """``X-Idempotency-Key`` do estorno da compensacao (ADR-040, RFC-004 8)."""
+    """``X-Idempotency-Key`` do estorno da compensacao (ADR-040; RFC-004, secao 8)."""
     return f"estorno-{pagamento_id}"
 
 

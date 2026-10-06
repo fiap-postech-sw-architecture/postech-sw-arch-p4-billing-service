@@ -2,8 +2,8 @@
 
 Cria colecoes com validador ``$jsonSchema`` (nivel ``moderate``) e indices de
 cada repositorio, e marca a versao. Roda antes da API e do ``prazos``: servico
-``init`` no compose e Job de inicializacao no Kubernetes (D32); so mudancas
-aditivas. API e ``prazos`` so conferem a versao (readiness e boot). O
+``init`` no compose e Job de inicializacao no Kubernetes (ADR-037); so
+mudancas aditivas. API e ``prazos`` so conferem a versao (readiness e boot). O
 ``rs.initiate`` do replica set fica com quem sobe o MongoDB.
 """
 

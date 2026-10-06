@@ -3,8 +3,7 @@
 Adaptado do p3 @ 08dcffe (``src/compartilhado/infraestrutura/metrics.py``):
 mesmo nome-contrato com os dashboards (``http_request_duration_seconds``
 com ``method``, ``rota`` e ``status``), mas direto no ``prometheus_client``,
-sem o MeterProvider do OpenTelemetry (a observabilidade OTel entra no PR de
-observabilidade da fase 4).
+sem o MeterProvider do OpenTelemetry (o tracing distribuido e do ADR-043).
 """
 
 from __future__ import annotations

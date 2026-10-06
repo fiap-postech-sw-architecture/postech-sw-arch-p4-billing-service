@@ -62,7 +62,7 @@ class StatusNoProvedor(StrEnum):
 
 
 class MotivoEstorno(StrEnum):
-    """Enumeracao fechada do ``PagamentoEstornado`` e da metrica (RFC-004 9)."""
+    """Enumeracao fechada do ``PagamentoEstornado`` e da metrica (RFC-004, secao 9)."""
 
     COMPENSACAO = "compensacao"
     PAGAMENTO_APOS_ENCERRAMENTO = "pagamento_apos_encerramento"

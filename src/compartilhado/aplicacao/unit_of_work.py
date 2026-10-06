@@ -19,7 +19,7 @@ class UnitOfWork(Protocol):
     """
 
     def executar[T](self, trabalho: Callable[[], T]) -> T:
-        """Roda ``trabalho`` numa transacao e grava no outbox, na mesma
+        """Roda ``trabalho`` numa transacao e grava na outbox, na mesma
         transacao, os eventos dos agregados salvos e os registrados avulsos.
 
         ``trabalho`` nao pode ter efeito fora do banco (pode rodar mais de uma
@@ -28,5 +28,5 @@ class UnitOfWork(Protocol):
         ...
 
     def registrar_evento(self, evento: IntegrationEvent) -> None:
-        """Enfileira no outbox um evento sem agregado (so dentro de ``executar``)."""
+        """Enfileira na outbox um evento sem agregado (so dentro de ``executar``)."""
         ...
