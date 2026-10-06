@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import secrets
 import time
 from decimal import Decimal
@@ -60,6 +62,44 @@ def test_openapi_documenta_as_rotas_do_billing(api: TestClient) -> None:
     } <= caminhos
 
 
+def test_swagger_em_todo_ambiente_e_sem_redirect_de_barra(banco: Banco) -> None:
+    app = criar_app(configuracao(**PRODUCAO, SIMULADOR_PERMITIDO="true"), banco=banco)
+    with TestClient(app, follow_redirects=False) as cliente:
+        assert cliente.get("/docs").status_code == 200
+        assert cliente.get("/redoc").status_code == 200
+        assert cliente.get("/openapi.json").status_code == 200
+        barra = cliente.get("/api/v1/saude/")
+        assert barra.status_code == 404
+        assert barra.json()["erro"]["codigo"] == "ENTIDADE_NAO_ENCONTRADA"
+
+
+def test_rotas_autenticadas_documentam_401_403_e_503(api: TestClient) -> None:
+    caminhos = api.get("/openapi.json").json()["paths"]
+    protegidas = [
+        (caminho, metodo, operacao)
+        for caminho, operacoes in caminhos.items()
+        if caminho.startswith(("/api/v1/precos", "/api/v1/orcamentos"))
+        or caminho == "/api/v1/pagamentos/{pagamento_id}"
+        for metodo, operacao in operacoes.items()
+    ]
+    assert len(protegidas) >= 12
+    for caminho, metodo, operacao in protegidas:
+        assert {"401", "403", "503"} <= set(operacao["responses"]), (caminho, metodo)
+
+
+def test_log_do_uvicorn_sai_em_json_desde_a_fabrica(
+    banco: Banco, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Como o uvicorn deixa o logger antes de chamar a fabrica (--factory).
+    servidor = logging.getLogger("uvicorn.error")
+    servidor.handlers = [logging.StreamHandler()]
+    servidor.propagate = False
+    criar_app(configuracao(), banco=banco)
+    servidor.info("Started server process [%d]", 7)
+    linha = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (linha["event"], linha["level"]) == ("Started server process [7]", "info")
+
+
 class TestBancoEProntidao:
     def test_api_so_fica_pronta_depois_do_init_do_banco(
         self,
@@ -115,6 +155,7 @@ PRODUCAO = {
     "ENVIRONMENT": "production",
     "ORCAMENTO_LINK_SECRET": secrets.token_hex(32),
     "MONGODB_URI": "mongodb://nao-usado-com-banco-injetado:27017",
+    "BILLING_PUBLIC_URL": "https://billing.teste",
 }
 
 

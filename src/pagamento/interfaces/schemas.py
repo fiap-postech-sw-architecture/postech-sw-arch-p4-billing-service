@@ -45,20 +45,13 @@ class PagamentoResponse(BaseModel):
     estornos_automaticos: list[EstornoAutomaticoResponse]
 
 
-class DadosDaNotificacao(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str | int | None = None
-
-
 class NotificacaoMercadoPagoRequest(BaseModel):
-    """Corpo do webhook; so diz o que consultar (o status vem da consulta)."""
+    """Corpo do webhook: so o ``type`` e lido (quando a query nao o traz). O id
+    a consultar vem do ``data.id`` da query, que a ``x-signature`` assina."""
 
     model_config = ConfigDict(extra="ignore")
 
     type: str | None = None
-    action: str | None = None
-    data: DadosDaNotificacao | None = None
 
 
 class WebhookResponse(BaseModel):

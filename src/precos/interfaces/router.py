@@ -13,6 +13,7 @@ from src.compartilhado.interfaces.autenticacao import (
     UsuarioAutenticado,
     exigir_papel,
 )
+from src.compartilhado.interfaces.schemas import RESPOSTAS_AUTENTICADAS
 from src.precos.aplicacao.use_cases import PrecosDePecas, PrecosDeServicos, ValidarItens
 from src.precos.interfaces.dependencies import (
     obter_precos_de_pecas,
@@ -34,7 +35,12 @@ from src.precos.interfaces.schemas import (
 
 _log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/precos", tags=["precos"])
+router = APIRouter(
+    prefix="/api/v1/precos", tags=["precos"], responses=RESPOSTAS_AUTENTICADAS
+)
+
+# Teto do offset: alem do int64 o skip do MongoDB virava erro (500).
+OFFSET_MAXIMO = 1_000_000
 
 
 def _auditar(usuario: UsuarioAutenticado, acao: str, alvo: str) -> None:
@@ -48,7 +54,9 @@ UsuarioInterno = Annotated[
 ]
 Servicos = Annotated[PrecosDeServicos, Depends(obter_precos_de_servicos)]
 Pecas = Annotated[PrecosDePecas, Depends(obter_precos_de_pecas)]
-Offset = Annotated[int, Query(ge=0)]
+Offset = Annotated[
+    int, Query(ge=0, le=OFFSET_MAXIMO, description="Itens a pular (ate 1.000.000)")
+]
 Limit = Annotated[int, Query(ge=1, le=100)]
 
 

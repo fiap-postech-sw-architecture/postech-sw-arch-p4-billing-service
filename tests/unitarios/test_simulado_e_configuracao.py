@@ -225,6 +225,45 @@ class TestConfiguracao:
         config = Configuracao.do_ambiente(PRODUCAO)
         assert config.ambiente == "production"
         assert config.url_publica == "https://pytstop.exemplo/billing"
+        # O JWKS e chamada interna do cluster: http e aceito.
+        assert config.jwks_url.startswith("http://")
+
+    @pytest.mark.parametrize(
+        "variavel", ["BILLING_PUBLIC_URL", "MP_API_URL", "MP_NOTIFICATION_URL"]
+    )
+    def test_producao_exige_https_nas_urls_publicas_e_do_provedor(
+        self, variavel: str
+    ) -> None:
+        with pytest.raises(ValueError, match=f"{variavel} precisa de https"):
+            Configuracao.do_ambiente({**PRODUCAO, variavel: "http://inseguro.exemplo"})
+
+    def test_prazos_em_producao_exige_https_no_mercado_pago(self) -> None:
+        with pytest.raises(ValueError, match="MP_API_URL precisa de https"):
+            ConfiguracaoDosPrazos.do_ambiente(
+                {
+                    "ENVIRONMENT": "production",
+                    "MONGODB_URI": "mongodb://mongo:27017",
+                    "MP_MODE": "mercadopago",
+                    "MP_ACCESS_TOKEN": "TEST-token-de-teste",  # gitleaks:allow
+                    "MP_API_URL": "http://api.mercadopago.com",
+                }
+            )
+
+    @pytest.mark.parametrize(
+        ("variavel", "valor", "erro"),
+        [
+            ("BILLING_PUBLIC_URL", "billing.exemplo", r"URL http\(s\) absoluta"),
+            ("BILLING_PUBLIC_URL", "ftp://billing.exemplo", r"URL http\(s\) absoluta"),
+            ("JWKS_URL", "os-service:8000/jwks", r"URL http\(s\) absoluta"),
+            ("MP_API_URL", "https://user:senha@api.exemplo", "usuario e senha"),
+        ],
+        ids=["sem-esquema", "ftp", "jwks-sem-esquema", "com-credencial"],
+    )
+    def test_url_invalida_em_qualquer_ambiente(
+        self, variavel: str, valor: str, erro: str
+    ) -> None:
+        with pytest.raises(ValueError, match=erro):
+            Configuracao.do_ambiente({**DEV, variavel: valor})
 
     @pytest.mark.parametrize(
         ("segredo", "erro"),

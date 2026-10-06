@@ -8,7 +8,9 @@ Sem ``ENVIRONMENT`` o servico assume producao (falha fechada): enderecos e o
 segredo do link precisam vir explicitos, e o segredo de demonstracao publico
 no repo e recusado (mesma postura do ``validar_segredos_no_startup`` do p3).
 Desenvolvimento e testes declaram ``ENVIRONMENT=development|test``; qualquer
-outro valor e erro de configuracao. ``MP_MODE`` nao tem padrao, e o simulador
+outro valor e erro de configuracao. Fora de dev/test as URLs que saem para o
+cliente ou levam credencial (``BILLING_PUBLIC_URL``, ``MP_API_URL``,
+``MP_NOTIFICATION_URL``) exigem https. ``MP_MODE`` nao tem padrao, e o simulador
 (que aprova pagamento sem provedor) so sobe em producao com
 ``SIMULADOR_PERMITIDO=true`` explicito (ADR-040).
 """
@@ -22,6 +24,7 @@ from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -69,6 +72,28 @@ class _Ambiente:
             msg = f"{nome} obrigatoria quando ENVIRONMENT={self.nome}"
             raise ValueError(msg)
         return valor
+
+    def url(self, nome: str, valor: str, *, https: bool) -> str:
+        """URL http(s) absoluta, sem usuario e senha; com ``https``, TLS
+        obrigatorio fora de dev/test (o JWKS interno do cluster pode ser http)."""
+        partes = urlsplit(valor)
+        if partes.scheme not in {"http", "https"} or not partes.hostname:
+            msg = f"{nome} deve ser uma URL http(s) absoluta"
+            raise ValueError(msg)
+        if "@" in partes.netloc:
+            msg = f"{nome} nao pode ter usuario e senha na URL"
+            raise ValueError(msg)
+        if https and not self.desenvolvimento and partes.scheme != "https":
+            msg = f"{nome} precisa de https com ENVIRONMENT={self.nome}"
+            raise ValueError(msg)
+        return valor
+
+    def mp_api_url(self) -> str:
+        return self.url(
+            "MP_API_URL",
+            self.env.get("MP_API_URL", "https://api.mercadopago.com"),
+            https=True,
+        )
 
     def positivo(self, nome: str, padrao: float) -> float:
         try:
@@ -161,7 +186,7 @@ class ConfiguracaoDosPrazos:
             pagamento_max_recusas=ambiente.inteiro_positivo("PAGAMENTO_MAX_RECUSAS", 3),
             mp_modo=modo,
             mp_access_token=ambiente.mp_access_token(modo),
-            mp_api_url=ambiente.env.get("MP_API_URL", "https://api.mercadopago.com"),
+            mp_api_url=ambiente.mp_api_url(),
             mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
             heartbeat=Path(ambiente.env.get("PRAZOS_HEARTBEAT", _HEARTBEAT_PADRAO)),
             porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", 8000),
@@ -202,12 +227,14 @@ class Configuracao:
             msg = "MP_MODE=mercadopago exige MP_ACCESS_TOKEN e MP_WEBHOOK_SECRET"
             raise ValueError(msg)
         banco = ConfiguracaoDoBanco.do_ambiente(ambiente.env)
-        url_publica = ambiente.exigir("BILLING_PUBLIC_URL").rstrip("/")
+        url_publica = ambiente.url(
+            "BILLING_PUBLIC_URL", ambiente.exigir("BILLING_PUBLIC_URL"), https=True
+        ).rstrip("/")
         return cls(
             ambiente=ambiente.nome,
             mongodb_uri=banco.mongodb_uri,
             mongodb_banco=banco.mongodb_banco,
-            jwks_url=ambiente.exigir("JWKS_URL"),
+            jwks_url=ambiente.url("JWKS_URL", ambiente.exigir("JWKS_URL"), https=False),
             jwt_emissor=ambiente.env.get("JWT_ISSUER", "pytstop-os-service"),
             jwt_audiencia=ambiente.env.get("JWT_AUDIENCE", "pytstop"),
             url_publica=url_publica,
@@ -222,9 +249,13 @@ class Configuracao:
             mp_modo=modo,
             mp_access_token=ambiente.mp_access_token(modo),
             mp_webhook_secret=webhook_secret,
-            mp_api_url=ambiente.env.get("MP_API_URL", "https://api.mercadopago.com"),
-            mp_notification_url=ambiente.env.get(
-                "MP_NOTIFICATION_URL", f"{url_publica}/api/v1/webhooks/mercadopago"
+            mp_api_url=ambiente.mp_api_url(),
+            mp_notification_url=ambiente.url(
+                "MP_NOTIFICATION_URL",
+                ambiente.env.get(
+                    "MP_NOTIFICATION_URL", f"{url_publica}/api/v1/webhooks/mercadopago"
+                ),
+                https=True,
             ),
             mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
         )

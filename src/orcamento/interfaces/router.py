@@ -14,6 +14,7 @@ from src.compartilhado.interfaces.autenticacao import (
     UsuarioAutenticado,
     exigir_papel,
 )
+from src.compartilhado.interfaces.schemas import RESPOSTAS_AUTENTICADAS
 from src.orcamento.aplicacao.use_cases import ConsultarOrcamentos, DecidirOrcamento
 from src.orcamento.interfaces.dependencies import (
     obter_consultar_orcamentos,
@@ -23,7 +24,9 @@ from src.orcamento.interfaces.schemas import DecisaoRequest, OrcamentoResponse
 
 _log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/orcamentos", tags=["orcamentos"])
+router = APIRouter(
+    prefix="/api/v1/orcamentos", tags=["orcamentos"], responses=RESPOSTAS_AUTENTICADAS
+)
 
 Atendente = Annotated[UsuarioAutenticado, Depends(exigir_papel(Papel.ATENDENTE))]
 Consulta = Annotated[ConsultarOrcamentos, Depends(obter_consultar_orcamentos)]

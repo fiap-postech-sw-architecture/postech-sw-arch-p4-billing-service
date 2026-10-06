@@ -77,14 +77,18 @@ def criar_app(
     gateway: GatewayPagamento | None = None,
     relogio: Relogio = agora_utc,
 ) -> FastAPI:
-    """Monta a API. ``banco``, ``gateway`` e ``relogio`` injetados servem aos testes."""
+    """Monta a API. ``banco``, ``gateway`` e ``relogio`` injetados servem aos testes.
+
+    E a fabrica do uvicorn (``--factory``): o log JSON e configurado aqui, antes
+    da primeira linha do servidor, e nao no lifespan.
+    """
+    configurar_logging()
     config = config or Configuracao.do_ambiente()
     gateway = gateway or criar_gateway(config)
     producao = config.ambiente == "production"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        configurar_logging()
         if producao and config.mp_modo is ModoMercadoPago.SIMULADO:
             # So chega aqui com SIMULADOR_PERMITIDO=true (demo): fica no log.
             _log.warning("payment_simulator_enabled_in_production")
@@ -109,9 +113,22 @@ def criar_app(
             "Erros no envelope {erro: {codigo, mensagem, id_requisicao}}."
         ),
         lifespan=lifespan,
-        docs_url=None if producao else "/docs",
-        redoc_url=None if producao else "/redoc",
+        # /docs e /redoc em todo ambiente: a borda publica o Swagger (ADR-038).
+        # Sem redirect de barra final: 404 direto, sem 307 para outra URL.
+        redirect_slashes=False,
     )
+    _montar_estado(app, config, gateway, relogio)
+    _incluir_rotas(app, config)
+    app.add_middleware(SecurityHeadersMiddleware)
+    registrar_error_handlers(app)
+    # Por ultimo: o middleware de metricas fica o mais externo e mede tudo.
+    configurar_metricas(app)
+    return app
+
+
+def _montar_estado(
+    app: FastAPI, config: Configuracao, gateway: GatewayPagamento, relogio: Relogio
+) -> None:
     app.state.config = config
     app.state.relogio = relogio
     app.state.gateway_pagamento = gateway
@@ -123,6 +140,8 @@ def criar_app(
         config.jwks_url, emissor=config.jwt_emissor, audiencia=config.jwt_audiencia
     )
 
+
+def _incluir_rotas(app: FastAPI, config: Configuracao) -> None:
     app.include_router(router_saude)
     app.include_router(router_precos)
     app.include_router(router_orcamentos)
@@ -130,9 +149,3 @@ def criar_app(
     app.include_router(router_pagamentos)
     if config.mp_modo is ModoMercadoPago.SIMULADO:
         app.include_router(router_simulador)
-
-    app.add_middleware(SecurityHeadersMiddleware)
-    registrar_error_handlers(app)
-    # Por ultimo: o middleware de metricas fica o mais externo e mede tudo.
-    configurar_metricas(app)
-    return app

@@ -77,26 +77,23 @@ _TELEFONE_PATTERN = re.compile(
 )
 
 # Denylist de chaves: quando o NOME do campo indica segredo ou PII, o valor
-# inteiro e mascarado -- independente de casar regex. Cobre credenciais sem
-# forma fixa (tokens, segredos) e PII cujo valor pode nao ter estrutura
-# detectavel (telefone sem formatacao, contato em texto livre).
-_CHAVES_SENSIVEIS = frozenset(
-    {
-        "password",
-        "senha",
-        "senha_hash",
-        "token",
-        "secret",
-        "authorization",
-        "refresh_token",
-        "access_token",
-        "api_key",
-        "telefone",
-        "celular",
-        "phone",
-        "contato",
-    }
+# inteiro e mascarado -- independente de casar regex. Credenciais casam por
+# trecho do nome (``mp_access_token``, ``x_signature``, ``webhook_secret``), e
+# ``checkout_url``/``link_decisao`` carregam o token que paga ou decide; PII
+# sem estrutura detectavel (telefone sem formatacao, contato em texto livre)
+# casa pelo nome exato.
+_TRECHOS_SENSIVEIS = (
+    "token",
+    "secret",
+    "senha",
+    "password",
+    "signature",
+    "authorization",
+    "api_key",
+    "checkout_url",
+    "link_decisao",
 )
+_CHAVES_PII = frozenset({"telefone", "celular", "phone", "contato"})
 
 _MASCARA = "***"
 
@@ -142,7 +139,10 @@ def _mask_string(value: str) -> str:
 
 
 def _chave_sensivel(key: Any) -> bool:  # noqa: ANN401  # chaves podem nao ser str
-    return isinstance(key, str) and key.lower() in _CHAVES_SENSIVEIS
+    if not isinstance(key, str):
+        return False
+    nome = key.lower()
+    return nome in _CHAVES_PII or any(trecho in nome for trecho in _TRECHOS_SENSIVEIS)
 
 
 def _scrub_value(value: Any, depth: int) -> Any:  # noqa: ANN401
@@ -176,8 +176,9 @@ def scrub_pii(
     """Structlog processor que mascara PII e segredos em todo o event_dict.
 
     Mascara CPF, CNPJ, email e telefone BR formatado por regex de VALOR; e mascara
-    o valor inteiro quando o NOME do campo esta na denylist `_CHAVES_SENSIVEIS`
-    (password/token/secret/...). Percorre recursivamente strings, dicts, listas e
+    o valor inteiro quando o NOME do campo indica segredo (``_TRECHOS_SENSIVEIS``:
+    token, secret, signature, ``checkout_url``...) ou PII (``_CHAVES_PII``).
+    Percorre recursivamente strings, dicts, listas e
     tuplas ate `_MAX_SCRUB_DEPTH` para pegar PII em payloads estruturados. Aplicado
     automaticamente pelo pipeline de logging (inclusive na chave `exception` do
     traceback, que `format_exc_info` monta ANTES deste processor) para impedir
@@ -245,6 +246,20 @@ def configurar_logging(stream: TextIO | None = None) -> None:
     para capturar o output renderizado.
     """
     compartilhada = _cadeia_compartilhada()
+    _configurar_structlog(compartilhada)
+    handler = logging.StreamHandler(stream or sys.stdout)
+    handler.setFormatter(_formatador_json(compartilhada))
+    root = logging.getLogger()
+    # Substitui handlers existentes (ex.: o de uma chamada anterior) para
+    # garantir que o scrubber seja o unico caminho de saida -- idempotente em
+    # warm restarts/testes e sem handler cru remanescente.
+    root.handlers = [handler]
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+    _religar_loggers_do_uvicorn()
+
+
+def _configurar_structlog(compartilhada: list[Any]) -> None:
     structlog.configure(
         processors=[
             *compartilhada,
@@ -257,7 +272,9 @@ def configurar_logging(stream: TextIO | None = None) -> None:
         cache_logger_on_first_use=True,
     )
 
-    formatter = structlog.stdlib.ProcessorFormatter(
+
+def _formatador_json(compartilhada: list[Any]) -> logging.Formatter:
+    return structlog.stdlib.ProcessorFormatter(
         # Logs estrangeiros (stdlib) passam por esta cadeia ANTES da renderizacao;
         # logs ja-structlog ja a percorreram e a pulam (sem duplo processamento).
         foreign_pre_chain=compartilhada,
@@ -267,24 +284,16 @@ def configurar_logging(stream: TextIO | None = None) -> None:
         ],
     )
 
-    handler = logging.StreamHandler(stream or sys.stdout)
-    handler.setFormatter(formatter)
 
-    root = logging.getLogger()
-    # Substitui handlers existentes (ex.: o de uma chamada anterior) para
-    # garantir que o scrubber seja o unico caminho
-    # de saida -- idempotente em warm restarts/testes e sem handler cru remanescente.
-    root.handlers = [handler]
-    if root.level == logging.NOTSET or root.level > logging.INFO:
-        root.setLevel(logging.INFO)
-
+def _religar_loggers_do_uvicorn() -> None:
     # uvicorn (lancado por CLI no container) instala os PROPRIOS handlers nos
     # loggers `uvicorn`/`uvicorn.access` com `propagate=False` -- seus logs (inclui
     # access logs, que podem trazer PII em path/query) NAO chegariam ao handler de
-    # scrub do root. `configurar_logging` roda no lifespan startup, DEPOIS de
-    # uvicorn montar seus loggers; aqui removemos os handlers crus de uvicorn e
-    # religamos `propagate=True` para que tudo flua pelo ProcessorFormatter do root
-    # (scrubado, JSON unico). Idempotente.
+    # scrub do root. A fabrica da API (``criar_app``) chama ``configurar_logging``
+    # depois de o uvicorn montar seus loggers e antes da primeira linha do
+    # servidor ("Started server process" ja sai em JSON): aqui removemos os
+    # handlers crus e religamos ``propagate=True`` para que tudo flua pelo
+    # ProcessorFormatter do root (scrubado, JSON unico). Idempotente.
     for nome in _LOGGERS_UVICORN:
         uvlog = logging.getLogger(nome)
         uvlog.handlers = []

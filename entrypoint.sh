@@ -15,8 +15,10 @@ case "$processo" in
       python -m src.seed || echo "Seed de precos nao concluiu; seguindo com a API."
     fi
     # --no-proxy-headers: X-Forwarded-For so com proxy confiavel configurado
-    # (mesma postura do p3); a borda e o Kong.
-    exec uvicorn src.main:criar_app --factory --host 0.0.0.0 --port 8000 --no-proxy-headers
+    # (mesma postura do p3); a borda e o Kong. --no-server-header: a resposta
+    # nao anuncia o servidor (uvicorn) nem a versao.
+    exec uvicorn src.main:criar_app --factory --host 0.0.0.0 --port 8000 \
+      --no-proxy-headers --no-server-header
     ;;
   prazos)
     exec python -m src.prazos

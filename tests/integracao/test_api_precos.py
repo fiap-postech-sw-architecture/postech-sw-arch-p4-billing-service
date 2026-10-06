@@ -110,6 +110,17 @@ def test_crud_de_pecas(api: TestClient, cabecalhos: Cabecalhos) -> None:
     assert (pagina["items"], pagina["total"], pagina["offset"]) == ([], 1, 1)
 
 
+@pytest.mark.parametrize(
+    "consulta",
+    ["offset=-1", "offset=1000001", f"offset={2**63}", "limit=0", "limit=101"],
+)
+def test_paginacao_fora_dos_limites_da_422(
+    api: TestClient, cabecalhos: Cabecalhos, consulta: str
+) -> None:
+    resposta = api.get(f"/api/v1/precos/servicos?{consulta}", headers=cabecalhos())
+    assert resposta.status_code == 422
+
+
 def test_codigo_repetido_da_409(api: TestClient, cabecalhos: Cabecalhos) -> None:
     admin = cabecalhos("admin")
     api.post("/api/v1/precos/servicos", json=SERVICO, headers=admin)

@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 import respx
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
@@ -135,9 +136,11 @@ class TestWebhook:
         [envelope] = eventos_do_outbox(app.state.banco, "PagamentoConfirmado")
         assert envelope["dados"]["pagamento_id"] == str(dto.id)
 
-    def test_data_id_do_corpo_quando_a_url_nao_traz(
+    def test_sem_data_id_na_query_responde_200_sem_processar(
         self, api: TestClient, app: FastAPI
     ) -> None:
+        # O id do corpo nao e assinado (a x-signature cobre o data.id da query):
+        # nada e consultado, mesmo com a assinatura certa para o id do corpo.
         dto = solicitado(app)
         referencia = app.state.gateway_pagamento.registrar_resultado(
             pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=False
@@ -145,10 +148,11 @@ class TestWebhook:
         resposta = api.post(
             WEBHOOK, json=notificacao(referencia), headers=assinatura(referencia)
         )
-        assert resposta.json() == {"processado": True}
+        assert resposta.status_code == 200
+        assert resposta.json() == {"processado": False}
         documento = app.state.banco["pagamentos"].find_one({"_id": dto.id})
         assert documento is not None
-        assert documento["recusas"] == 1
+        assert documento["recusas"] == 0
 
     @pytest.mark.parametrize(
         "cabecalhos_do_mp",
@@ -166,6 +170,23 @@ class TestWebhook:
         assert resposta.status_code == 401
         assert resposta.json()["erro"]["codigo"] == "NAO_AUTENTICADO"
         assert eventos_do_outbox(app.state.banco) == []
+
+    def test_assinatura_invalida_e_contada(self, api: TestClient) -> None:
+        def recusadas() -> float:
+            valor = REGISTRY.get_sample_value(
+                "pytstop_webhook_assinatura_invalida_total"
+            )
+            return valor or 0.0
+
+        antes = recusadas()
+        resposta = api.post(
+            WEBHOOK,
+            params={"data.id": "1"},
+            json=notificacao("1"),
+            headers=assinatura("2"),
+        )
+        assert resposta.status_code == 401
+        assert recusadas() == antes + 1
 
     def test_assinatura_de_outro_pagamento_nao_vale(self, api: TestClient) -> None:
         resposta = api.post(

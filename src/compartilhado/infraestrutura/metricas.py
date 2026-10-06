@@ -12,14 +12,14 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Final
 
-from prometheus_client import Histogram, make_asgi_app
+from prometheus_client import CONTENT_TYPE_LATEST, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from starlette.middleware.base import RequestResponseEndpoint
     from starlette.requests import Request
-    from starlette.responses import Response
 
 # Requests sem rota casada (404 de path desconhecido) agregam num unico valor
 # em vez de explodir a cardinalidade com paths arbitrarios.
@@ -61,5 +61,15 @@ def _rota_template(request: Request) -> str:
 
 
 def configurar_metricas(app: FastAPI) -> None:
-    app.mount("/metrics", make_asgi_app())
+    """Expoe ``GET /metrics`` e instala o middleware de latencia.
+
+    Rota comum, e nao o ``make_asgi_app`` montado: o mount so responde em
+    ``/metrics/`` e, sem o redirect de barra final, o scrape em ``/metrics``
+    seria 404.
+    """
+
+    @app.get("/metrics", include_in_schema=False)
+    def metricas() -> Response:
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
     app.add_middleware(MetricasHTTPMiddleware)

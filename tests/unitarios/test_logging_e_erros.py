@@ -69,6 +69,42 @@ class TestLogging:
             '/aprovar?token=***&x=1 HTTP/1.1" 200'
         )
 
+    def test_pagina_de_checkout_simulado_sai_com_o_token_mascarado(
+        self, saida_de_log: io.StringIO
+    ) -> None:
+        logging.getLogger("uvicorn.access").info(
+            '"GET /simulador/checkout/%s?token=%s HTTP/1.1" 200',
+            "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60",
+            "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60.1791547200.Zm9vYmFy",
+        )
+        registro = linhas_json(saida_de_log)[-1]
+        assert "Zm9vYmFy" not in str(registro["event"])
+        assert "?token=***" in str(registro["event"])
+
+    @pytest.mark.parametrize(
+        "chave",
+        [
+            "token",
+            "mp_access_token",
+            "Authorization",
+            "x_signature",
+            "webhook_secret",
+            "senha_hash",
+            "api_key",
+            "checkout_url",
+            "link_decisao",
+            "telefone",
+        ],
+    )
+    def test_chave_sensivel_casa_por_trecho_do_nome(self, chave: str) -> None:
+        evento = scrub_pii(None, "info", {"event": "x", chave: "valor-secreto"})
+        assert evento[chave] == "***"
+
+    @pytest.mark.parametrize("chave", ["motivo", "referencia", "telefone_ok", 7])
+    def test_chave_comum_nao_e_mascarada(self, chave: str | int) -> None:
+        evento = scrub_pii(None, "info", {"event": "x", "dados": {chave: "valor"}})
+        assert evento["dados"] == {chave: "valor"}
+
     def test_extra_de_log_stdlib_vira_campo_e_passa_pelo_scrub(
         self, saida_de_log: io.StringIO
     ) -> None:
