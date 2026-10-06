@@ -63,8 +63,12 @@ _EMAIL_PATTERN = re.compile(
 #      11 digitos corridos com shape de CPF e caem no _CPF_PATTERN acima
 #      antes desta regex; campos NOMEADOS telefone/celular/contato sao
 #      mascarados pela denylist abaixo.
+# O numero nao pode encostar em letra, digito, `_` nem hifen: os ids do servico
+# (`ordem_id`, `correlation_id`, `request_id`, `sub`) sao UUID, e o v4 traz entre
+# os grupos trechos `dd-dddd-dddd` (`732ffc02-3465-4237-...`) que o split 4-4
+# casaria. Sem os lookarounds, cerca de 1,4% dos UUID saiam mascarados do log.
 _TELEFONE_PATTERN = re.compile(
-    r"(?<!\d)"  # nao precedido de digito (evita capturar parte de numero maior)
+    r"(?<![\w-])"  # nao colado em palavra nem em id hifenizado (UUID)
     r"(?:"
     r"(?:\+55[\s.-]?)?"  # codigo do pais opcional
     r"(?:\(\d{2}\)|\d{2})"  # DDD com ou sem parenteses
@@ -73,7 +77,7 @@ _TELEFONE_PATTERN = re.compile(
     r"|"
     r"\+55[\s.-]?\d{10,11}"  # +55 com numero corrido (sem hifen local)
     r")"
-    r"(?!\d)"  # nao seguido de digito
+    r"(?![\w-])"  # idem, do lado direito (tambem barra numero maior)
 )
 
 # Denylist de chaves: quando o NOME do campo indica segredo ou PII, o valor

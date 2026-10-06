@@ -5,6 +5,7 @@ import io
 import json
 import logging
 from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -123,6 +124,55 @@ class TestLogging:
         assert registro["token"] == "***"
         assert registro["contato"] == "***"
         assert registro["level"] == "warning"
+
+    @pytest.mark.parametrize(
+        ("entrada", "saida"),
+        [
+            ("(11) 99999-0000", "***"),
+            ("(11)99999-0000", "***"),
+            ("11 99999-0000", "***"),
+            ("11-99999-0000", "***"),
+            ("1199999-0000", "***"),
+            ("+55 11 99999-0000", "***"),
+            ("+5511999990000", "***"),
+            ("(11) 3333-4444", "***"),
+            ("contato: (11) 99999-0000.", "contato: ***."),
+            ("ligar 11 3333-4444, ok", "ligar ***, ok"),
+        ],
+    )
+    def test_telefone_br_e_mascarado(self, entrada: str, saida: str) -> None:
+        assert scrub_pii(None, "info", {"event": entrada})["event"] == saida
+
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            "total 1500.00",
+            "id 12345",
+            "ano 2026",
+            "porta 8000",
+            "CEP 12345-678",
+            "PEC-OLEO-5W30",
+            "2026-10-06T12:00:00Z",
+            "req-1234-5678",
+        ],
+    )
+    def test_numero_que_nao_e_telefone_fica_como_esta(self, texto: str) -> None:
+        assert scrub_pii(None, "info", {"event": texto})["event"] == texto
+
+    def test_uuid_v4_nunca_e_mascarado_como_telefone(self) -> None:
+        # Os ids do servico sao UUID e entram em todo log. O v4 tem trechos
+        # `dd-dddd-dddd` entre os grupos: sem os lookarounds do regex de
+        # telefone, cerca de 1,4% saiam como "***" (o primeiro abaixo e um deles).
+        ids = [
+            UUID("732ffc02-3465-4237-a5f6-12fd4a2b3be0"),
+            *(uuid4() for _ in range(10_000)),
+        ]
+        for id_ in ids:
+            texto = str(id_)
+            evento = scrub_pii(
+                None, "info", {"event": f"ordem {texto}", "ordem_id": texto}
+            )
+            assert evento == {"event": f"ordem {texto}", "ordem_id": texto}
 
     def test_scrub_mascara_pii_em_estruturas_aninhadas(self) -> None:
         evento = scrub_pii(
