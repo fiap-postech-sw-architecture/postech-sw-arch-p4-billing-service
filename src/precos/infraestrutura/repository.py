@@ -11,6 +11,7 @@ from src.compartilhado.infraestrutura.mongo import (
     aplicar_validador,
     dinheiro_de_bson,
     dinheiro_para_bson,
+    reidratacao,
 )
 from src.precos.dominio.exceptions import PrecoJaCadastradoError
 from src.precos.dominio.preco import PrecoPeca, PrecoServico
@@ -142,6 +143,7 @@ class MongoPrecoPecaRepository:
             raise PrecoJaCadastradoError(msg) from None
 
 
+@reidratacao
 def _servico(doc: Documento) -> PrecoServico:
     return PrecoServico.reconstituir(
         id=doc["_id"],
@@ -153,6 +155,7 @@ def _servico(doc: Documento) -> PrecoServico:
     )
 
 
+@reidratacao
 def _peca(doc: Documento) -> PrecoPeca:
     return PrecoPeca.reconstituir(
         id=doc["_id"],

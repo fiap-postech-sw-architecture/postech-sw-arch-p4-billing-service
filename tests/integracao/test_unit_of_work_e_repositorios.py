@@ -13,6 +13,8 @@ import pytest
 from bson.decimal128 import Decimal128
 from pymongo import MongoClient, monitoring
 
+from src.compartilhado.dominio.exceptions import ValorInvalidoError
+from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.exceptions import OrcamentoJaGeradoError
@@ -289,6 +291,31 @@ class TestRepositorioDeOrcamento:
         lido = repo.obter_por_id(gerado.id)
         assert lido is not None
         assert (lido.decisao, lido.motivo_cancelamento) == (None, None)
+
+    @pytest.mark.parametrize(
+        "alteracao",
+        [
+            pytest.param({"$set": {"status": "APROVADO"}}, id="aprovado-sem-decisao"),
+            pytest.param(
+                {"$set": {"decisao": {"canal": "atendente", "decidido_em": AGORA}}},
+                id="atendente-sem-decidido-por",
+            ),
+        ],
+    )
+    def test_documento_fora_das_invariantes_e_defeito_de_dado(
+        self, banco: Banco, alteracao: dict[str, Any]
+    ) -> None:
+        # Dado gravado errado nao e erro do chamador: vira 500, nunca 422.
+        uow = MongoUnitOfWork(banco)
+        repo = MongoOrcamentoRepository(uow)
+        gerado = orcamento()
+        uow.executar(lambda: repo.salvar(gerado))
+        banco["orcamentos"].update_one(
+            {"_id": gerado.id}, alteracao, bypass_document_validation=True
+        )
+        with pytest.raises(DocumentoInvalidoError, match=str(gerado.id)) as erro:
+            repo.obter_por_id(gerado.id)
+        assert not isinstance(erro.value, ValorInvalidoError)
 
     def test_dinheiro_persistido_como_decimal128(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)

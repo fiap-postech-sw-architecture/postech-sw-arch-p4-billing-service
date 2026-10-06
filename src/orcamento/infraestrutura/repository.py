@@ -11,6 +11,7 @@ from src.compartilhado.infraestrutura.mongo import (
     aplicar_validador,
     dinheiro_de_bson,
     dinheiro_para_bson,
+    reidratacao,
 )
 from src.orcamento.dominio.exceptions import OrcamentoJaGeradoError
 from src.orcamento.dominio.orcamento import (
@@ -123,6 +124,7 @@ def _para_documento(orcamento: Orcamento) -> Documento:
     }
 
 
+@reidratacao
 def _de_documento(doc: Documento) -> Orcamento:
     # Campos opcionais lidos com ``get``: documento gravado por versao anterior
     # (sem um campo novo) continua legivel (expand/contract).

@@ -11,6 +11,7 @@ from src.compartilhado.infraestrutura.mongo import (
     aplicar_validador,
     dinheiro_de_bson,
     dinheiro_para_bson,
+    reidratacao,
 )
 from src.pagamento.dominio.cobranca import (
     Cobranca,
@@ -159,6 +160,7 @@ def _para_documento(pagamento: Pagamento) -> Documento:
     return documento
 
 
+@reidratacao
 def _de_documento(doc: Documento) -> Pagamento:
     # Campos opcionais lidos com ``get``: documento gravado por versao anterior
     # (sem um campo novo) continua legivel (expand/contract).

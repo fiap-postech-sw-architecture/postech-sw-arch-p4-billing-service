@@ -7,6 +7,7 @@ conferem a versao (RFC-004 secao 7.4, ADR-037).
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any, Final
 
 import pymongo
@@ -15,9 +16,10 @@ from pymongo import MongoClient
 from pymongo.errors import CollectionInvalid
 
 from src.compartilhado.dominio.dinheiro import Dinheiro
+from src.compartilhado.dominio.exceptions import ValorInvalidoError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from pymongo.database import Database
 
@@ -47,6 +49,25 @@ ESQUEMA_DINHEIRO: Final[Documento] = {
 
 class BancoNaoPreparadoError(RuntimeError):
     """Indices e validadores ausentes ou de versao antiga: rode o init."""
+
+
+class DocumentoInvalidoError(RuntimeError):
+    """Documento gravado que fere as invariantes do agregado: defeito de dado
+    (500 com o traceback no log), nunca o 422 de entrada do chamador."""
+
+
+def reidratacao[T](ler: Callable[[Documento], T]) -> Callable[[Documento], T]:
+    """Leitura de documento: invariante violada vira ``DocumentoInvalidoError``."""
+
+    @functools.wraps(ler)
+    def reidratar(doc: Documento) -> T:
+        try:
+            return ler(doc)
+        except ValorInvalidoError as exc:
+            msg = f"Documento {doc.get('_id')} fora das invariantes do agregado"
+            raise DocumentoInvalidoError(msg) from exc
+
+    return reidratar
 
 
 def criar_cliente(uri: str) -> MongoClient[Documento]:

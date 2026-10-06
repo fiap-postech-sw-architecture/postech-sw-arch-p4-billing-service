@@ -116,6 +116,21 @@ class TestApiInterna:
         )
         assert vazio.json() == []
 
+    def test_documento_corrompido_e_500_e_nao_422(
+        self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos
+    ) -> None:
+        dto, _ = gerar(app)
+        app.state.banco["orcamentos"].update_one(
+            {"_id": dto.id},
+            {"$set": {"status": "APROVADO"}},
+            bypass_document_validation=True,
+        )
+        resposta = api.get(
+            f"/api/v1/orcamentos/{dto.id}", headers=cabecalhos("atendente")
+        )
+        assert resposta.status_code == 500
+        assert resposta.json()["erro"]["codigo"] == "ERRO_INTERNO"
+
     def test_inexistente_da_404(self, api: TestClient, cabecalhos: Cabecalhos) -> None:
         resposta = api.get(f"/api/v1/orcamentos/{uuid4()}", headers=cabecalhos("admin"))
         assert resposta.status_code == 404
