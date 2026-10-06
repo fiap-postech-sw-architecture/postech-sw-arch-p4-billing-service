@@ -993,6 +993,51 @@ class TestEstornarPagamento:
         assert consultar(banco, pago.id).status == "CONFIRMADO"
         assert len(eventos_do_outbox(banco)) == antes
 
+    @pytest.mark.parametrize(
+        "mensagem",
+        [
+            "Mercado Pago respondeu 404: preference not found",
+            "Mercado Pago respondeu 400: invalid expiration_date_to",
+            "Referencia de preferencia invalida para cancelamento",
+        ],
+        ids=["preferencia-inexistente", "data-recusada", "referencia-invalida"],
+    )
+    def test_recusa_do_provedor_ao_fechar_o_checkout_nao_trava_a_compensacao(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+        caplog: pytest.LogCaptureFixture,
+        mensagem: str,
+    ) -> None:
+        pendente = solicitado(banco, gateway, relogio)
+        gateway.erro_no_cancelamento = GatewayPagamentoRecusouError(mensagem)
+        relogio.avancar(minutes=5)
+
+        with caplog.at_level(logging.WARNING):
+            resultado = estornar(banco, gateway, relogio, metricas).executar(
+                ordem_id=pendente.ordem_id,
+                pagamento_id=pendente.id,
+                motivo="cancelamento",
+            )
+
+        assert (resultado.status, resultado.motivo) == ("CANCELADO", "cancelamento")
+        assert gateway.cancelamentos == [pendente.referencia_preferencia]
+        assert metricas.cancelamentos_recusados == 1
+        assert caplog.messages.count("checkout_close_refused") == 1
+        [envelope] = eventos_do_outbox(banco, "PagamentoCancelado")
+        assert envelope["dados"]["cancelado_em"] == "2026-10-06T12:05:00.000Z"
+        assert eventos_do_outbox(banco, "EstornoDePagamentoFalhou") == []
+
+        # O checkout seguiu aberto no provedor: se o cliente pagar, o Billing
+        # estorna sozinho (e o que permite concluir a compensacao).
+        gateway.respostas["tardia"] = tentativa(pendente.id, referencia="tardia")
+        final = processar(banco, gateway, relogio, metricas).executar("tardia")
+        assert final is not None
+        assert final.status == "ESTORNADO"
+        assert metricas.estornos == [MotivoEstorno.PAGAMENTO_APOS_ENCERRAMENTO]
+
     def test_cancelamento_com_provedor_fora_propaga_sem_gravar(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:

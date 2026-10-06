@@ -134,9 +134,12 @@ class OrcamentosPort(Protocol):
 
 
 class MetricasDePagamento(Protocol):
-    """Contadores do pagamento (``pytstop_pagamentos_estornados_total`` e a
-    falha do estorno automatico), implementados na infraestrutura."""
+    """Contadores do pagamento (``pytstop_pagamentos_estornados_total``, a
+    falha do estorno automatico e o checkout que o provedor recusou fechar),
+    implementados na infraestrutura."""
 
     def estorno_concluido(self, motivo: MotivoEstorno) -> None: ...
 
     def estorno_automatico_falhou(self) -> None: ...
+
+    def cancelamento_de_cobranca_recusado(self) -> None: ...

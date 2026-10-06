@@ -445,9 +445,11 @@ class EstornarPagamento:
     ``PagamentoCancelado``; CONFIRMADO confere no provedor (estornado pelo
     painel = so registra), estorna com ``X-Idempotency-Key = estorno-{id}`` e
     responde ``PagamentoEstornado``; ja encerrado republica o desfecho
-    registrado, sem chamar o provedor. Recusa do provedor vira
-    ``EstornoDePagamentoFalhou``; falha transitoria (inclusive estorno ainda em
-    processamento) propaga para o consumidor repetir.
+    registrado, sem chamar o provedor. Recusa do provedor ao estornar vira
+    ``EstornoDePagamentoFalhou``; recusa ao fechar o checkout so e contada e
+    registrada no log, e o pagamento cancela do mesmo jeito (a aprovacao tardia
+    e estornada, ADR-040, passo 7). Falha transitoria (inclusive estorno ainda
+    em processamento) propaga para o consumidor repetir.
     """
 
     def __init__(
@@ -503,9 +505,18 @@ class EstornarPagamento:
     def _cancelar(self, pagamento: Pagamento, motivo: str) -> PagamentoDTO:
         # SOLICITADO sempre tem cobranca (so a lapide nao tem, e ela e CANCELADA).
         cobranca = pagamento.cobranca
-        self._gateway.cancelar_cobranca(
-            cobranca.referencia_preferencia if cobranca else ""
-        )
+        try:
+            self._gateway.cancelar_cobranca(
+                cobranca.referencia_preferencia if cobranca else ""
+            )
+        except GatewayPagamentoRecusouError as exc:
+            # Fechar o checkout nao e condicao para compensar: quem pagar nele
+            # depois cai na aprovacao tardia, que o Billing estorna sozinho.
+            self._metricas.cancelamento_de_cobranca_recusado()
+            _log.warning(
+                "checkout_close_refused",
+                extra={"pagamento_id": str(pagamento.id), "erro": exc.mensagem},
+            )
         return self._concluir(
             pagamento.id, PlanoDeCompensacao.CANCELAR_COBRANCA, motivo
         )

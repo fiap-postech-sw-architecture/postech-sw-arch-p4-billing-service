@@ -86,12 +86,16 @@ class MetricasEspia:
     def __init__(self) -> None:
         self.estornos: list[MotivoEstorno] = []
         self.estornos_automaticos_recusados = 0
+        self.cancelamentos_recusados = 0
 
     def estorno_concluido(self, motivo: MotivoEstorno) -> None:
         self.estornos.append(motivo)
 
     def estorno_automatico_falhou(self) -> None:
         self.estornos_automaticos_recusados += 1
+
+    def cancelamento_de_cobranca_recusado(self) -> None:
+        self.cancelamentos_recusados += 1
 
 
 class GatewayRoteirizado(GatewayPagamentoSimulado):
