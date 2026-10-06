@@ -338,6 +338,25 @@ class TestConsultarPagamento:
             )
             assert gateway.consultar_pagamento("9") is None
 
+    @pytest.mark.parametrize("status", [400, 401, 403])
+    def test_4xx_que_nao_e_404_e_recusa_e_nao_pagamento_desconhecido(
+        self, gateway: MercadoPagoGateway, status: int
+    ) -> None:
+        # Token revogado ou conta errada nao e "referencia que nao e nossa":
+        # devolver None faria o webhook responder 200, e o Mercado Pago pararia
+        # de reenviar a notificacao.
+        antes = contador("consultar_pagamento", "recusado")
+        with respx.mock(base_url=API) as mp:
+            rota = mp.get("/v1/payments/1").mock(
+                return_value=erro_mp(status, "invalid access token")
+            )
+            with pytest.raises(
+                GatewayPagamentoRecusouError, match=f"respondeu {status}"
+            ):
+                gateway.consultar_pagamento("1")
+        assert rota.call_count == 1  # recusa nao e repetida
+        assert contador("consultar_pagamento", "recusado") == antes + 1
+
     def test_repete_falha_transitoria_com_backoff(
         self, gateway: MercadoPagoGateway, esperas: Esperas
     ) -> None:
@@ -566,6 +585,23 @@ class TestCancelarCobranca:
     ) -> None:
         with pytest.raises(GatewayPagamentoRecusouError, match="invalida"):
             gateway.cancelar_cobranca("../preferences")
+
+    def test_redirecionamento_nao_e_sucesso_mesmo_com_o_corpo_ignorado(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        # O corpo do cancelamento nao e lido: o status 3xx e o unico sinal de que
+        # o checkout nao foi fechado, e conta como resposta fora do contrato.
+        invalidas = contador("cancelar_cobranca", "resposta_invalida")
+        sucessos = contador("cancelar_cobranca", "sucesso")
+        with respx.mock(base_url=API) as mp:
+            rota = mp.put(f"/checkout/preferences/{self.PREFERENCIA}").respond(
+                302, headers={"Location": "https://x.teste"}
+            )
+            with pytest.raises(GatewayPagamentoIndisponivelError):
+                gateway.cancelar_cobranca(self.PREFERENCIA)
+        assert rota.call_count == 3
+        assert contador("cancelar_cobranca", "resposta_invalida") == invalidas + 3
+        assert contador("cancelar_cobranca", "sucesso") == sucessos
 
 
 class TestRespostaForaDoContrato:

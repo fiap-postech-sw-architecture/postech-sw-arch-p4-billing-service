@@ -471,6 +471,30 @@ class TestModoMercadoPago:
         [envelope] = eventos_do_outbox(banco, "PagamentoConfirmado")
         assert envelope["dados"]["referencia_provedor"] == "1234567890"
 
+    def test_recusa_do_provedor_na_consulta_nao_da_200_para_ele_reenviar(
+        self, api_mp: TestClient, banco: Banco
+    ) -> None:
+        pendente = pagamento()
+        uow = MongoUnitOfWork(banco)
+        uow.executar(lambda: MongoPagamentoRepository(uow).salvar(pendente))
+        with respx.mock(base_url="https://api.mercadopago.com") as mp:
+            mp.get("/v1/payments/1").respond(
+                401, json={"message": "invalid access token", "status": 401}
+            )
+            resposta = api_mp.post(
+                WEBHOOK,
+                params={"data.id": "1", "type": "payment"},
+                json=notificacao("1"),
+                headers=assinatura("1"),
+            )
+        # 200 so para notificacao que nao e nossa (404 no provedor): credencial
+        # revogada nao pode parar o reenvio do Mercado Pago.
+        assert resposta.status_code == 409
+        assert resposta.json()["erro"]["codigo"] == "GATEWAY_PAGAMENTO_RECUSOU"
+        documento = banco["pagamentos"].find_one({"_id": pendente.id})
+        assert documento is not None
+        assert documento["status"] == "SOLICITADO"
+
     def test_mercado_pago_fora_do_ar_da_503_para_o_provedor_reenviar(
         self, api_mp: TestClient
     ) -> None:
