@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
     from jwt import PyJWK
 
+# Contrato com o OS Service (ADR-039): emissor e audiencia do token, fixos.
+EMISSOR: Final = "pytstop-os-service"
+AUDIENCIA: Final = "pytstop"
 LEEWAY_SEGUNDOS: Final = 10
 FRESCO_SEGUNDOS: Final = 600
 VELHO_MAXIMO_SEGUNDOS: Final = 3600
@@ -78,20 +81,13 @@ class ValidadorDeTokenJWKS:
     """Valida tokens do OS Service; uma instancia por processo (``app.state``)."""
 
     def __init__(
-        self,
-        jwks_url: str,
-        *,
-        emissor: str,
-        audiencia: str,
-        relogio: Callable[[], float] = time.monotonic,
+        self, jwks_url: str, *, relogio: Callable[[], float] = time.monotonic
     ) -> None:
         # Sem o cache do PyJWKClient (ele segura um lock durante o fetch):
         # frescor, copia velha, memoria da falha e breaker ficam aqui.
         self._cliente = PyJWKClient(
             jwks_url, cache_jwk_set=False, timeout=TIMEOUT_JWKS_SEGUNDOS
         )
-        self._emissor = emissor
-        self._audiencia = audiencia
         self._relogio = relogio
         self._breaker = CircuitBreaker(
             "jwks",
@@ -122,8 +118,8 @@ class ValidadorDeTokenJWKS:
                 token,
                 chave,
                 algorithms=["RS256"],
-                issuer=self._emissor,
-                audience=self._audiencia,
+                issuer=EMISSOR,
+                audience=AUDIENCIA,
                 leeway=LEEWAY_SEGUNDOS,
                 options={"require": ["exp", "iss", "aud", "sub"]},
             )

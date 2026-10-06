@@ -207,8 +207,6 @@ class Configuracao:
     mongodb_uri: str = field(repr=False)
     mongodb_banco: str
     jwks_url: str
-    jwt_emissor: str
-    jwt_audiencia: str
     url_publica: str
     link_segredo: str = field(repr=False)
     orcamento_validade: timedelta
@@ -241,8 +239,6 @@ class Configuracao:
             mongodb_uri=banco.mongodb_uri,
             mongodb_banco=banco.mongodb_banco,
             jwks_url=ambiente.url("JWKS_URL", ambiente.exigir("JWKS_URL"), https=False),
-            jwt_emissor=ambiente.opcional("JWT_ISSUER", "pytstop-os-service"),
-            jwt_audiencia=ambiente.opcional("JWT_AUDIENCE", "pytstop"),
             url_publica=url_publica,
             link_segredo=segredo,
             orcamento_validade=timedelta(

@@ -17,7 +17,7 @@ from src.compartilhado.interfaces.autenticacao import (
     exigir_papel,
 )
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
-from tests.conftest import AUDIENCIA, EMISSOR, SUB_DO_TESTE
+from tests.conftest import SUB_DO_TESTE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 def cliente(jwks_publicado: dict[str, Any]) -> TestClient:
     app = FastAPI()
     app.state.validador_de_token = ValidadorDeTokenJWKS(
-        "http://os.teste/.well-known/jwks.json", emissor=EMISSOR, audiencia=AUDIENCIA
+        "http://os.teste/.well-known/jwks.json"
     )
 
     @app.get("/atendimento")
@@ -117,7 +117,7 @@ def test_jwks_indisponivel_e_503_com_retry_after(
 
     app = FastAPI()
     app.state.validador_de_token = ValidadorDeTokenJWKS(
-        "http://os.teste/.well-known/jwks.json", emissor=EMISSOR, audiencia=AUDIENCIA
+        "http://os.teste/.well-known/jwks.json"
     )
 
     @app.get("/atendimento")

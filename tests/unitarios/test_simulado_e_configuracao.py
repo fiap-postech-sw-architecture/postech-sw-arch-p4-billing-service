@@ -205,8 +205,6 @@ class TestConfiguracao:
         assert config.orcamento_validade == timedelta(hours=72)
         assert config.pagamento_validade == timedelta(minutes=60)
         assert config.mp_modo is ModoMercadoPago.SIMULADO
-        assert config.jwt_emissor == "pytstop-os-service"
-        assert config.jwt_audiencia == "pytstop"
         assert (
             config.mp_notification_url
             == "http://localhost:8002/api/v1/webhooks/mercadopago"
@@ -314,8 +312,6 @@ class TestConfiguracao:
         vazias = dict.fromkeys(
             (
                 "MONGODB_DB",
-                "JWT_ISSUER",
-                "JWT_AUDIENCE",
                 "MP_API_URL",
                 "MP_NOTIFICATION_URL",
                 "ORCAMENTO_VALIDADE_HORAS",
@@ -326,11 +322,7 @@ class TestConfiguracao:
             "",
         )
         config = Configuracao.do_ambiente({**DEV, **vazias})
-        assert (config.mongodb_banco, config.jwt_emissor, config.jwt_audiencia) == (
-            "billing",
-            "pytstop-os-service",
-            "pytstop",
-        )
+        assert config.mongodb_banco == "billing"
         assert config.mp_api_url == "https://api.mercadopago.com"
         assert config.mp_notification_url.endswith("/api/v1/webhooks/mercadopago")
         assert config.orcamento_validade == timedelta(hours=72)

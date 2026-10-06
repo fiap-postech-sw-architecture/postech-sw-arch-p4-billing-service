@@ -68,9 +68,7 @@ def jwks_falso(monkeypatch: pytest.MonkeyPatch, jwks: dict[str, Any]) -> JwksFal
 
 @pytest.fixture
 def validador(jwks_falso: JwksFalso, relogio: Relogio) -> ValidadorDeTokenJWKS:
-    return ValidadorDeTokenJWKS(
-        URL, emissor=EMISSOR, audiencia=AUDIENCIA, relogio=relogio
-    )
+    return ValidadorDeTokenJWKS(URL, relogio=relogio)
 
 
 def fora_do_ar() -> jwt.PyJWKClientConnectionError:
@@ -137,6 +135,25 @@ class TestClaims:
         with pytest.raises(TokenInvalidoError):
             validador.validar(token)
 
+    def test_emissor_e_audiencia_sao_os_do_contrato_e_nao_vem_do_ambiente(
+        self,
+        validador: ValidadorDeTokenJWKS,
+        emitir_token: Callable[..., str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # ADR-039: iss=pytstop-os-service e aud=pytstop. Variavel de ambiente
+        # nao troca nenhum dos dois (nem abre o servico para token de outro emissor).
+        monkeypatch.setenv("JWT_ISSUER", "outro-emissor")
+        monkeypatch.setenv("JWT_AUDIENCE", "outra-audiencia")
+
+        claims = validador.validar(emitir_token("admin"))
+
+        assert (claims["iss"], claims["aud"]) == ("pytstop-os-service", "pytstop")
+        with pytest.raises(TokenInvalidoError):
+            validador.validar(
+                emitir_token("admin", iss="outro-emissor", aud="outra-audiencia")
+            )
+
     def test_assinatura_de_outra_chave_com_o_mesmo_kid(
         self, validador: ValidadorDeTokenJWKS, emitir_token: Callable[..., str]
     ) -> None:
@@ -193,9 +210,7 @@ class TestCacheDoJwks:
             return Resposta(json.dumps(jwks).encode())
 
         monkeypatch.setattr(urllib.request.OpenerDirector, "open", abrir)
-        validador = ValidadorDeTokenJWKS(
-            URL, emissor=EMISSOR, audiencia=AUDIENCIA, relogio=relogio
-        )
+        validador = ValidadorDeTokenJWKS(URL, relogio=relogio)
         token = emitir_token("admin")
         validador.validar(token)
         relogio.agora += 599
@@ -333,9 +348,7 @@ class TestJwksPendurado:
             return jwks
 
         monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", buscar)
-        validador = ValidadorDeTokenJWKS(
-            URL, emissor=EMISSOR, audiencia=AUDIENCIA, relogio=relogio
-        )
+        validador = ValidadorDeTokenJWKS(URL, relogio=relogio)
         token = emitir_token("admin")
         validador.validar(token)
         relogio.agora += 601  # copia velha: a proxima chamada renova
@@ -374,9 +387,7 @@ class TestJwksPendurado:
             return jwks
 
         monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", buscar)
-        validador = ValidadorDeTokenJWKS(
-            URL, emissor=EMISSOR, audiencia=AUDIENCIA, relogio=relogio
-        )
+        validador = ValidadorDeTokenJWKS(URL, relogio=relogio)
         token = emitir_token("admin")
         resultados: list[object] = []
 
