@@ -42,6 +42,7 @@ from tests.integracao.apoio import (
     GatewayRoteirizado,
     MetricasEspia,
     RelogioFixo,
+    cliente_espiado,
     eventos_do_outbox,
     token_do_checkout,
 )
@@ -371,23 +372,32 @@ class TestNotificacao:
         }
 
     def test_notificacao_repetida_nao_grava_nem_duplica_evento(
-        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+        self,
+        banco: Banco,
+        mongo_uri: str,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
     ) -> None:
         dto = solicitado(banco, gateway, relogio)
         referencia = gateway.registrar_resultado(
             pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=True
         )
-        caso = processar(banco, gateway, relogio)
-        caso.executar(referencia)
+        processar(banco, gateway, relogio).executar(referencia)
         antes = banco["pagamentos"].find_one({"_id": dto.id})
 
         relogio.avancar(minutes=1)
-        repetido = caso.executar(referencia)
+        with cliente_espiado(mongo_uri) as (cliente, escritas):
+            repetido = processar(cliente[banco.name], gateway, relogio).executar(
+                referencia
+            )
 
         assert repetido is not None
         assert len(repetido.notificacoes) == 1
         assert len(eventos_do_outbox(banco, "PagamentoConfirmado")) == 1
         assert banco["pagamentos"].find_one({"_id": dto.id}) == antes
+        # O documento fica igual com ou sem regravar: so os comandos do banco
+        # provam que a repeticao nao escreveu nada (nem o pagamento, nem a outbox).
+        assert escritas.escritas == []
         assert gateway.estornos == []
 
     def test_recusas_contam_ate_o_maximo(

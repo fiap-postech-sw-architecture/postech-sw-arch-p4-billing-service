@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
+
+from pymongo import MongoClient, monitoring
 
 from src.configuracao import Configuracao
 from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
@@ -13,7 +16,7 @@ from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
     from uuid import UUID
 
     from pymongo.database import Database
@@ -50,6 +53,49 @@ def eventos_do_outbox(
     """Envelopes gravados na outbox, na ordem do relay (``_id`` UUIDv7)."""
     filtro = {"tipo": tipo} if tipo else {}
     return [doc["envelope"] for doc in banco["outbox"].find(filtro).sort("_id")]
+
+
+class EscritasEspiadas(monitoring.CommandListener):
+    """Guarda colecao, sessao e transacao de cada insert/update enviado."""
+
+    def __init__(self) -> None:
+        self.escritas: list[tuple[str, Any, Any, Any]] = []
+
+    def started(self, event: monitoring.CommandStartedEvent) -> None:
+        if event.command_name in {"insert", "update"}:
+            comando = event.command
+            self.escritas.append(
+                (
+                    comando[event.command_name],
+                    comando.get("lsid"),
+                    comando.get("txnNumber"),
+                    comando.get("autocommit"),
+                )
+            )
+
+    def succeeded(self, event: monitoring.CommandSucceededEvent) -> None:
+        return None
+
+    def failed(self, event: monitoring.CommandFailedEvent) -> None:
+        return None
+
+
+@contextmanager
+def cliente_espiado(
+    mongo_uri: str,
+) -> Iterator[tuple[MongoClient[dict[str, Any]], EscritasEspiadas]]:
+    """Cliente do mesmo banco de teste que registra todo insert e update."""
+    espia = EscritasEspiadas()
+    cliente: MongoClient[dict[str, Any]] = MongoClient(
+        mongo_uri,
+        uuidRepresentation="standard",
+        tz_aware=True,
+        event_listeners=[espia],
+    )
+    try:
+        yield cliente, espia
+    finally:
+        cliente.close()
 
 
 class RelogioFixo:

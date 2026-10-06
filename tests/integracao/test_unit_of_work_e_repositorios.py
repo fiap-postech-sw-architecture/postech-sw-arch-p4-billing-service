@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 from functools import partial
@@ -11,7 +12,6 @@ from uuid import uuid4
 
 import pytest
 from bson.decimal128 import Decimal128
-from pymongo import MongoClient, monitoring
 
 from src.compartilhado.dominio.exceptions import ValorInvalidoError
 from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
@@ -43,55 +43,33 @@ from tests.factories import (
     pagamento,
     situacao,
 )
-from tests.integracao.apoio import eventos_do_outbox
+from tests.integracao.apoio import cliente_espiado, eventos_do_outbox
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
 
 
-class EscritasEspiadas(monitoring.CommandListener):
-    """Guarda colecao, sessao e transacao de cada insert/update enviado."""
-
-    def __init__(self) -> None:
-        self.escritas: list[tuple[str, Any, Any, Any]] = []
-
-    def started(self, event: monitoring.CommandStartedEvent) -> None:
-        if event.command_name in {"insert", "update"}:
-            comando = event.command
-            self.escritas.append(
-                (
-                    comando[event.command_name],
-                    comando.get("lsid"),
-                    comando.get("txnNumber"),
-                    comando.get("autocommit"),
-                )
-            )
-
-    def succeeded(self, event: monitoring.CommandSucceededEvent) -> None:
-        return None
-
-    def failed(self, event: monitoring.CommandFailedEvent) -> None:
-        return None
+@contextmanager
+def sem_o_indice_de_prazo(banco: Banco) -> Iterator[None]:
+    colecao = banco["pagamentos"]
+    colecao.drop_index("status_1_expira_em_1")
+    try:
+        yield
+    finally:
+        colecao.create_index([("status", 1), ("expira_em", 1)])
 
 
 class TestUnidadeDeTrabalho:
     def test_outbox_vai_na_mesma_transacao_do_estado(
         self, banco: Banco, mongo_uri: str
     ) -> None:
-        espia = EscritasEspiadas()
-        cliente: MongoClient[dict[str, Any]] = MongoClient(
-            mongo_uri,
-            uuidRepresentation="standard",
-            tz_aware=True,
-            event_listeners=[espia],
-        )
-        try:
+        with cliente_espiado(mongo_uri) as (cliente, espia):
             uow = MongoUnitOfWork(cliente[banco.name])
             uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
-        finally:
-            cliente.close()
 
         [estado, outbox] = espia.escritas
         assert (estado[0], outbox[0]) == ("orcamentos", "outbox")
@@ -477,6 +455,30 @@ class TestRepositorioDePagamento:
         for p in (vencido, pago):
             uow.executar(partial(repo.salvar, p))
         assert repo.listar_vencidos(AGORA + timedelta(hours=2), 10) == [vencido.id]
+
+    def test_filas_de_prazo_saem_em_ordem_de_prazo(self, banco: Banco) -> None:
+        uow = MongoUnitOfWork(banco)
+        repo = MongoPagamentoRepository(uow)
+        cedo = pagamento(validade=timedelta(minutes=10))
+        tarde = pagamento(validade=timedelta(minutes=60))
+        pago = pagamento(validade=timedelta(minutes=5))
+        confirmar(pago)
+        # Gravados do que vence por ultimo para o que vence primeiro: a ordem de
+        # insercao nao e a do prazo.
+        for p in (tarde, cedo, pago):
+            uow.executar(partial(repo.salvar, p))
+        depois = AGORA + timedelta(hours=2)
+
+        # Sem o indice (status, expira_em) o MongoDB varre a colecao na ordem de
+        # insercao: so o sort explicito da consulta garante a ordem (com o
+        # indice ela viria dele, por acaso).
+        with sem_o_indice_de_prazo(banco):
+            assert repo.listar_solicitados(10) == [cedo.id, tarde.id]
+            assert repo.listar_vencidos(depois, 10) == [cedo.id, tarde.id]
+            # Fila maior que o limite: a conciliacao e a expiracao chegam
+            # primeiro a quem vence antes.
+            assert repo.listar_solicitados(1) == [cedo.id]
+            assert repo.listar_vencidos(depois, 1) == [cedo.id]
 
 
 class TestRepositorioDePrecos:
