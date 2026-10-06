@@ -374,7 +374,7 @@ def _ignorar_corpo(_resposta: httpx.Response) -> None:
 
 def _ler_situacao(resposta: httpx.Response) -> SituacaoNoProvedor:
     # parse_float=Decimal: o valor cobrado nunca passa por float.
-    return _situacao(resposta.json(parse_float=Decimal))
+    return _situacao(resposta.json(parse_float=Decimal), "consultar_pagamento")
 
 
 def _ler_tentativas(resposta: httpx.Response) -> list[SituacaoNoProvedor]:
@@ -382,7 +382,7 @@ def _ler_tentativas(resposta: httpx.Response) -> list[SituacaoNoProvedor]:
     if not isinstance(resultados, list):
         msg = "results deveria ser uma lista"
         raise TypeError(msg)
-    return [_situacao(pagamento) for pagamento in resultados]
+    return [_situacao(pagamento, "buscar_pagamentos") for pagamento in resultados]
 
 
 def _ler_status_do_estorno(resposta: httpx.Response) -> str | None:
@@ -404,7 +404,7 @@ def _texto(dados: dict[str, Any], campo: str) -> str:
     return str(valor)
 
 
-def _situacao(dados: dict[str, Any]) -> SituacaoNoProvedor:
+def _situacao(dados: dict[str, Any], operacao: str) -> SituacaoNoProvedor:
     """So id, status, detalhe, valor e moeda: payer e cartao ficam de fora."""
     status = _texto(dados, "status")
     externa = dados.get("external_reference")
@@ -412,20 +412,18 @@ def _situacao(dados: dict[str, Any]) -> SituacaoNoProvedor:
     return SituacaoNoProvedor(
         referencia=_texto(dados, "id"),
         referencia_externa=str(externa) if externa else None,
-        status=_status_no_provedor(status),
+        status=_status_no_provedor(status, operacao),
         status_provedor=status,
         detalhe=str(detalhe) if detalhe is not None else None,
         valor=_valor(dados),
     )
 
 
-def _status_no_provedor(status: str) -> StatusNoProvedor:
+def _status_no_provedor(status: str, operacao: str) -> StatusNoProvedor:
     conhecido = _STATUS.get(status)
     if conhecido is None:
         # Status novo no provedor: nao muda a cobranca, mas fica visivel.
-        MERCADOPAGO_REQUISICOES.labels(
-            "consultar_pagamento", "status_desconhecido"
-        ).inc()
+        MERCADOPAGO_REQUISICOES.labels(operacao, "status_desconhecido").inc()
         _log.warning("mercadopago_unknown_status", status=status)
         return StatusNoProvedor.EM_ANDAMENTO
     return conhecido

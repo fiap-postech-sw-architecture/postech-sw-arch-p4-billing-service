@@ -424,6 +424,18 @@ class TestBuscarPorReferenciaExterna:
             assert gateway.buscar_por_referencia_externa("x") == []
         assert (rota.call_count, len(esperas)) == (2, 1)
 
+    def test_status_desconhecido_na_busca_conta_na_operacao_da_busca(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        antes = contador("buscar_pagamentos", "status_desconhecido")
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/search").respond(
+                200, json={"results": [pagamento_no_provedor(status="novo_status")]}
+            )
+            [situacao] = gateway.buscar_por_referencia_externa("x")
+        assert situacao.status is StatusNoProvedor.EM_ANDAMENTO
+        assert contador("buscar_pagamentos", "status_desconhecido") == antes + 1
+
 
 class TestEstornar:
     def test_estorno_total_com_chave_de_idempotencia(
