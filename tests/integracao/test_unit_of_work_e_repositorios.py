@@ -179,7 +179,11 @@ class TestRepositorioDeOrcamento:
         uow = MongoUnitOfWork(banco)
         repo = MongoOrcamentoRepository(uow)
         gerado = orcamento()
-        gerado.aprovar(canal=CanalDecisao.ATENDENTE, agora=AGORA + timedelta(hours=1))
+        gerado.aprovar(
+            canal=CanalDecisao.ATENDENTE,
+            agora=AGORA + timedelta(hours=1),
+            decidido_por="atendente-1",
+        )
         uow.executar(lambda: repo.salvar(gerado))
 
         lido = repo.obter_por_id(gerado.id)

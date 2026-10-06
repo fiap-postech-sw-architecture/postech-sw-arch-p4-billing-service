@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -266,3 +267,18 @@ def test_jwks_pendurado_nao_atrasa_rota_publica_nem_prende_requests(
         finally:
             liberar.set()
             primeira.join(timeout=10)
+
+
+def test_escrita_de_preco_deixa_log_de_auditoria(
+    api: TestClient, cabecalhos: Cabecalhos, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO):
+        api.post("/api/v1/precos/servicos", json=SERVICO, headers=cabecalhos("admin"))
+        api.delete(
+            "/api/v1/precos/servicos/SRV-TROCA-OLEO", headers=cabecalhos("admin")
+        )
+    auditoria = [m for m in caplog.messages if "audit_price_changed" in m]
+    assert len(auditoria) == 2
+    assert all("usuario-teste" in m and "SRV-TROCA-OLEO" in m for m in auditoria)
+    assert "cadastrar_servico" in auditoria[0]
+    assert "desativar_servico" in auditoria[1]

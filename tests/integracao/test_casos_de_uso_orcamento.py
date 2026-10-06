@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
     Banco = Database[dict[str, Any]]
 
+ATENDENTE = "atendente-1"
 ITENS = [
     ItemSolicitado(TipoItem.SERVICO, "SRV-TROCA-OLEO", 1),
     ItemSolicitado(TipoItem.PECA, "PEC-OLEO-5W30", 4),
@@ -274,20 +275,31 @@ class TestDecidirOrcamento:
             "canal": "link",
         }
 
-    def test_recusa_pelo_atendente(self, banco: Banco, relogio: RelogioFixo) -> None:
+    def test_recusa_pelo_atendente_registra_quem_decidiu(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
         dto = gerado(banco, relogio)
-        recusado = decidir(banco, relogio).por_atendente(dto.id, aprovar=False)
+        recusado = decidir(banco, relogio).por_atendente(
+            dto.id, aprovar=False, decidido_por=ATENDENTE
+        )
         assert recusado.status == "RECUSADO"
+        assert recusado.decisao is not None
+        assert recusado.decisao.decidido_por == ATENDENTE
         [envelope] = eventos_do_outbox(banco, "OrcamentoRecusado")
         assert envelope["dados"]["canal"] == "atendente"
+        assert envelope["dados"]["decidido_por"] == ATENDENTE
 
     def test_segunda_decisao_e_recusada_sem_novo_evento(
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:
         dto = gerado(banco, relogio)
-        decidir(banco, relogio).por_atendente(dto.id, aprovar=True)
+        decidir(banco, relogio).por_atendente(
+            dto.id, aprovar=True, decidido_por=ATENDENTE
+        )
         with pytest.raises(TransicaoStatusInvalidaError):
-            decidir(banco, relogio).por_atendente(dto.id, aprovar=False)
+            decidir(banco, relogio).por_atendente(
+                dto.id, aprovar=False, decidido_por=ATENDENTE
+            )
         assert len(eventos_do_outbox(banco)) == 2  # gerado + aprovado
 
     def test_decisao_depois_do_prazo_mesmo_sem_job(
@@ -296,7 +308,9 @@ class TestDecidirOrcamento:
         dto = gerado(banco, relogio)
         relogio.avancar(hours=72, seconds=1)
         with pytest.raises(OrcamentoVencidoError):
-            decidir(banco, relogio).por_atendente(dto.id, aprovar=True)
+            decidir(banco, relogio).por_atendente(
+                dto.id, aprovar=True, decidido_por=ATENDENTE
+            )
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
 
     def test_link_invalido_expirado_inexistente_ou_decidido_e_o_mesmo_erro(
@@ -332,7 +346,9 @@ class TestExpirarECancelar:
         vencido_1 = gerado(banco, relogio)
         vencido_2 = gerado(banco, relogio)
         aprovado = gerado(banco, relogio)
-        decidir(banco, relogio).por_atendente(aprovado.id, aprovar=True)
+        decidir(banco, relogio).por_atendente(
+            aprovado.id, aprovar=True, decidido_por=ATENDENTE
+        )
         relogio.avancar(hours=1)
         vigente = gerado(banco, relogio)
         relogio.avancar(hours=71, seconds=30)
@@ -387,7 +403,9 @@ class TestExpirarECancelar:
     ) -> None:
         dto = gerado(banco, relogio)
         if encerramento == "recusa":
-            decidir(banco, relogio).por_atendente(dto.id, aprovar=False)
+            decidir(banco, relogio).por_atendente(
+                dto.id, aprovar=False, decidido_por=ATENDENTE
+            )
         else:
             relogio.avancar(hours=73)
             uow = MongoUnitOfWork(banco)

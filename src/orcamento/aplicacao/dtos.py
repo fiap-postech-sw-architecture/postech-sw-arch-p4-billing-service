@@ -34,6 +34,7 @@ class LinhaDTO:
 class DecisaoDTO:
     canal: str
     decidido_em: datetime
+    decidido_por: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +75,11 @@ class OrcamentoDTO:
             criado_em=orcamento.criado_em,
             valido_ate=orcamento.valido_ate,
             decisao=(
-                DecisaoDTO(canal=decisao.canal.value, decidido_em=decisao.decidido_em)
+                DecisaoDTO(
+                    canal=decisao.canal.value,
+                    decidido_em=decisao.decidido_em,
+                    decidido_por=decisao.decidido_por,
+                )
                 if decisao
                 else None
             ),

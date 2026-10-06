@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, Query, status
 
 from src.compartilhado.interfaces.autenticacao import (
@@ -31,7 +32,15 @@ from src.precos.interfaces.schemas import (
     ValidacaoResponse,
 )
 
+_log = structlog.get_logger(__name__)
+
 router = APIRouter(prefix="/api/v1/precos", tags=["precos"])
+
+
+def _auditar(usuario: UsuarioAutenticado, acao: str, alvo: str) -> None:
+    """Log de auditoria das escritas de preco (sub, acao, alvo; ADR-039)."""
+    _log.info("audit_price_changed", ator=usuario.sub, acao=acao, alvo=alvo)
+
 
 Admin = Annotated[UsuarioAutenticado, Depends(exigir_papel(Papel.ADMIN))]
 UsuarioInterno = Annotated[
@@ -50,11 +59,12 @@ Limit = Annotated[int, Query(ge=1, le=100)]
     responses={409: {"description": "Codigo ja cadastrado."}},
 )
 def cadastrar_servico(
-    body: CadastrarServicoRequest, _usuario: Admin, servicos: Servicos
+    body: CadastrarServicoRequest, usuario: Admin, servicos: Servicos
 ) -> ServicoResponse:
     dto = servicos.cadastrar(
         codigo=body.codigo, nome=body.nome, descricao=body.descricao, preco=body.preco
     )
+    _auditar(usuario, "cadastrar_servico", dto.codigo)
     return ServicoResponse(**dataclasses.asdict(dto))
 
 
@@ -88,7 +98,7 @@ def obter_servico(
     responses={404: {"description": "Codigo nao cadastrado."}},
 )
 def atualizar_servico(
-    codigo: str, body: AtualizarServicoRequest, _usuario: Admin, servicos: Servicos
+    codigo: str, body: AtualizarServicoRequest, usuario: Admin, servicos: Servicos
 ) -> ServicoResponse:
     dto = servicos.atualizar(
         codigo,
@@ -97,6 +107,7 @@ def atualizar_servico(
         preco=body.preco,
         ativo=body.ativo,
     )
+    _auditar(usuario, "atualizar_servico", codigo)
     return ServicoResponse(**dataclasses.asdict(dto))
 
 
@@ -106,8 +117,9 @@ def atualizar_servico(
     summary="Desativa um servico (admin); orcamentos ja gerados nao mudam",
     responses={404: {"description": "Codigo nao cadastrado."}},
 )
-def desativar_servico(codigo: str, _usuario: Admin, servicos: Servicos) -> None:
+def desativar_servico(codigo: str, usuario: Admin, servicos: Servicos) -> None:
     servicos.desativar(codigo)
+    _auditar(usuario, "desativar_servico", codigo)
 
 
 @router.post(
@@ -117,9 +129,10 @@ def desativar_servico(codigo: str, _usuario: Admin, servicos: Servicos) -> None:
     responses={409: {"description": "SKU ja cadastrado."}},
 )
 def cadastrar_peca(
-    body: CadastrarPecaRequest, _usuario: Admin, pecas: Pecas
+    body: CadastrarPecaRequest, usuario: Admin, pecas: Pecas
 ) -> PecaResponse:
     dto = pecas.cadastrar(sku=body.sku, nome=body.nome, preco=body.preco)
+    _auditar(usuario, "cadastrar_peca", dto.sku)
     return PecaResponse(**dataclasses.asdict(dto))
 
 
@@ -151,9 +164,10 @@ def obter_peca(sku: str, _usuario: UsuarioInterno, pecas: Pecas) -> PecaResponse
     responses={404: {"description": "SKU nao cadastrado."}},
 )
 def atualizar_peca(
-    sku: str, body: AtualizarPecaRequest, _usuario: Admin, pecas: Pecas
+    sku: str, body: AtualizarPecaRequest, usuario: Admin, pecas: Pecas
 ) -> PecaResponse:
     dto = pecas.atualizar(sku, nome=body.nome, preco=body.preco, ativo=body.ativo)
+    _auditar(usuario, "atualizar_peca", sku)
     return PecaResponse(**dataclasses.asdict(dto))
 
 
@@ -163,8 +177,9 @@ def atualizar_peca(
     summary="Desativa uma peca (admin); orcamentos ja gerados nao mudam",
     responses={404: {"description": "SKU nao cadastrado."}},
 )
-def desativar_peca(sku: str, _usuario: Admin, pecas: Pecas) -> None:
+def desativar_peca(sku: str, usuario: Admin, pecas: Pecas) -> None:
     pecas.desativar(sku)
+    _auditar(usuario, "desativar_peca", sku)
 
 
 @router.post(

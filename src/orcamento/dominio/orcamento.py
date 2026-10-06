@@ -111,8 +111,23 @@ class LinhaOrcamento(ValueObject):
 
 @dataclass(frozen=True, slots=True)
 class Decisao(ValueObject):
+    """Quem decidiu: o cliente pelo link ou o atendente em nome dele (com o
+    ``sub`` do atendente em ``decidido_por``, trilha de auditoria do ADR-039)."""
+
     canal: CanalDecisao
     decidido_em: datetime
+    decidido_por: str | None = None
+
+    def __post_init__(self) -> None:
+        _exigir_timezone("decidido_em", self.decidido_em)
+        if self.canal is CanalDecisao.ATENDENTE and not (
+            self.decidido_por and self.decidido_por.strip()
+        ):
+            msg = "Decisao do atendente exige decidido_por (sub do atendente)"
+            raise ValueError(msg)
+        if self.canal is CanalDecisao.LINK and self.decidido_por is not None:
+            msg = "Decisao pelo link e do cliente: sem decidido_por"
+            raise ValueError(msg)
 
 
 @dataclass(eq=False, kw_only=True)
@@ -285,25 +300,33 @@ class Orcamento(AggregateRoot):
             raise TransicaoStatusInvalidaError(msg)
         return OrcamentoCanceladoEvent(ordem_id=self._ordem_id, orcamento_id=self.id)
 
-    def aprovar(self, *, canal: CanalDecisao, agora: datetime) -> None:
-        self._decidir(StatusOrcamento.APROVADO, canal, agora)
+    def aprovar(
+        self, *, canal: CanalDecisao, agora: datetime, decidido_por: str | None = None
+    ) -> None:
+        """Decisao do cliente (unica); ``decidido_por`` so com ``canal=atendente``."""
+        self._decidir(StatusOrcamento.APROVADO, Decisao(canal, agora, decidido_por))
         self._registrar_evento(
             OrcamentoAprovadoEvent(
                 ordem_id=self._ordem_id,
                 orcamento_id=self.id,
                 decidido_em=agora,
                 canal=canal,
+                decidido_por=decidido_por,
             )
         )
 
-    def recusar(self, *, canal: CanalDecisao, agora: datetime) -> None:
-        self._decidir(StatusOrcamento.RECUSADO, canal, agora)
+    def recusar(
+        self, *, canal: CanalDecisao, agora: datetime, decidido_por: str | None = None
+    ) -> None:
+        """Recusa do cliente (unica); ``decidido_por`` so com ``canal=atendente``."""
+        self._decidir(StatusOrcamento.RECUSADO, Decisao(canal, agora, decidido_por))
         self._registrar_evento(
             OrcamentoRecusadoEvent(
                 ordem_id=self._ordem_id,
                 orcamento_id=self.id,
                 decidido_em=agora,
                 canal=canal,
+                decidido_por=decidido_por,
             )
         )
 
@@ -334,14 +357,14 @@ class Orcamento(AggregateRoot):
         self._registrar_evento(self.desfecho_do_cancelamento())
         return True
 
-    def _decidir(
-        self, destino: StatusOrcamento, canal: CanalDecisao, agora: datetime
-    ) -> None:
+    def _decidir(self, destino: StatusOrcamento, decisao: Decisao) -> None:
         # Prazo esgotado e o mesmo erro antes e depois do job de expiracao.
-        if self._status is StatusOrcamento.EXPIRADO or self.vencido(agora):
+        if self._status is StatusOrcamento.EXPIRADO or self.vencido(
+            decisao.decidido_em
+        ):
             raise OrcamentoVencidoError
         self._transitar(destino)
-        self._decisao = Decisao(canal=canal, decidido_em=agora)
+        self._decisao = decisao
 
     def _transitar(self, destino: StatusOrcamento) -> None:
         if destino not in _TRANSICOES.get(self._status, frozenset()):

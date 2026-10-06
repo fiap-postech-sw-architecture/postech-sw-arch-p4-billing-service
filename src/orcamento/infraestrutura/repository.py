@@ -93,7 +93,11 @@ def _para_documento(orcamento: Orcamento) -> Documento:
         "criado_em": orcamento.criado_em,
         "valido_ate": orcamento.valido_ate,
         "decisao": (
-            {"canal": decisao.canal.value, "decidido_em": decisao.decidido_em}
+            {
+                "canal": decisao.canal.value,
+                "decidido_em": decisao.decidido_em,
+                "decidido_por": decisao.decidido_por,
+            }
             if decisao
             else None
         ),
@@ -125,6 +129,7 @@ def _de_documento(doc: Documento) -> Orcamento:
             Decisao(
                 canal=CanalDecisao(decisao["canal"]),
                 decidido_em=decisao["decidido_em"],
+                decidido_por=decisao.get("decidido_por"),
             )
             if decisao
             else None

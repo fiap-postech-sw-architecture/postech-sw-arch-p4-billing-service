@@ -144,7 +144,7 @@ def test_corrida_entre_decisao_e_expiracao_tem_um_so_vencedor(
         )
         try:
             return DecidirOrcamento(uow, repo, LINK, no_limite).por_atendente(
-                gerado.id, aprovar=True
+                gerado.id, aprovar=True, decidido_por="atendente-1"
             )
         finally:
             comitou["decisao"].set()

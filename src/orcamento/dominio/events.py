@@ -1,4 +1,4 @@
-"""Eventos do orcamento (catalogo da RFC-004 §4; campos = ``dados``)."""
+"""Eventos do orcamento (catalogo da RFC-004, secao 5.3; campos = ``dados``)."""
 
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ class OrcamentoAprovadoEvent(IntegrationEvent):
     orcamento_id: UUID
     decidido_em: datetime
     canal: CanalDecisao
+    # Sub do atendente, so com canal=atendente (fica fora do ``dados`` se nulo).
+    decidido_por: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,6 +54,7 @@ class OrcamentoRecusadoEvent(IntegrationEvent):
     orcamento_id: UUID
     decidido_em: datetime
     canal: CanalDecisao
+    decidido_por: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

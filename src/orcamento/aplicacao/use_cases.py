@@ -199,23 +199,31 @@ class DecidirOrcamento:
         ):
             raise LinkDeDecisaoInvalidoError from None
 
-    def por_atendente(self, orcamento_id: UUID, *, aprovar: bool) -> OrcamentoDTO:
+    def por_atendente(
+        self, orcamento_id: UUID, *, aprovar: bool, decidido_por: str
+    ) -> OrcamentoDTO:
+        """Decisao em nome do cliente; ``decidido_por`` = ``sub`` do atendente."""
         return self._decidir(
-            orcamento_id, aprovar=aprovar, canal=CanalDecisao.ATENDENTE
+            orcamento_id,
+            aprovar=aprovar,
+            canal=CanalDecisao.ATENDENTE,
+            decidido_por=decidido_por,
         )
 
     def _decidir(
-        self, orcamento_id: UUID, *, aprovar: bool, canal: CanalDecisao
+        self,
+        orcamento_id: UUID,
+        *,
+        aprovar: bool,
+        canal: CanalDecisao,
+        decidido_por: str | None = None,
     ) -> OrcamentoDTO:
         def trabalho() -> Orcamento:
             # Relido a cada tentativa: se a expiracao comitou antes, a decisao
             # ve o orcamento EXPIRADO e falha (sem sobrescrever).
             orcamento = _obter(self._orcamentos, orcamento_id)
-            agora = self._relogio()
-            if aprovar:
-                orcamento.aprovar(canal=canal, agora=agora)
-            else:
-                orcamento.recusar(canal=canal, agora=agora)
+            decidir = orcamento.aprovar if aprovar else orcamento.recusar
+            decidir(canal=canal, agora=self._relogio(), decidido_por=decidido_por)
             self._orcamentos.salvar(orcamento)
             return orcamento
 

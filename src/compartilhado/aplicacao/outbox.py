@@ -27,10 +27,13 @@ def para_envelope(evento: IntegrationEvent, *, mensagem_id: UUID) -> dict[str, A
     ``causation_id`` fica nulo: hoje todo evento nasce de chamada HTTP; o
     consumidor de comandos (PR da mensageria) passa o id do comando.
     """
+    # Campo opcional sem valor fica fora de ``dados`` (ex.: ``decidido_por`` so
+    # existe com canal=atendente), como o contrato de cada mensagem o define.
     dados = {
-        campo.name: _serializar(getattr(evento, campo.name))
+        campo.name: _serializar(valor)
         for campo in fields(evento)
         if campo.name != "ocorrido_em"
+        and (valor := getattr(evento, campo.name)) is not None
     }
     return {
         "id": str(mensagem_id),

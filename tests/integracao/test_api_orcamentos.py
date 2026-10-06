@@ -141,6 +141,9 @@ class TestApiInterna:
         assert aprovado.status_code == 200
         assert aprovado.json()["status"] == "APROVADO"
         assert aprovado.json()["decisao"]["canal"] == "atendente"
+        assert aprovado.json()["decisao"]["decidido_por"] == "usuario-teste"
+        [envelope] = eventos_do_outbox(app.state.banco, "OrcamentoAprovado")
+        assert envelope["dados"]["decidido_por"] == "usuario-teste"
         de_novo = api.post(
             caminho, json={"decisao": "recusar"}, headers=cabecalhos("atendente")
         )

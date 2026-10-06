@@ -57,8 +57,20 @@ DADOS_DO_CATALOGO = {
         "link_decisao",
     },
     "GeracaoDeOrcamentoFalhou": {"ordem_id", "motivo", "codigos_invalidos"},
-    "OrcamentoAprovado": {"ordem_id", "orcamento_id", "decidido_em", "canal"},
-    "OrcamentoRecusado": {"ordem_id", "orcamento_id", "decidido_em", "canal"},
+    "OrcamentoAprovado": {
+        "ordem_id",
+        "orcamento_id",
+        "decidido_em",
+        "canal",
+        "decidido_por",
+    },
+    "OrcamentoRecusado": {
+        "ordem_id",
+        "orcamento_id",
+        "decidido_em",
+        "canal",
+        "decidido_por",
+    },
     "OrcamentoExpirado": {"ordem_id", "orcamento_id"},
     "OrcamentoCancelado": {"ordem_id", "orcamento_id"},
     "PagamentoSolicitado": {
@@ -158,10 +170,12 @@ def test_enum_vira_valor_e_tupla_vira_lista() -> None:
         orcamento_id=uuid4(),
         decidido_em=AGORA,
         canal=CanalDecisao.ATENDENTE,
+        decidido_por="atendente-1",
     )
     dados = para_envelope(evento, mensagem_id=uuid4())["dados"]
     assert dados["canal"] == "atendente"
     assert dados["decidido_em"] == "2026-10-06T12:00:00.000Z"
+    assert dados["decidido_por"] == "atendente-1"
 
     falha = eventos_orcamento.GeracaoDeOrcamentoFalhouEvent(
         ordem_id=uuid4(), motivo="x", codigos_invalidos=("SRV-X",)
@@ -202,3 +216,14 @@ def test_str_enum_sai_como_str_puro() -> None:
     )
     canal = para_envelope(evento, mensagem_id=uuid4())["dados"]["canal"]
     assert type(canal) is str
+
+
+def test_campo_opcional_sem_valor_fica_fora_de_dados() -> None:
+    """``decidido_por`` so existe com canal=atendente (RFC-004, secao 5.3)."""
+    evento = eventos_orcamento.OrcamentoAprovadoEvent(
+        ordem_id=uuid4(),
+        orcamento_id=uuid4(),
+        decidido_em=AGORA,
+        canal=CanalDecisao.LINK,
+    )
+    assert "decidido_por" not in para_envelope(evento, mensagem_id=uuid4())["dados"]

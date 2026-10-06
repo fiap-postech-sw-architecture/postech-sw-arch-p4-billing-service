@@ -20,6 +20,7 @@ class LinhaResponse(BaseModel):
 class DecisaoResponse(BaseModel):
     canal: str
     decidido_em: datetime
+    decidido_por: str | None = None
 
 
 class OrcamentoResponse(BaseModel):

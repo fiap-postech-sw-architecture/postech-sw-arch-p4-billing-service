@@ -230,23 +230,54 @@ class TestDesfechos:
 
 
 class TestDecisao:
-    @pytest.mark.parametrize("canal", list(CanalDecisao))
-    def test_aprovar_registra_decisao_e_evento(self, canal: CanalDecisao) -> None:
+    @pytest.mark.parametrize(
+        ("canal", "decidido_por"),
+        [(CanalDecisao.LINK, None), (CanalDecisao.ATENDENTE, "atendente-1")],
+        ids=["link", "atendente"],
+    )
+    def test_aprovar_registra_decisao_e_evento(
+        self, canal: CanalDecisao, decidido_por: str | None
+    ) -> None:
         gerado = orcamento()
         gerado.limpar_eventos()
 
-        gerado.aprovar(canal=canal, agora=DENTRO_DO_PRAZO)
+        gerado.aprovar(canal=canal, agora=DENTRO_DO_PRAZO, decidido_por=decidido_por)
 
         assert gerado.status is StatusOrcamento.APROVADO
-        assert gerado.decisao == Decisao(canal=canal, decidido_em=DENTRO_DO_PRAZO)
+        assert gerado.decisao == Decisao(canal, DENTRO_DO_PRAZO, decidido_por)
         assert gerado.coletar_eventos() == [
             OrcamentoAprovadoEvent(
                 ordem_id=gerado.ordem_id,
                 orcamento_id=gerado.id,
                 decidido_em=DENTRO_DO_PRAZO,
                 canal=canal,
+                decidido_por=decidido_por,
             )
         ]
+
+    @pytest.mark.parametrize(
+        ("canal", "decidido_por", "erro"),
+        [
+            pytest.param(CanalDecisao.ATENDENTE, None, "exige", id="atendente-sem-sub"),
+            pytest.param(
+                CanalDecisao.ATENDENTE, " ", "exige", id="atendente-sub-vazio"
+            ),
+            pytest.param(CanalDecisao.LINK, "atendente-1", "sem", id="link-com-sub"),
+        ],
+    )
+    def test_decidido_por_so_e_com_o_atendente(
+        self, canal: CanalDecisao, decidido_por: str | None, erro: str
+    ) -> None:
+        gerado = orcamento()
+        with pytest.raises(ValueError, match=f"{erro} decidido_por"):
+            gerado.aprovar(
+                canal=canal, agora=DENTRO_DO_PRAZO, decidido_por=decidido_por
+            )
+        assert gerado.status is StatusOrcamento.PENDENTE
+
+    def test_decisao_exige_timezone(self) -> None:
+        with pytest.raises(ValueError, match="timezone"):
+            Decisao(CanalDecisao.LINK, datetime(2026, 10, 6, 13, 0))
 
     def test_recusar_registra_decisao_e_evento(self) -> None:
         gerado = orcamento()
@@ -281,7 +312,11 @@ class TestDecisao:
         gerado = orcamento()
         gerado.expirar(agora=DEPOIS_DO_PRAZO)
         with pytest.raises(OrcamentoVencidoError):
-            gerado.recusar(canal=CanalDecisao.ATENDENTE, agora=DENTRO_DO_PRAZO)
+            gerado.recusar(
+                canal=CanalDecisao.ATENDENTE,
+                agora=DENTRO_DO_PRAZO,
+                decidido_por="atendente-1",
+            )
 
     def test_segunda_decisao_e_transicao_invalida(self) -> None:
         gerado = orcamento()

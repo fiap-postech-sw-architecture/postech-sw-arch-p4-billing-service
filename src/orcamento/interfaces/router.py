@@ -69,12 +69,14 @@ def decidir_por_atendente(
     usuario: Atendente,
     decidir: Annotated[DecidirOrcamento, Depends(obter_decidir_orcamento)],
 ) -> OrcamentoResponse:
-    dto = decidir.por_atendente(orcamento_id, aprovar=body.decisao == "aprovar")
-    # Trilha de auditoria: quem decidiu em nome do cliente.
+    dto = decidir.por_atendente(
+        orcamento_id, aprovar=body.decisao == "aprovar", decidido_por=usuario.sub
+    )
+    # Trilha de auditoria (ADR-039): quem decidiu em nome do cliente.
     _log.info(
-        "orcamento_decidido_por_atendente",
-        orcamento_id=str(orcamento_id),
-        decisao=body.decisao,
+        "audit_budget_decided_by_attendant",
         ator=usuario.sub,
+        acao=body.decisao,
+        alvo=str(orcamento_id),
     )
     return OrcamentoResponse.model_validate(dataclasses.asdict(dto))
