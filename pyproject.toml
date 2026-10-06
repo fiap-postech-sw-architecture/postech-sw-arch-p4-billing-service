@@ -88,9 +88,9 @@ root_packages = ["src"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
-name = "Camadas por contexto (interfaces -> aplicacao -> dominio)"
+name = "Camadas por contexto (interfaces -> infraestrutura -> aplicacao -> dominio)"
 type = "layers"
-layers = ["interfaces", "aplicacao", "dominio"]
+layers = ["interfaces", "infraestrutura", "aplicacao", "dominio"]
 containers = [
     "src.precos",
     "src.orcamento",
@@ -142,6 +142,12 @@ forbidden_modules = [
     "prometheus_client",
     "structlog",
 ]
+
+[[tool.importlinter.contracts]]
+name = "compartilhado nao conhece contexto algum"
+type = "forbidden"
+source_modules = ["src.compartilhado"]
+forbidden_modules = ["src.precos", "src.orcamento", "src.pagamento"]
 
 # Contextos nao acoplam no nucleo uns dos outros: orcamento le precos e
 # pagamento le orcamento por portas definidas no consumidor, com adapters na
@@ -196,6 +202,3 @@ markers = [
 addopts = "--strict-markers"
 testpaths = ["tests"]
 timeout = 120
-
-[tool.bandit]
-targets = ["src"]

@@ -28,6 +28,10 @@ if TYPE_CHECKING:
     from pymongo.database import Database
 
 
+# Mesma versao do docker-compose.yml (e do compose da plataforma).
+IMAGEM_MONGO = "mongo:7.0.43"
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if "tests/integracao/" in str(item.path).replace(os.sep, "/"):
@@ -58,7 +62,7 @@ def mongo_uri() -> Iterator[str]:
     from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
     container = (
-        DockerContainer("mongo:7")
+        DockerContainer(IMAGEM_MONGO)
         .with_command(["--replSet", "rs0", "--bind_ip_all"])
         .with_exposed_ports(27017)
         .waiting_for(

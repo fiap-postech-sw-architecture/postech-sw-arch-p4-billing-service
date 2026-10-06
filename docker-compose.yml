@@ -58,6 +58,8 @@ services:
     # Mesma imagem para o `prazos`: um build so.
     image: ${BILLING_IMAGE:-pytstop-billing:dev}
     command: ["api"]
+    # So para desenvolvimento: no cluster a API fica atras do Kong, que aplica o
+    # rate limit das rotas publicas (link do cliente, webhook, simulador).
     ports:
       - "127.0.0.1:${API_PORT:-8002}:8000"
     environment:
@@ -89,11 +91,13 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 30s
+      start_interval: 2s
       retries: 3
     restart: unless-stopped
 
   mongo:
-    image: mongo:7
+    # Mesma versao do compose da plataforma e dos testes de integracao.
+    image: mongo:7.0.43
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "127.0.0.1:${MONGO_PORT:-27017}:27017"

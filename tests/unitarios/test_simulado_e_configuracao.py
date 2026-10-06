@@ -295,6 +295,33 @@ class TestConfiguracao:
         assert isinstance(gateway, MercadoPagoGateway)
         gateway.fechar()
 
+    def test_variavel_vazia_vale_como_ausente(self) -> None:
+        vazias = dict.fromkeys(
+            (
+                "MONGODB_DB",
+                "JWT_ISSUER",
+                "JWT_AUDIENCE",
+                "MP_API_URL",
+                "MP_NOTIFICATION_URL",
+                "ORCAMENTO_VALIDADE_HORAS",
+                "PAGAMENTO_MAX_RECUSAS",
+                "MP_ACCESS_TOKEN",
+                "MP_WEBHOOK_SECRET",
+            ),
+            "",
+        )
+        config = Configuracao.do_ambiente({**DEV, **vazias})
+        assert (config.mongodb_banco, config.jwt_emissor, config.jwt_audiencia) == (
+            "billing",
+            "pytstop-os-service",
+            "pytstop",
+        )
+        assert config.mp_api_url == "https://api.mercadopago.com"
+        assert config.mp_notification_url.endswith("/api/v1/webhooks/mercadopago")
+        assert config.orcamento_validade == timedelta(hours=72)
+        assert config.pagamento_max_recusas == 3
+        assert config.mp_access_token is None
+
     def test_modo_invalido(self) -> None:
         with pytest.raises(ValueError, match="MP_MODE invalido"):
             Configuracao.do_ambiente({**DEV, "MP_MODE": "paypal"})

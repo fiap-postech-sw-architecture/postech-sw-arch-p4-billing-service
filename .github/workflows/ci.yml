@@ -15,7 +15,7 @@ on:
 
 # Um run por ref; em PR o push novo cancela o anterior, na main o run conclui.
 concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
+  group: "ci-${{ github.ref }}"
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -28,6 +28,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
@@ -47,6 +49,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
@@ -61,6 +65,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
@@ -70,8 +76,8 @@ jobs:
       - name: bandit (make security)
         run: make security
 
-  # Unitarios + integracao (testcontainers usa o Docker do runner) + BDD, com
-  # gate de cobertura do .coveragerc. Os relatorios viram artefato e o resumo
+  # Unitarios + integracao (testcontainers sobe o MongoDB no Docker do runner),
+  # com gate de cobertura do .coveragerc. Os relatorios viram artefato e o resumo
   # por pacote vai para o summary do job: evidencia de cobertura sem precisar
   # rodar nada localmente.
   test:
@@ -79,6 +85,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
@@ -119,6 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/download-artifact@v7
         with:
@@ -136,12 +145,20 @@ jobs:
           path: reports/sonarqube.json
           retention-days: 90
 
+  # Imagem de runtime e smoke do compose do servico: sobe init do banco, api,
+  # prazos e MongoDB pelo entrypoint real (indices e validadores, seed, usuario
+  # 1001) e confere a readiness.
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Build da imagem
-        run: docker build -t "pytstop-servico:ci-${GITHUB_SHA}" .
-      - name: Imagem sobe e importa a aplicacao
-        run: docker run --rm --entrypoint python "pytstop-servico:ci-${GITHUB_SHA}" -c "import src.main"
+        run: docker build -t "${GITHUB_REPOSITORY#*/}:ci-${GITHUB_SHA}" .
+      - name: Smoke do compose (make smoke)
+        run: make smoke
+      - name: Logs do compose em caso de falha
+        if: failure()
+        run: docker compose logs --no-color --tail=200

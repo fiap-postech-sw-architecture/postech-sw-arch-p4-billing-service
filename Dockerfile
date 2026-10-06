@@ -24,7 +24,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim-trixie AS runtime
 
 ARG GIT_SHA=unknown
 ARG GIT_DATE=unknown
@@ -35,15 +35,17 @@ LABEL org.opencontainers.image.title="pytstop-billing-service" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.created="${GIT_DATE}"
 
-# Pacotes do SO atualizados a cada build: a tag movel python:3.14-slim fica
-# semanas sem rebuild e o trivy acusa CVE do Debian que ja tem correcao no apt.
+# Pacotes do SO atualizados a cada build: a tag movel python:3.14-slim-trixie
+# fica semanas sem rebuild e o trivy acusa CVE do Debian que ja tem correcao.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# UID/GID numericos (1001): o runAsNonRoot do Kubernetes so verifica UID numerico.
-RUN groupadd -r -g 1001 pytstop && useradd -r -u 1001 -g pytstop pytstop
+# Usuario de sistema sem shell de login; UID/GID numericos (1001) porque o
+# runAsNonRoot do Kubernetes so verifica UID numerico.
+RUN groupadd -r -g 1001 pytstop \
+    && useradd -r -u 1001 -g pytstop -s /usr/sbin/nologin pytstop
 
 # Sem pip no runtime: o app roda pelo venv do uv e nunca instala nada; o pip da
 # base traz pacotes vendorizados que o trivy acusa sem correcao possivel aqui.
@@ -67,7 +69,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 HEALTHCHECK --interval=30s --timeout=4s --start-period=20s --start-interval=2s --retries=3 \
   CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude/pronto', timeout=3).status==200 else 1)"]
 
-USER pytstop
+USER 1001:1001
 EXPOSE 8000
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["api"]

@@ -64,6 +64,10 @@ class _Ambiente:
             raise ValueError(msg)
         self.desenvolvimento = self.nome in _AMBIENTES_DE_DESENVOLVIMENTO
 
+    def opcional(self, nome: str, padrao: str) -> str:
+        """Variavel vazia vale como ausente (``VAR=`` no .env usa o padrao)."""
+        return self.env.get(nome) or padrao
+
     def exigir(self, nome: str) -> str:
         """Obrigatoria fora de dev/test; em dev/test cai no padrao local."""
         padrao = _PADROES_DE_DESENVOLVIMENTO.get(nome, "")
@@ -91,13 +95,13 @@ class _Ambiente:
     def mp_api_url(self) -> str:
         return self.url(
             "MP_API_URL",
-            self.env.get("MP_API_URL", "https://api.mercadopago.com"),
+            self.opcional("MP_API_URL", "https://api.mercadopago.com"),
             https=True,
         )
 
     def positivo(self, nome: str, padrao: float) -> float:
         try:
-            valor = float(self.env.get(nome, padrao))
+            valor = float(self.opcional(nome, str(padrao)))
         except ValueError:
             msg = f"{nome} deve ser numerico"
             raise ValueError(msg) from None
@@ -108,7 +112,7 @@ class _Ambiente:
 
     def inteiro_positivo(self, nome: str, padrao: int) -> int:
         try:
-            valor = int(self.env.get(nome, padrao))
+            valor = int(self.opcional(nome, str(padrao)))
         except ValueError:
             msg = f"{nome} deve ser um inteiro"
             raise ValueError(msg) from None
@@ -158,7 +162,7 @@ class ConfiguracaoDoBanco:
         return cls(
             ambiente=ambiente.nome,
             mongodb_uri=ambiente.exigir("MONGODB_URI"),
-            mongodb_banco=ambiente.env.get("MONGODB_DB", "billing"),
+            mongodb_banco=ambiente.opcional("MONGODB_DB", "billing"),
         )
 
 
@@ -188,7 +192,7 @@ class ConfiguracaoDosPrazos:
             mp_access_token=ambiente.mp_access_token(modo),
             mp_api_url=ambiente.mp_api_url(),
             mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
-            heartbeat=Path(ambiente.env.get("PRAZOS_HEARTBEAT", _HEARTBEAT_PADRAO)),
+            heartbeat=Path(ambiente.opcional("PRAZOS_HEARTBEAT", _HEARTBEAT_PADRAO)),
             porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", 8000),
         )
 
@@ -235,8 +239,8 @@ class Configuracao:
             mongodb_uri=banco.mongodb_uri,
             mongodb_banco=banco.mongodb_banco,
             jwks_url=ambiente.url("JWKS_URL", ambiente.exigir("JWKS_URL"), https=False),
-            jwt_emissor=ambiente.env.get("JWT_ISSUER", "pytstop-os-service"),
-            jwt_audiencia=ambiente.env.get("JWT_AUDIENCE", "pytstop"),
+            jwt_emissor=ambiente.opcional("JWT_ISSUER", "pytstop-os-service"),
+            jwt_audiencia=ambiente.opcional("JWT_AUDIENCE", "pytstop"),
             url_publica=url_publica,
             link_segredo=segredo,
             orcamento_validade=timedelta(
@@ -252,7 +256,7 @@ class Configuracao:
             mp_api_url=ambiente.mp_api_url(),
             mp_notification_url=ambiente.url(
                 "MP_NOTIFICATION_URL",
-                ambiente.env.get(
+                ambiente.opcional(
                     "MP_NOTIFICATION_URL", f"{url_publica}/api/v1/webhooks/mercadopago"
                 ),
                 https=True,
