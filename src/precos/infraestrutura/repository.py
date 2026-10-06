@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from pymongo.errors import DuplicateKeyError
 
 from src.compartilhado.infraestrutura.mongo import (
+    ESQUEMA_DINHEIRO,
+    aplicar_validador,
     dinheiro_de_bson,
     dinheiro_para_bson,
 )
@@ -25,7 +27,34 @@ COLECAO_SERVICOS = "precos_servicos"
 COLECAO_PECAS = "precos_pecas"
 
 
-def criar_indices_precos(banco: Database[Documento]) -> None:
+_CODIGO = {"bsonType": "string", "minLength": 1, "maxLength": 50}
+_TEXTO = {"bsonType": "string", "minLength": 1}
+ESQUEMA_SERVICOS: Documento = {
+    "bsonType": "object",
+    "required": ["codigo", "nome", "descricao", "preco", "ativo"],
+    "properties": {
+        "codigo": _CODIGO,
+        "nome": _TEXTO,
+        "descricao": _TEXTO,
+        "preco": ESQUEMA_DINHEIRO,
+        "ativo": {"bsonType": "bool"},
+    },
+}
+ESQUEMA_PECAS: Documento = {
+    "bsonType": "object",
+    "required": ["sku", "nome", "preco", "ativo"],
+    "properties": {
+        "sku": _CODIGO,
+        "nome": _TEXTO,
+        "preco": ESQUEMA_DINHEIRO,
+        "ativo": {"bsonType": "bool"},
+    },
+}
+
+
+def preparar_precos(banco: Database[Documento]) -> None:
+    aplicar_validador(banco, COLECAO_SERVICOS, ESQUEMA_SERVICOS)
+    aplicar_validador(banco, COLECAO_PECAS, ESQUEMA_PECAS)
     banco[COLECAO_SERVICOS].create_index("codigo", unique=True)
     banco[COLECAO_PECAS].create_index("sku", unique=True)
 

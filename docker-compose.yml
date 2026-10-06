@@ -34,6 +34,20 @@ x-ambiente: &ambiente
   PRAZOS_INTERVALO_SEGUNDOS: ${PRAZOS_INTERVALO_SEGUNDOS:-30}
 
 services:
+  # Preparacao idempotente do MongoDB (indices e validadores) antes da API e
+  # do prazos; no Kubernetes e o Job de inicializacao.
+  init:
+    <<: *endurecimento
+    image: ${BILLING_IMAGE:-pytstop-billing:dev}
+    command: ["banco"]
+    environment: *ambiente
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
+
   api:
     <<: *endurecimento
     build:
@@ -52,8 +66,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      mongo:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   prazos:
@@ -62,10 +76,8 @@ services:
     command: ["prazos"]
     environment: *ambiente
     depends_on:
-      mongo:
-        condition: service_healthy
-      api:
-        condition: service_started
+      init:
+        condition: service_completed_successfully
     # O HEALTHCHECK da imagem e o HTTP da API; este processo prova vida pelo
     # heartbeat em arquivo, tocado a cada ciclo (vale 3 intervalos).
     healthcheck:

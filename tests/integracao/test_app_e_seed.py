@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import secrets
+import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pymongo.errors import WriteError
 
+from src import banco as init_do_banco
 from src import seed
+from src.compartilhado.infraestrutura.mongo import BancoNaoPreparadoError, criar_cliente
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
 from src.precos.aplicacao.use_cases import PrecosDeServicos
@@ -56,19 +60,55 @@ def test_openapi_documenta_as_rotas_do_billing(api: TestClient) -> None:
     } <= caminhos
 
 
-def test_boot_conecta_no_mongodb_pela_configuracao(
-    mongo_uri: str,
-    cliente_mongo: MongoClient[dict[str, Any]],
-    jwks_publicado: dict[str, Any],
-) -> None:
-    nome = f"teste_{uuid4().hex}"
-    app = criar_app(configuracao(MONGODB_URI=mongo_uri, MONGODB_DB=nome))
-    try:
-        with TestClient(app) as cliente:
-            assert cliente.get("/api/v1/saude").status_code == 200
-        assert "outbox" in cliente_mongo[nome].list_collection_names()
-    finally:
-        cliente_mongo.drop_database(nome)
+class TestBancoEProntidao:
+    def test_api_so_fica_pronta_depois_do_init_do_banco(
+        self,
+        mongo_uri: str,
+        cliente_mongo: MongoClient[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        jwks_publicado: dict[str, Any],
+    ) -> None:
+        nome = f"teste_{uuid4().hex}"
+        app = criar_app(configuracao(MONGODB_URI=mongo_uri, MONGODB_DB=nome))
+        monkeypatch.setenv("ENVIRONMENT", "test")
+        monkeypatch.setenv("MONGODB_URI", mongo_uri)
+        monkeypatch.setenv("MONGODB_DB", nome)
+        try:
+            with TestClient(app) as cliente:
+                # O boot nao cria nada: sem o init, a API vive mas nao esta pronta.
+                assert cliente.get("/api/v1/saude").status_code == 200
+                nao_pronta = cliente.get("/api/v1/saude/pronto")
+                assert nao_pronta.status_code == 503
+                assert nao_pronta.json()["erro"]["codigo"] == "SERVICO_INDISPONIVEL"
+                init_do_banco.main()
+                init_do_banco.main()  # idempotente
+                assert cliente.get("/api/v1/saude/pronto").json() == {
+                    "status": "pronto"
+                }
+            colecoes = set(cliente_mongo[nome].list_collection_names())
+            assert {"outbox", "pagamentos", "orcamentos", "versao_do_banco"} <= colecoes
+            assert capsys.readouterr().out.count(f"banco {nome} preparado") == 2
+        finally:
+            cliente_mongo.drop_database(nome)
+
+    def test_banco_fora_do_ar_deixa_a_api_viva_e_nao_pronta(
+        self, jwks_publicado: dict[str, Any]
+    ) -> None:
+        inalcancavel = criar_cliente("mongodb://127.0.0.1:1/?directConnection=true")
+        app = criar_app(configuracao(), banco=inalcancavel["billing"])
+        try:
+            with TestClient(app) as cliente:
+                assert cliente.get("/api/v1/saude").status_code == 200
+                inicio = time.monotonic()
+                assert cliente.get("/api/v1/saude/pronto").status_code == 503
+                assert time.monotonic() - inicio < 4
+        finally:
+            inalcancavel.close()
+
+    def test_validador_recusa_documento_fora_do_esquema(self, banco: Banco) -> None:
+        with pytest.raises(WriteError, match="validation"):
+            banco["pagamentos"].insert_one({"_id": uuid4(), "status": "PENDENTE"})
 
 
 PRODUCAO = {
@@ -151,11 +191,14 @@ class TestSeed:
         monkeypatch.setenv("MONGODB_URI", mongo_uri)
         monkeypatch.setenv("MONGODB_DB", nome)
         try:
+            with pytest.raises(BancoNaoPreparadoError):
+                seed.main()  # sem o init, os indices unicos nao existem
+            init_do_banco.main()
             seed.main()
             seed.main()
         finally:
             cliente_mongo.drop_database(nome)
-        assert capsys.readouterr().out.splitlines() == [
+        assert capsys.readouterr().out.splitlines()[1:] == [
             "seed de precos: 11 criados, 0 ja existiam",
             "seed de precos: 0 criados, 11 ja existiam",
         ]

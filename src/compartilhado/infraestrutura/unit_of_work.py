@@ -17,6 +17,7 @@ from pymongo.write_concern import WriteConcern
 
 from src.compartilhado.aplicacao.outbox import para_envelope
 from src.compartilhado.dominio.relogio import agora_utc
+from src.compartilhado.infraestrutura.mongo import aplicar_validador
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -115,6 +116,20 @@ class MongoUnitOfWork:
         self.banco[COLECAO_OUTBOX].insert_many(documentos, session=sessao)
 
 
-def criar_indices_outbox(banco: Database[Documento]) -> None:
-    # Fila do relay (proximo PR): pendentes em ordem de ``_id`` (UUIDv7).
+ESQUEMA_OUTBOX: Documento = {
+    "bsonType": "object",
+    "required": ["tipo", "status", "tentativas", "criado_em", "envelope"],
+    "properties": {
+        "tipo": {"bsonType": "string"},
+        "status": {"bsonType": "string"},
+        "tentativas": {"bsonType": ["int", "long"], "minimum": 0},
+        "criado_em": {"bsonType": "date"},
+        "envelope": {"bsonType": "object"},
+    },
+}
+
+
+def preparar_outbox(banco: Database[Documento]) -> None:
+    aplicar_validador(banco, COLECAO_OUTBOX, ESQUEMA_OUTBOX)
+    # Fila do relay: pendentes em ordem de ``_id`` (UUIDv7).
     banco[COLECAO_OUTBOX].create_index([("status", 1), ("_id", 1)])

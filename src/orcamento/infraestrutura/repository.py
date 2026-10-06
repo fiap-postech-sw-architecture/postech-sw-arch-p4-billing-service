@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from pymongo.errors import DuplicateKeyError
 
 from src.compartilhado.infraestrutura.mongo import (
+    ESQUEMA_DINHEIRO,
+    aplicar_validador,
     dinheiro_de_bson,
     dinheiro_para_bson,
 )
@@ -32,8 +34,24 @@ if TYPE_CHECKING:
 COLECAO = "orcamentos"
 
 
-def criar_indices_orcamentos(banco: Database[Documento]) -> None:
-    # Um orcamento por ordem: a idempotencia do GerarOrcamento depende dele.
+ESQUEMA: Documento = {
+    "bsonType": "object",
+    "required": ["ordem_id", "status", "criado_em", "linhas"],
+    "properties": {
+        "ordem_id": {"bsonType": "binData"},
+        "status": {"enum": [status.value for status in StatusOrcamento]},
+        "criado_em": {"bsonType": "date"},
+        "valido_ate": {"bsonType": ["date", "null"]},
+        "linhas": {"bsonType": "array"},
+        "total": ESQUEMA_DINHEIRO,
+    },
+}
+
+
+def preparar_orcamentos(banco: Database[Documento]) -> None:
+    aplicar_validador(banco, COLECAO, ESQUEMA)
+    # Um orcamento (ou lapide) por ordem: a idempotencia do GerarOrcamento e a
+    # compensacao por ordem dependem dele.
     banco[COLECAO].create_index("ordem_id", unique=True)
     banco[COLECAO].create_index([("status", 1), ("valido_ate", 1)])
 

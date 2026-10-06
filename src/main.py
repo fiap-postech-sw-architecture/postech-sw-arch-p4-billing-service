@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 import structlog
 from fastapi import FastAPI
 
-from src.banco import preparar_banco
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
@@ -89,9 +88,11 @@ def criar_app(
         if producao and config.mp_modo is ModoMercadoPago.SIMULADO:
             # So chega aqui com SIMULADOR_PERMITIDO=true (demo): fica no log.
             _log.warning("payment_simulator_enabled_in_production")
+        # Sem acesso ao banco no boot: com o MongoDB fora a API sobe e a
+        # readiness responde 503 ate ele voltar (indices e validadores sao do
+        # init, ``python -m src.banco``).
         cliente = None if banco is not None else criar_cliente(config.mongodb_uri)
         app.state.banco = banco if cliente is None else cliente[config.mongodb_banco]
-        preparar_banco(app.state.banco)
         try:
             yield
         finally:

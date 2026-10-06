@@ -678,13 +678,15 @@ class TestFilaDeExpiracao:
         relogio: RelogioFixo,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
+        # Documento antigo fora do esquema (anterior ao validador do init).
         banco["pagamentos"].insert_one(
             {
                 "_id": uuid4(),
                 "orcamento_id": uuid4(),
                 "status": "SOLICITADO",
                 "expira_em": relogio.agora - timedelta(days=1),
-            }
+            },
+            bypass_document_validation=True,
         )
         pendente = solicitado(banco, gateway, relogio)
         relogio.avancar(minutes=61)

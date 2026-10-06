@@ -11,8 +11,7 @@ import sys
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from src.banco import preparar_banco
-from src.compartilhado.infraestrutura.mongo import criar_cliente
+from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDoBanco
 from src.precos.aplicacao.use_cases import PrecosDePecas, PrecosDeServicos
@@ -98,7 +97,8 @@ def main() -> None:
     cliente = criar_cliente(config.mongodb_uri)
     try:
         banco = cliente[config.mongodb_banco]
-        preparar_banco(banco)
+        # Os indices unicos de codigo e sku (do init) fazem o seed idempotente.
+        conferir_versao(banco)
         criados, existentes = semear(banco)
     finally:
         cliente.close()

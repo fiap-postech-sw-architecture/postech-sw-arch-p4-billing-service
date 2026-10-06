@@ -20,10 +20,9 @@ from typing import TYPE_CHECKING, Final
 
 from prometheus_client import Gauge, start_http_server
 
-from src.banco import preparar_banco
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
-from src.compartilhado.infraestrutura.mongo import criar_cliente
+from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDosPrazos, ModoMercadoPago
 from src.orcamento.aplicacao.use_cases import ExpirarOrcamentosVencidos
@@ -174,7 +173,7 @@ def main(parar: threading.Event | None = None) -> None:
     metricas = MetricasPrometheus()
     try:
         banco = cliente[config.banco.mongodb_banco]
-        preparar_banco(banco)
+        conferir_versao(banco)
         _log.info(
             "deadlines_started",
             extra={

@@ -334,6 +334,7 @@ class TestRepositorioDePagamento:
         uow = MongoUnitOfWork(banco)
         repo = MongoPagamentoRepository(uow)
         uow.executar(lambda: repo.salvar(p))
+        # Documento de versao anterior, sem os campos novos (fora do esquema).
         banco["pagamentos"].update_one(
             {"_id": p.id},
             {
@@ -343,6 +344,7 @@ class TestRepositorioDePagamento:
                     "motivo_estorno": "",
                 }
             },
+            bypass_document_validation=True,
         )
         lido = repo.obter_por_id(p.id)
         assert lido is not None

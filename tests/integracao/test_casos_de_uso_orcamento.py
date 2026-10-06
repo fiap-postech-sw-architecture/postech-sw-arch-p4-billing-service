@@ -456,7 +456,8 @@ class TestExpirarECancelar:
                 "ordem_id": uuid4(),
                 "status": "PENDENTE",
                 "valido_ate": relogio.agora - timedelta(days=1),
-            }
+            },
+            bypass_document_validation=True,
         )
         saudavel = gerado(banco, relogio)
         relogio.avancar(hours=73)

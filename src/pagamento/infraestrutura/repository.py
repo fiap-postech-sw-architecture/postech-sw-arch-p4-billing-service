@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from pymongo.errors import DuplicateKeyError
 
 from src.compartilhado.infraestrutura.mongo import (
+    ESQUEMA_DINHEIRO,
+    aplicar_validador,
     dinheiro_de_bson,
     dinheiro_para_bson,
 )
@@ -31,7 +33,26 @@ if TYPE_CHECKING:
 COLECAO = "pagamentos"
 
 
-def criar_indices_pagamentos(banco: Database[Documento]) -> None:
+ESQUEMA: Documento = {
+    "bsonType": "object",
+    "required": ["ordem_id", "status", "criado_em", "recusas"],
+    "properties": {
+        "ordem_id": {"bsonType": "binData"},
+        "status": {"enum": [status.value for status in StatusPagamento]},
+        "criado_em": {"bsonType": "date"},
+        "recusas": {"bsonType": ["int", "long"], "minimum": 0},
+        "orcamento_id": {"bsonType": "binData"},
+        "valor": ESQUEMA_DINHEIRO,
+        "expira_em": {"bsonType": "date"},
+        "referencia_pagamento": {"bsonType": ["string", "null"]},
+        "notificacoes": {"bsonType": "array"},
+        "estornos_automaticos": {"bsonType": "array"},
+    },
+}
+
+
+def preparar_pagamentos(banco: Database[Documento]) -> None:
+    aplicar_validador(banco, COLECAO, ESQUEMA)
     # Um pagamento (ou lapide) por ordem: a compensacao acha a cobranca por ele,
     # e o SolicitarPagamento atrasado encontra a lapide (RFC-004 secao 7.4).
     banco[COLECAO].create_index("ordem_id", unique=True)

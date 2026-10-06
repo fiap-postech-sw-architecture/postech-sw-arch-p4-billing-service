@@ -1,6 +1,7 @@
 #!/bin/bash
-# Um container, processos diferentes (RFC-004 §10): `api` (padrao) ou `prazos`.
-# O relay do outbox e o consumidor de comandos entram com a mensageria.
+# Um container, processos diferentes (RFC-004 secao 10.2): `api` (padrao),
+# `prazos` e `banco` (preparacao idempotente do MongoDB, antes dos outros).
+# O relay da outbox e o consumidor de comandos entram com a mensageria.
 set -euo pipefail
 
 processo="${1:-api}"
@@ -20,8 +21,11 @@ case "$processo" in
   prazos)
     exec python -m src.prazos
     ;;
+  banco)
+    exec python -m src.banco
+    ;;
   *)
-    echo "Processo desconhecido: ${processo} (use api ou prazos)" >&2
+    echo "Processo desconhecido: ${processo} (use api, prazos ou banco)" >&2
     exit 64
     ;;
 esac

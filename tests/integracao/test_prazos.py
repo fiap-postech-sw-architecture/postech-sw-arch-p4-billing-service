@@ -13,6 +13,8 @@ import pytest
 from prometheus_client import REGISTRY
 
 from src import prazos
+from src.banco import preparar_banco
+from src.compartilhado.infraestrutura.mongo import BancoNaoPreparadoError
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDosPrazos
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
@@ -293,6 +295,7 @@ class TestBoot:
         monkeypatch.setattr(prazos, "start_http_server", portas.append)
         parar = threading.Event()
         parar.set()  # o laco sai na hora; o boot e o encerramento rodam inteiros
+        preparar_banco(cliente_mongo[ambiente["MONGODB_DB"]])
         try:
             prazos.main(parar)
         finally:
@@ -313,11 +316,27 @@ class TestBoot:
             parar.set()
 
         monkeypatch.setattr(prazos, "instalar_sinais", instalar)
+        preparar_banco(cliente_mongo[ambiente["MONGODB_DB"]])
         try:
             prazos.main()
         finally:
             cliente_mongo.drop_database(ambiente["MONGODB_DB"])
         assert len(eventos) == 1
+
+    def test_main_recusa_banco_sem_o_init(
+        self,
+        ambiente: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+        cliente_mongo: MongoClient[dict[str, Any]],
+    ) -> None:
+        monkeypatch.setattr(prazos, "start_http_server", lambda _porta: None)
+        parar = threading.Event()
+        parar.set()
+        try:
+            with pytest.raises(BancoNaoPreparadoError, match=r"src\.banco"):
+                prazos.main(parar)
+        finally:
+            cliente_mongo.drop_database(ambiente["MONGODB_DB"])
 
     def test_gateway_so_com_o_mercado_pago_real(self) -> None:
         simulado = ConfiguracaoDosPrazos.do_ambiente(

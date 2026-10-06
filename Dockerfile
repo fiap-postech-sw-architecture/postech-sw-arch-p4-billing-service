@@ -61,10 +61,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTSTOP_GIT_SHA="${GIT_SHA}" \
     PYTSTOP_GIT_DATE="${GIT_DATE}"
 
-# Imagem slim sem curl: probe em Python. Vale para o processo `api`; o compose
-# desliga para o `prazos`, e o Kubernetes usa as proprias probes.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --start-interval=2s --retries=3 \
-  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude', timeout=2).status==200 else 1)"]
+# Imagem slim sem curl: probe em Python na readiness (banco no ar e preparado).
+# Vale para o processo `api`; o compose da ao `prazos` o heartbeat, e o
+# Kubernetes usa as proprias probes.
+HEALTHCHECK --interval=30s --timeout=4s --start-period=20s --start-interval=2s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude/pronto', timeout=3).status==200 else 1)"]
 
 USER pytstop
 EXPOSE 8000
