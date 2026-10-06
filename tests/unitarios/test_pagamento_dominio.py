@@ -70,6 +70,26 @@ def aplicar(
     return p.aplicar_notificacao(tentativa, agora=agora, max_recusas=max_recusas)
 
 
+def reconstituir(**campos: object) -> Pagamento:
+    padrao: dict[str, object] = {
+        "id": uuid4(),
+        "ordem_id": uuid4(),
+        "criado_em": AGORA,
+        "cobranca": pagamento().cobranca,
+        "status": StatusPagamento.SOLICITADO,
+        "recusas": 0,
+        "referencia_pagamento": None,
+        "confirmado_em": None,
+        "encerrado_em": None,
+        "motivo": None,
+        "estornado_em": None,
+        "motivo_estorno": None,
+        "notificacoes": (),
+        "estornos_automaticos": (),
+    }
+    return Pagamento.reconstituir(**(padrao | campos))  # type: ignore[arg-type]
+
+
 def solicitado() -> Pagamento:
     p = pagamento()
     p.limpar_eventos()
@@ -219,7 +239,15 @@ class TestLapide:
 
     def test_sem_cobranca_so_como_lapide_cancelada(self) -> None:
         with pytest.raises(ValorInvalidoError, match="lapide"):
-            Pagamento(_ordem_id=uuid4(), _criado_em=AGORA)
+            reconstituir(cobranca=None)
+
+    def test_reconstituir_nao_gera_evento(self) -> None:
+        reidratado = reconstituir(recusas=2)
+        assert (reidratado.status, reidratado.recusas) == (
+            StatusPagamento.SOLICITADO,
+            2,
+        )
+        assert reidratado.coletar_eventos() == []
 
 
 class TestAprovacao:
@@ -600,32 +628,43 @@ class TestReidratacao:
     def test_status_exige_os_campos_dele(
         self, status: StatusPagamento, faltando: str
     ) -> None:
-        cobranca = pagamento().cobranca
         with pytest.raises(ValorInvalidoError, match="dados incompletos"):
-            Pagamento(
-                _ordem_id=uuid4(), _criado_em=AGORA, _cobranca=cobranca, _status=status
-            )
+            reconstituir(status=status)
 
     def test_datas_dos_eventos_com_timezone(self) -> None:
-        cobranca = pagamento().cobranca
         with pytest.raises(ValorInvalidoError, match="timezone"):
-            Pagamento(
-                _ordem_id=uuid4(),
-                _criado_em=AGORA,
-                _cobranca=cobranca,
-                _status=StatusPagamento.CONFIRMADO,
-                _referencia_pagamento="1",
-                _confirmado_em=datetime(2026, 10, 6, 12, 5),
+            reconstituir(
+                status=StatusPagamento.CONFIRMADO,
+                referencia_pagamento="1",
+                confirmado_em=datetime(2026, 10, 6, 12, 5),
             )
 
     @pytest.mark.parametrize("recusas", [-1, True], ids=["negativa", "bool"])
     def test_recusas_inteiro_nao_negativo(self, recusas: int) -> None:
         with pytest.raises(ValorInvalidoError, match="recusas"):
-            Pagamento(
-                _ordem_id=uuid4(),
-                _criado_em=AGORA,
-                _cobranca=pagamento().cobranca,
-                _recusas=recusas,
+            reconstituir(recusas=recusas)
+
+    @pytest.mark.parametrize("maximo", [0, -1, True], ids=["zero", "negativo", "bool"])
+    def test_max_recusas_inteiro_positivo(self, maximo: int) -> None:
+        with pytest.raises(ValorInvalidoError, match="max_recusas"):
+            aplicar(solicitado(), StatusNoProvedor.RECUSADO, max_recusas=maximo)
+
+    @pytest.mark.parametrize(
+        ("referencia", "bruto"),
+        [("", "approved"), ("1", " ")],
+        ids=["sem-referencia", "sem-status"],
+    )
+    def test_situacao_do_provedor_exige_referencia_e_status(
+        self, referencia: str, bruto: str
+    ) -> None:
+        with pytest.raises(ValorInvalidoError, match="nao pode ser vazio"):
+            SituacaoNoProvedor(
+                referencia=referencia,
+                referencia_externa=None,
+                status=StatusNoProvedor.APROVADO,
+                status_provedor=bruto,
+                detalhe=None,
+                valor=None,
             )
 
 

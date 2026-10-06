@@ -41,6 +41,7 @@ from src.pagamento.dominio.events import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
     from uuid import UUID
 
@@ -64,6 +65,9 @@ def _motivo(texto: str) -> str:
 
 @dataclass(eq=False, kw_only=True)
 class Pagamento(AggregateRoot):
+    """Uma cobranca por ordem: tentativas no provedor, recusas contadas,
+    prazo, compensacao e estornos (os automaticos inclusive)."""
+
     _ordem_id: UUID
     _criado_em: datetime
     # None so na lapide: compensacao que chegou antes do SolicitarPagamento.
@@ -139,6 +143,44 @@ class Pagamento(AggregateRoot):
         )
         pagamento._registrar_evento(pagamento.desfecho_da_compensacao())
         return pagamento
+
+    @classmethod
+    def reconstituir(  # noqa: PLR0913 - reidratacao recebe cada campo persistido
+        cls,
+        *,
+        id: UUID,  # noqa: A002 - mesmo nome do campo herdado de Entity
+        ordem_id: UUID,
+        criado_em: datetime,
+        cobranca: Cobranca | None,
+        status: StatusPagamento,
+        recusas: int,
+        referencia_pagamento: str | None,
+        confirmado_em: datetime | None,
+        encerrado_em: datetime | None,
+        motivo: str | None,
+        estornado_em: datetime | None,
+        motivo_estorno: MotivoEstorno | None,
+        notificacoes: Sequence[NotificacaoRecebida],
+        estornos_automaticos: Sequence[EstornoAutomatico],
+    ) -> Pagamento:
+        """Reidrata do armazenamento: as invariantes (inclusive a coerencia
+        status x campos) valem de novo, sem evento."""
+        return cls(
+            id=id,
+            _ordem_id=ordem_id,
+            _criado_em=criado_em,
+            _cobranca=cobranca,
+            _status=status,
+            _recusas=recusas,
+            _referencia_pagamento=referencia_pagamento,
+            _confirmado_em=confirmado_em,
+            _encerrado_em=encerrado_em,
+            _motivo=motivo,
+            _estornado_em=estornado_em,
+            _motivo_estorno=motivo_estorno,
+            _notificacoes=list(notificacoes),
+            _estornos_automaticos=list(estornos_automaticos),
+        )
 
     @property
     def ordem_id(self) -> UUID:
@@ -244,6 +286,9 @@ class Pagamento(AggregateRoot):
         recusa, e a de numero ``max_recusas`` leva a RECUSADO. Tentativa ja
         vista nao muda nada (``SEM_MUDANCA``: o caso de uso nem grava).
         """
+        if isinstance(max_recusas, bool) or max_recusas < 1:
+            msg = "max_recusas deve ser um inteiro maior que zero"
+            raise ValorInvalidoError(msg)
         nova = self._registrar_notificacao(
             NotificacaoRecebida(
                 recebida_em=agora,

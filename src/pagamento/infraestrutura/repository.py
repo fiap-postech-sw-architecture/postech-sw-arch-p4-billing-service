@@ -163,20 +163,20 @@ def _de_documento(doc: Documento) -> Pagamento:
     # Campos opcionais lidos com ``get``: documento gravado por versao anterior
     # (sem um campo novo) continua legivel (expand/contract).
     motivo_estorno = doc.get("motivo_estorno")
-    return Pagamento(
+    return Pagamento.reconstituir(
         id=doc["_id"],
-        _ordem_id=doc["ordem_id"],
-        _criado_em=doc["criado_em"],
-        _cobranca=_cobranca(doc),
-        _status=StatusPagamento(doc["status"]),
-        _recusas=doc.get("recusas", 0),
-        _referencia_pagamento=doc.get("referencia_pagamento"),
-        _confirmado_em=doc.get("confirmado_em"),
-        _encerrado_em=doc.get("encerrado_em"),
-        _motivo=doc.get("motivo"),
-        _estornado_em=doc.get("estornado_em"),
-        _motivo_estorno=MotivoEstorno(motivo_estorno) if motivo_estorno else None,
-        _notificacoes=[
+        ordem_id=doc["ordem_id"],
+        criado_em=doc["criado_em"],
+        cobranca=_cobranca(doc),
+        status=StatusPagamento(doc["status"]),
+        recusas=doc.get("recusas", 0),
+        referencia_pagamento=doc.get("referencia_pagamento"),
+        confirmado_em=doc.get("confirmado_em"),
+        encerrado_em=doc.get("encerrado_em"),
+        motivo=doc.get("motivo"),
+        estornado_em=doc.get("estornado_em"),
+        motivo_estorno=MotivoEstorno(motivo_estorno) if motivo_estorno else None,
+        notificacoes=[
             NotificacaoRecebida(
                 recebida_em=n["recebida_em"],
                 referencia_pagamento=n["referencia_pagamento"],
@@ -184,7 +184,7 @@ def _de_documento(doc: Documento) -> Pagamento:
             )
             for n in doc.get("notificacoes", [])
         ],
-        _estornos_automaticos=[
+        estornos_automaticos=[
             EstornoAutomatico(
                 referencia_pagamento=e["referencia_pagamento"],
                 registrado_em=e["registrado_em"],

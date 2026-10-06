@@ -708,6 +708,9 @@ class TestCircuitBreaker:
         finally:
             gateway.fechar()
 
+    def test_configuracao_nao_expoe_o_token_no_repr(self) -> None:
+        assert TOKEN not in repr(ConfiguracaoMercadoPago(TOKEN, NOTIFICACAO))
+
     def test_gateway_sem_breaker_injetado_cria_o_proprio(self) -> None:
         gateway = MercadoPagoGateway(
             ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO)

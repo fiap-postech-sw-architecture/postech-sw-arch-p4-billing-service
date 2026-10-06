@@ -64,6 +64,10 @@ class SituacaoNoProvedor(ValueObject):
     detalhe: str | None
     valor: Dinheiro | None
 
+    def __post_init__(self) -> None:
+        exigir_texto("Referencia do pagamento", self.referencia)
+        exigir_texto("Status do provedor", self.status_provedor)
+
 
 @dataclass(frozen=True, slots=True)
 class NotificacaoRecebida(ValueObject):

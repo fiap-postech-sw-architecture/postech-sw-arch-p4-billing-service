@@ -140,7 +140,7 @@ class TestConciliacao:
         # Ja encerrado: nao e consultado de novo.
         assert self.processar(banco, gateway).executar() == 0
 
-    def test_provedor_fora_pausa_a_rodada(
+    def test_provedor_fora_pausa_o_ciclo(
         self, banco: Banco, caplog: pytest.LogCaptureFixture
     ) -> None:
         salvar(banco, pagamento(), pagamento())

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from src.compartilhado.dominio.exceptions import ValorInvalidoError
@@ -9,19 +11,34 @@ from tests.factories import dinheiro
 
 
 def servico(codigo: str = "SRV-TROCA-OLEO", *, ativo: bool = True) -> PrecoServico:
-    return PrecoServico(
-        _codigo=codigo,
-        _nome="Troca de oleo",
-        _descricao="Troca do oleo do motor",
-        _preco=dinheiro("120.00"),
-        _ativo=ativo,
+    return PrecoServico.reconstituir(
+        id=uuid4(),
+        codigo=codigo,
+        nome="Troca de oleo",
+        descricao="Troca do oleo do motor",
+        preco=dinheiro("120.00"),
+        ativo=ativo,
     )
 
 
 def peca(sku: str = "PEC-OLEO-5W30", *, ativo: bool = True) -> PrecoPeca:
-    return PrecoPeca(
-        _sku=sku, _nome="Oleo 5W30", _preco=dinheiro("45.00"), _ativo=ativo
+    return PrecoPeca.reconstituir(
+        id=uuid4(), sku=sku, nome="Oleo 5W30", preco=dinheiro("45.00"), ativo=ativo
     )
+
+
+def test_cadastrar_cria_ativo_e_sem_evento() -> None:
+    novo = PrecoServico.cadastrar(
+        codigo="SRV-X", nome="X", descricao="Servico X", preco=dinheiro("10.00")
+    )
+    nova = PrecoPeca.cadastrar(sku="PEC-X", nome="X", preco=dinheiro("1.00"))
+    assert (novo.codigo, novo.ativo, nova.sku, nova.ativo) == (
+        "SRV-X",
+        True,
+        "PEC-X",
+        True,
+    )
+    assert novo.coletar_eventos() == nova.coletar_eventos() == []
 
 
 class TestPrecoServico:
@@ -42,22 +59,22 @@ class TestPrecoServico:
         with pytest.raises(ValorInvalidoError, match="Codigo do servico invalido"):
             servico(codigo)
 
-    @pytest.mark.parametrize("campo", ["_nome", "_descricao"])
+    @pytest.mark.parametrize("campo", ["nome", "descricao"])
     def test_texto_vazio_e_rejeitado(self, campo: str) -> None:
         dados = {
-            "_codigo": "SRV-X",
-            "_nome": "Nome",
-            "_descricao": "Descricao",
-            "_preco": dinheiro("1.00"),
+            "codigo": "SRV-X",
+            "nome": "Nome",
+            "descricao": "Descricao",
+            "preco": dinheiro("1.00"),
             campo: "   ",
         }
         with pytest.raises(ValorInvalidoError, match="nao pode ser vazio"):
-            PrecoServico(**dados)  # type: ignore[arg-type]
+            PrecoServico.cadastrar(**dados)  # type: ignore[arg-type]
 
     def test_preco_zero_e_rejeitado(self) -> None:
         with pytest.raises(ValorInvalidoError, match="maior que zero"):
-            PrecoServico(
-                _codigo="SRV-X", _nome="N", _descricao="D", _preco=dinheiro("0")
+            PrecoServico.cadastrar(
+                codigo="SRV-X", nome="N", descricao="D", preco=dinheiro("0")
             )
 
     def test_atualizar_reaplica_invariantes_e_reativa(self) -> None:
@@ -104,7 +121,7 @@ class TestPrecoPeca:
 
     def test_nome_vazio_e_rejeitado(self) -> None:
         with pytest.raises(ValorInvalidoError, match="Nome da peca"):
-            PrecoPeca(_sku="PEC-X", _nome="", _preco=dinheiro("1.00"))
+            PrecoPeca.cadastrar(sku="PEC-X", nome="", preco=dinheiro("1.00"))
 
 
 class TestValidacaoDeItens:

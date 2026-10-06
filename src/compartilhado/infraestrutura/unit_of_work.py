@@ -33,6 +33,15 @@ COLECAO_OUTBOX = "outbox"
 
 
 class MongoUnitOfWork:
+    """Escritas de um caso de uso e os eventos delas na mesma transacao.
+
+    Os repositorios gravam com ``sessao`` e chamam ``registrar``; ao fim do
+    trabalho, os eventos dos agregados registrados (e os avulsos, como a
+    resposta republicada na repeticao) viram documentos da outbox na mesma
+    transacao (RFC-004, secao 5.2). Nenhum evento sai sem a escrita, nem o
+    contrario.
+    """
+
     def __init__(self, banco: Database[Documento]) -> None:
         self.banco = banco
         self._sessao: ClientSession | None = None
@@ -45,6 +54,12 @@ class MongoUnitOfWork:
         return self._sessao
 
     def executar[T](self, trabalho: Callable[[], T]) -> T:
+        """Roda ``trabalho`` numa transacao e devolve o resultado dele.
+
+        Conflito de escrita (``WriteConflict``) reexecuta o trabalho inteiro,
+        do zero: ele precisa reler o que usa, sem efeito fora do banco (I/O
+        com o provedor fica fora da transacao). Sem aninhamento.
+        """
         if self._sessao is not None:
             msg = "Transacao aninhada nao suportada"
             raise RuntimeError(msg)
@@ -81,6 +96,7 @@ class MongoUnitOfWork:
             self._agregados.append(agregado)
 
     def registrar_evento(self, evento: IntegrationEvent) -> None:
+        """Evento sem agregado alterado (ex.: o desfecho republicado)."""
         self._exigir_transacao()
         self._eventos_avulsos.append(evento)
 
@@ -130,6 +146,7 @@ ESQUEMA_OUTBOX: Documento = {
 
 
 def preparar_outbox(banco: Database[Documento]) -> None:
+    """Validador e indice da outbox (init do banco, idempotente)."""
     aplicar_validador(banco, COLECAO_OUTBOX, ESQUEMA_OUTBOX)
     # Fila do relay: pendentes em ordem de ``_id`` (UUIDv7).
     banco[COLECAO_OUTBOX].create_index([("status", 1), ("_id", 1)])

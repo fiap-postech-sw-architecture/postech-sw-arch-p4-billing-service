@@ -244,6 +244,38 @@ class TestGerarOrcamento:
             "codigos_invalidos": ["SRV-NAO-EXISTE", "PEC-VELA", "SRV-TROCA-OLEO"],
         }
 
+    def test_quantidade_acima_do_limite_grava_falha(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        ordem_id = uuid4()
+        itens = [ItemSolicitado(TipoItem.PECA, "PEC-OLEO-5W30", 1001)]
+
+        assert gerar(banco, relogio).executar(ordem_id=ordem_id, itens=itens) is None
+
+        assert banco["orcamentos"].count_documents({}) == 0
+        [envelope] = eventos_do_outbox(banco)
+        assert envelope["dados"] == {
+            "ordem_id": str(ordem_id),
+            "motivo": "Quantidade deve ser um inteiro de 1 a 1000",
+            "codigos_invalidos": [],
+        }
+
+    def test_total_acima_do_teto_do_contrato_grava_falha(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        uow = MongoUnitOfWork(banco)
+        PrecosDePecas(uow, MongoPrecoPecaRepository(uow)).cadastrar(
+            sku="PEC-MOTOR", nome="Motor completo", preco=Decimal("99999999.99")
+        )
+        itens = [ItemSolicitado(TipoItem.PECA, "PEC-MOTOR", 1000)]
+
+        assert gerar(banco, relogio).executar(ordem_id=uuid4(), itens=itens) is None
+
+        assert banco["orcamentos"].count_documents({}) == 0
+        [envelope] = eventos_do_outbox(banco)
+        assert envelope["tipo"] == "GeracaoDeOrcamentoFalhou"
+        assert "10 digitos inteiros" in envelope["dados"]["motivo"]
+
     def test_diagnostico_sem_itens_grava_falha(
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:

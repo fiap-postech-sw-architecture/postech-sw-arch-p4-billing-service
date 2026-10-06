@@ -31,8 +31,8 @@ class PrecosDeServicos:
     def cadastrar(
         self, *, codigo: str, nome: str, descricao: str, preco: Decimal
     ) -> PrecoServicoDTO:
-        novo = PrecoServico(
-            _codigo=codigo, _nome=nome, _descricao=descricao, _preco=Dinheiro(preco)
+        novo = PrecoServico.cadastrar(
+            codigo=codigo, nome=nome, descricao=descricao, preco=Dinheiro(preco)
         )
         self._uow.executar(lambda: self._repo.salvar(novo))
         return PrecoServicoDTO.de(novo)
@@ -86,7 +86,7 @@ class PrecosDePecas:
         self._repo = repo
 
     def cadastrar(self, *, sku: str, nome: str, preco: Decimal) -> PrecoPecaDTO:
-        nova = PrecoPeca(_sku=sku, _nome=nome, _preco=Dinheiro(preco))
+        nova = PrecoPeca.cadastrar(sku=sku, nome=nome, preco=Dinheiro(preco))
         self._uow.executar(lambda: self._repo.salvar(nova))
         return PrecoPecaDTO.de(nova)
 

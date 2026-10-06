@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pymongo.errors import DuplicateKeyError
 
@@ -142,22 +142,22 @@ class MongoPrecoPecaRepository:
             raise PrecoJaCadastradoError(msg) from None
 
 
-def _servico(doc: dict[str, Any]) -> PrecoServico:
-    return PrecoServico(
+def _servico(doc: Documento) -> PrecoServico:
+    return PrecoServico.reconstituir(
         id=doc["_id"],
-        _codigo=doc["codigo"],
-        _nome=doc["nome"],
-        _descricao=doc["descricao"],
-        _preco=dinheiro_de_bson(doc["preco"]),
-        _ativo=doc["ativo"],
+        codigo=doc["codigo"],
+        nome=doc["nome"],
+        descricao=doc["descricao"],
+        preco=dinheiro_de_bson(doc["preco"]),
+        ativo=doc["ativo"],
     )
 
 
-def _peca(doc: dict[str, Any]) -> PrecoPeca:
-    return PrecoPeca(
+def _peca(doc: Documento) -> PrecoPeca:
+    return PrecoPeca.reconstituir(
         id=doc["_id"],
-        _sku=doc["sku"],
-        _nome=doc["nome"],
-        _preco=dinheiro_de_bson(doc["preco"]),
-        _ativo=doc["ativo"],
+        sku=doc["sku"],
+        nome=doc["nome"],
+        preco=dinheiro_de_bson(doc["preco"]),
+        ativo=doc["ativo"],
     )

@@ -82,6 +82,13 @@ _TRANSICOES: Final = MappingProxyType(
 _ENCERRADOS_SEM_DECISAO_VALIDA: Final = frozenset(
     {StatusOrcamento.CANCELADO, StatusOrcamento.RECUSADO, StatusOrcamento.EXPIRADO}
 )
+_DECIDIDOS: Final = frozenset({StatusOrcamento.APROVADO, StatusOrcamento.RECUSADO})
+_SEM_DECISAO: Final = frozenset({StatusOrcamento.PENDENTE, StatusOrcamento.EXPIRADO})
+
+# Limites do ``GerarOrcamento``/``OrcamentoGerado`` (RFC-004, secao 5.3).
+QUANTIDADE_MAXIMA_POR_LINHA: Final = 1000
+TAMANHO_MAXIMO_CODIGO: Final = 50
+TAMANHO_MAXIMO_DESCRICAO: Final = 255
 
 
 def _exigir_timezone(rotulo: str, instante: datetime) -> None:
@@ -92,6 +99,8 @@ def _exigir_timezone(rotulo: str, instante: datetime) -> None:
 
 @dataclass(frozen=True, slots=True)
 class LinhaOrcamento(ValueObject):
+    """Item do diagnostico com o preco da tabela congelado na geracao."""
+
     tipo: TipoItem
     codigo: str
     descricao: str
@@ -99,12 +108,28 @@ class LinhaOrcamento(ValueObject):
     preco_unitario: Dinheiro
 
     def __post_init__(self) -> None:
-        if not self.codigo or not self.descricao:
+        if not isinstance(self.tipo, TipoItem):
+            msg = "Tipo do item deve ser servico ou peca"
+            raise ValorInvalidoError(msg)
+        if not self.codigo.strip() or not self.descricao.strip():
             msg = "Linha do orcamento exige codigo e descricao"
             raise ValorInvalidoError(msg)
-        # bool e subclasse de int: True nao pode virar quantidade 1.
-        if isinstance(self.quantidade, bool) or self.quantidade <= 0:
-            msg = f"Quantidade deve ser inteiro maior que zero: {self.quantidade!r}"
+        if (
+            len(self.codigo) > TAMANHO_MAXIMO_CODIGO
+            or len(self.descricao) > TAMANHO_MAXIMO_DESCRICAO
+        ):
+            msg = (
+                f"Codigo ate {TAMANHO_MAXIMO_CODIGO} e descricao ate "
+                f"{TAMANHO_MAXIMO_DESCRICAO} caracteres"
+            )
+            raise ValorInvalidoError(msg)
+        # type() e nao isinstance: bool e subclasse de int (True nao e 1 item).
+        # A mensagem nao ecoa o valor (um inteiro gigante estouraria o motivo).
+        quantidade = self.quantidade
+        if type(quantidade) is not int or not (
+            0 < quantidade <= QUANTIDADE_MAXIMA_POR_LINHA
+        ):
+            msg = f"Quantidade deve ser um inteiro de 1 a {QUANTIDADE_MAXIMA_POR_LINHA}"
             raise ValorInvalidoError(msg)
 
     @property
@@ -135,6 +160,8 @@ class Decisao(ValueObject):
 
 @dataclass(eq=False, kw_only=True)
 class Orcamento(AggregateRoot):
+    """Orcamento de uma ordem: linhas congeladas, prazo e decisao unica."""
+
     _ordem_id: UUID
     _criado_em: datetime
     # Vazias (e sem validade) so na lapide.
@@ -149,17 +176,35 @@ class Orcamento(AggregateRoot):
         _exigir_timezone("criado_em", self._criado_em)
         if not self._linhas or self._valido_ate is None:
             self._validar_lapide()
-            return
+        else:
+            self._validar_proposta(self._valido_ate)
+        self._exigir_campos_do_status()
+
+    def _validar_proposta(self, valido_ate: datetime) -> None:
         if len({linha.preco_unitario.moeda for linha in self._linhas}) > 1:
             msg = "Linhas do orcamento devem ter a mesma moeda"
             raise ValorInvalidoError(msg)
-        _exigir_timezone("valido_ate", self._valido_ate)
-        if self._valido_ate <= self._criado_em:
+        _exigir_timezone("valido_ate", valido_ate)
+        if valido_ate <= self._criado_em:
             msg = "valido_ate deve ser posterior a criado_em"
             raise ValorInvalidoError(msg)
-        if self._valido_ate.microsecond:
+        if valido_ate.microsecond:
             # O token do link assina exp = valido_ate em epoch de segundos.
             msg = "valido_ate deve estar em segundo cheio"
+            raise ValorInvalidoError(msg)
+
+    def _exigir_campos_do_status(self) -> None:
+        # Coerencia status x campos, inclusive na reidratacao do documento.
+        decidido = self._status in _DECIDIDOS
+        if (decidido and self._decisao is None) or (
+            self._status in _SEM_DECISAO and self._decisao is not None
+        ):
+            msg = f"Orcamento {self._status} com decisao incoerente"
+            raise ValorInvalidoError(msg)
+        if (self._status is StatusOrcamento.CANCELADO) != bool(
+            self._motivo_cancelamento
+        ):
+            msg = "Motivo do cancelamento so (e sempre) no orcamento CANCELADO"
             raise ValorInvalidoError(msg)
 
     def _validar_lapide(self) -> None:
@@ -223,6 +268,31 @@ class Orcamento(AggregateRoot):
         )
         orcamento._registrar_evento(orcamento.desfecho_do_cancelamento())
         return orcamento
+
+    @classmethod
+    def reconstituir(  # noqa: PLR0913 - reidratacao recebe cada campo persistido
+        cls,
+        *,
+        id: UUID,  # noqa: A002 - mesmo nome do campo herdado de Entity
+        ordem_id: UUID,
+        criado_em: datetime,
+        linhas: Sequence[LinhaOrcamento],
+        valido_ate: datetime | None,
+        status: StatusOrcamento,
+        decisao: Decisao | None,
+        motivo_cancelamento: str | None,
+    ) -> Orcamento:
+        """Reidrata do armazenamento: as invariantes valem de novo, sem evento."""
+        return cls(
+            id=id,
+            _ordem_id=ordem_id,
+            _criado_em=criado_em,
+            _linhas=tuple(linhas),
+            _valido_ate=valido_ate,
+            _status=status,
+            _decisao=decisao,
+            _motivo_cancelamento=motivo_cancelamento,
+        )
 
     @property
     def ordem_id(self) -> UUID:
@@ -334,6 +404,8 @@ class Orcamento(AggregateRoot):
         )
 
     def expirar(self, *, agora: datetime) -> None:
+        """Prazo de decisao esgotado sem resposta: EXPIRADO e ``OrcamentoExpirado``
+        (processo ``prazos``). Decisao e expiracao nunca valem as duas."""
         if not self.vencido(agora):
             msg = "Orcamento so expira pendente e com o prazo de decisao esgotado"
             raise TransicaoStatusInvalidaError(msg)

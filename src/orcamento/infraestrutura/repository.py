@@ -127,10 +127,10 @@ def _de_documento(doc: Documento) -> Orcamento:
     # Campos opcionais lidos com ``get``: documento gravado por versao anterior
     # (sem um campo novo) continua legivel (expand/contract).
     decisao = doc.get("decisao")
-    return Orcamento(
+    return Orcamento.reconstituir(
         id=doc["_id"],
-        _ordem_id=doc["ordem_id"],
-        _linhas=tuple(
+        ordem_id=doc["ordem_id"],
+        linhas=tuple(
             LinhaOrcamento(
                 tipo=TipoItem(linha["tipo"]),
                 codigo=linha["codigo"],
@@ -140,10 +140,10 @@ def _de_documento(doc: Documento) -> Orcamento:
             )
             for linha in doc.get("linhas", [])
         ),
-        _criado_em=doc["criado_em"],
-        _valido_ate=doc.get("valido_ate"),
-        _status=StatusOrcamento(doc["status"]),
-        _decisao=(
+        criado_em=doc["criado_em"],
+        valido_ate=doc.get("valido_ate"),
+        status=StatusOrcamento(doc["status"]),
+        decisao=(
             Decisao(
                 canal=CanalDecisao(decisao["canal"]),
                 decidido_em=decisao["decidido_em"],
@@ -152,5 +152,5 @@ def _de_documento(doc: Documento) -> Orcamento:
             if decisao
             else None
         ),
-        _motivo_cancelamento=doc.get("motivo_cancelamento"),
+        motivo_cancelamento=doc.get("motivo_cancelamento"),
     )

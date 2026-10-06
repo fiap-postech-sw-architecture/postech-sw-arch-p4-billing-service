@@ -39,6 +39,24 @@ class TestDinheiro:
         with pytest.raises(ValorInvalidoError, match="finito"):
             Dinheiro(Decimal(valor))
 
+    @pytest.mark.parametrize(
+        "valor",
+        ["10000000000", "9999999999.995", "1E+30", "-1E+30"],
+        ids=["11-digitos", "arredonda-para-o-teto", "expoente", "expoente-negativo"],
+    )
+    def test_acima_de_10_digitos_inteiros_e_rejeitado(self, valor: str) -> None:
+        # Teto do dinheiro nos contratos de mensagem; o expoente gigante nao
+        # pode escapar como decimal.InvalidOperation (viraria 500).
+        with pytest.raises(ValorInvalidoError, match="10 digitos inteiros"):
+            Dinheiro(Decimal(valor))
+
+    def test_teto_exato_e_aceito(self) -> None:
+        assert Dinheiro(Decimal("9999999999.99")).valor == Decimal("9999999999.99")
+
+    def test_multiplicacao_que_estoura_o_teto_e_valor_invalido(self) -> None:
+        with pytest.raises(ValorInvalidoError, match="10 digitos inteiros"):
+            _ = Dinheiro(Decimal("99999999.99")) * 10**19
+
     def test_valor_negativo_e_rejeitado(self) -> None:
         with pytest.raises(ValorInvalidoError, match="negativo"):
             Dinheiro(Decimal("-0.01"))

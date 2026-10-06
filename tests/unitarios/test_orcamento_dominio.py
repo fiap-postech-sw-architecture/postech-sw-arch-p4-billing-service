@@ -35,19 +35,74 @@ DENTRO_DO_PRAZO = AGORA + timedelta(hours=1)
 DEPOIS_DO_PRAZO = AGORA + timedelta(hours=72, seconds=1)
 
 
+def reconstituir(**campos: object) -> Orcamento:
+    padrao: dict[str, object] = {
+        "id": uuid4(),
+        "ordem_id": uuid4(),
+        "criado_em": AGORA,
+        "linhas": tuple(linhas_padrao()),
+        "valido_ate": AGORA + timedelta(hours=1),
+        "status": StatusOrcamento.PENDENTE,
+        "decisao": None,
+        "motivo_cancelamento": None,
+    }
+    return Orcamento.reconstituir(**(padrao | campos))  # type: ignore[arg-type]
+
+
 class TestLinhaOrcamento:
     def test_subtotal_e_preco_vezes_quantidade(self) -> None:
         assert linha(quantidade=4, preco="45.00").subtotal == dinheiro("180.00")
 
-    @pytest.mark.parametrize("quantidade", [0, -1, True])
-    def test_quantidade_deve_ser_inteiro_positivo(self, quantidade: int) -> None:
-        with pytest.raises(ValorInvalidoError, match="Quantidade"):
-            linha(quantidade=quantidade)
+    @pytest.mark.parametrize(
+        "quantidade",
+        [0, -1, True, 1.5, 2.0, "2", 1001, 10**100],
+        ids=[
+            "zero",
+            "negativa",
+            "bool",
+            "fracao",
+            "float-inteiro",
+            "texto",
+            "1001",
+            "gigante",
+        ],
+    )
+    def test_quantidade_e_inteiro_de_1_a_1000(self, quantidade: object) -> None:
+        with pytest.raises(ValorInvalidoError) as erro:
+            linha(quantidade=quantidade)  # type: ignore[arg-type]
+        # A mensagem vira motivo de GeracaoDeOrcamentoFalhou: nao ecoa o valor.
+        assert str(erro.value) == "Quantidade deve ser um inteiro de 1 a 1000"
+
+    def test_quantidade_no_limite(self) -> None:
+        assert linha(quantidade=1000).quantidade == 1000
 
     @pytest.mark.parametrize("campo", ["codigo", "descricao"])
-    def test_codigo_e_descricao_obrigatorios(self, campo: str) -> None:
+    @pytest.mark.parametrize("valor", ["", "   "], ids=["vazio", "espacos"])
+    def test_codigo_e_descricao_obrigatorios(self, campo: str, valor: str) -> None:
         with pytest.raises(ValorInvalidoError, match="codigo e descricao"):
-            linha(**{campo: ""})  # type: ignore[arg-type]
+            linha(**{campo: valor})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(("campo", "tamanho"), [("codigo", 51), ("descricao", 256)])
+    def test_codigo_e_descricao_com_teto_do_contrato(
+        self, campo: str, tamanho: int
+    ) -> None:
+        with pytest.raises(ValorInvalidoError, match="caracteres"):
+            linha(**{campo: "A" * tamanho})  # type: ignore[arg-type]
+        assert linha(**{campo: "A" * (tamanho - 1)})  # type: ignore[arg-type]
+
+    def test_tipo_fora_do_enum_e_invalido(self) -> None:
+        with pytest.raises(ValorInvalidoError, match="servico ou peca"):
+            LinhaOrcamento(
+                tipo="x",  # type: ignore[arg-type]
+                codigo="SRV-X",
+                descricao="X",
+                quantidade=1,
+                preco_unitario=dinheiro("1.00"),
+            )
+
+    def test_subtotal_acima_do_teto_do_dinheiro(self) -> None:
+        with pytest.raises(ValorInvalidoError, match="10 digitos"):
+            _ = linha(quantidade=1000, preco="99999999.99").subtotal
 
     def test_e_imutavel(self) -> None:
         with pytest.raises(FrozenInstanceError):
@@ -95,14 +150,81 @@ class TestGeracao:
             )
         ]
 
-    def test_reconstituicao_pelo_construtor_nao_gera_evento(self) -> None:
-        reidratado = Orcamento(
-            _ordem_id=uuid4(),
-            _linhas=tuple(linhas_padrao()),
-            _criado_em=AGORA,
-            _valido_ate=AGORA + timedelta(hours=1),
-        )
+    def test_reconstituir_nao_gera_evento(self) -> None:
+        reidratado = reconstituir()
+        assert reidratado.status is StatusOrcamento.PENDENTE
         assert reidratado.coletar_eventos() == []
+
+    @pytest.mark.parametrize(
+        ("status", "decisao", "motivo"),
+        [
+            pytest.param(
+                StatusOrcamento.APROVADO, None, None, id="aprovado-sem-decisao"
+            ),
+            pytest.param(
+                StatusOrcamento.RECUSADO, None, None, id="recusado-sem-decisao"
+            ),
+            pytest.param(
+                StatusOrcamento.PENDENTE,
+                Decisao(CanalDecisao.LINK, AGORA),
+                None,
+                id="pendente-com-decisao",
+            ),
+            pytest.param(
+                StatusOrcamento.EXPIRADO,
+                Decisao(CanalDecisao.LINK, AGORA),
+                None,
+                id="expirado-com-decisao",
+            ),
+            pytest.param(
+                StatusOrcamento.CANCELADO, None, None, id="cancelado-sem-motivo"
+            ),
+            pytest.param(StatusOrcamento.PENDENTE, None, "x", id="pendente-com-motivo"),
+        ],
+    )
+    def test_reidratacao_confere_status_x_campos(
+        self, status: StatusOrcamento, decisao: Decisao | None, motivo: str | None
+    ) -> None:
+        with pytest.raises(ValorInvalidoError, match=r"incoerente|Motivo"):
+            reconstituir(status=status, decisao=decisao, motivo_cancelamento=motivo)
+
+    @pytest.mark.parametrize(
+        ("status", "decisao", "motivo"),
+        [
+            pytest.param(
+                StatusOrcamento.APROVADO,
+                Decisao(CanalDecisao.LINK, AGORA),
+                None,
+                id="aprovado",
+            ),
+            pytest.param(
+                StatusOrcamento.CANCELADO,
+                Decisao(CanalDecisao.ATENDENTE, AGORA, "atendente-1"),
+                "OS cancelada",
+                id="cancelado-depois-de-aprovado",
+            ),
+            pytest.param(
+                StatusOrcamento.CANCELADO, None, "OS cancelada", id="cancelado"
+            ),
+            pytest.param(StatusOrcamento.EXPIRADO, None, None, id="expirado"),
+        ],
+    )
+    def test_reidratacao_coerente(
+        self, status: StatusOrcamento, decisao: Decisao | None, motivo: str | None
+    ) -> None:
+        reidratado = reconstituir(
+            status=status, decisao=decisao, motivo_cancelamento=motivo
+        )
+        assert (reidratado.status, reidratado.decisao) == (status, decisao)
+
+    def test_lapide_reidratada_sem_motivo_e_invalida(self) -> None:
+        with pytest.raises(ValorInvalidoError, match="Motivo"):
+            reconstituir(
+                linhas=(),
+                valido_ate=None,
+                status=StatusOrcamento.CANCELADO,
+                motivo_cancelamento=None,
+            )
 
     @pytest.mark.parametrize(
         ("linhas", "valido_ate"),

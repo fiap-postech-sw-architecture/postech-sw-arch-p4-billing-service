@@ -315,7 +315,7 @@ class ConciliarPagamentos:
         self._processar = processar
 
     def executar(self, *, limite: int = 100) -> int:
-        """Quantos pagamentos solicitados foram consultados nesta rodada."""
+        """Quantos pagamentos solicitados foram consultados neste ciclo."""
         consultados = 0
         for pagamento_id in self._pagamentos.listar_solicitados(limite):
             try:
@@ -402,7 +402,7 @@ class ExpirarPagamentosVencidos:
         self._relogio = relogio
 
     def executar(self, *, limite: int = 100) -> int:
-        """Quantidade expirada nesta rodada (cada pagamento na sua transacao)."""
+        """Quantidade expirada neste ciclo (cada pagamento na sua transacao)."""
         agora = self._relogio()
         vencidos = self._pagamentos.listar_vencidos(agora, limite)
         return sum(self._expirar(pagamento_id, agora) for pagamento_id in vencidos)

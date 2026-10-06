@@ -399,8 +399,8 @@ class TestRepositorioDePrecos:
         uow = MongoUnitOfWork(banco)
         repo = MongoPrecoServicoRepository(uow)
         for codigo in ("SRV-B", "SRV-A", "SRV-C"):
-            preco = PrecoServico(
-                _codigo=codigo, _nome=codigo, _descricao="d", _preco=dinheiro("10.00")
+            preco = PrecoServico.cadastrar(
+                codigo=codigo, nome=codigo, descricao="d", preco=dinheiro("10.00")
             )
             uow.executar(lambda preco=preco: repo.salvar(preco))
 
@@ -418,12 +418,12 @@ class TestRepositorioDePrecos:
         pecas = MongoPrecoPecaRepository(uow)
 
         def servico() -> PrecoServico:
-            return PrecoServico(
-                _codigo="SRV-A", _nome="A", _descricao="d", _preco=dinheiro("1.00")
+            return PrecoServico.cadastrar(
+                codigo="SRV-A", nome="A", descricao="d", preco=dinheiro("1.00")
             )
 
         def peca() -> PrecoPeca:
-            return PrecoPeca(_sku="PEC-A", _nome="A", _preco=dinheiro("1.00"))
+            return PrecoPeca.cadastrar(sku="PEC-A", nome="A", preco=dinheiro("1.00"))
 
         uow.executar(lambda: servicos.salvar(servico()))
         uow.executar(lambda: pecas.salvar(peca()))

@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Final
@@ -110,7 +110,9 @@ _aleatorio = secrets.SystemRandom()
 
 @dataclass(frozen=True, slots=True)
 class ConfiguracaoMercadoPago:
-    access_token: str
+    """Credencial e enderecos do Checkout Pro; o token nao aparece no repr."""
+
+    access_token: str = field(repr=False)
     notification_url: str
     base_url: str = "https://api.mercadopago.com"
     timeout_segundos: float = 5.0
@@ -142,6 +144,14 @@ class _Recusa:
 
 
 class MercadoPagoGateway:
+    """``GatewayPagamento`` do Checkout Pro (``MP_MODE=mercadopago``).
+
+    Um ``httpx.Client`` por processo (feche com ``fechar``) e um disjuntor
+    compartilhado por todas as operacoes. Falha transitoria vira
+    ``GatewayPagamentoIndisponivelError``; recusa (4xx),
+    ``GatewayPagamentoRecusouError``.
+    """
+
     provedor = "mercadopago"
 
     def __init__(
@@ -165,6 +175,7 @@ class MercadoPagoGateway:
         )
 
     def fechar(self) -> None:
+        """Fecha o pool de conexoes (shutdown da API ou do ``prazos``)."""
         self._http.close()
 
     def criar_cobranca(
@@ -174,6 +185,7 @@ class MercadoPagoGateway:
         itens: Sequence[ItemCobranca],
         expira_em: datetime,
     ) -> CobrancaCriada:
+        """Preferencia com os itens congelados e o prazo da cobranca."""
         corpo = {
             "items": [
                 {
@@ -224,6 +236,7 @@ class MercadoPagoGateway:
         )
 
     def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:
+        """``GET /v1/payments/{id}``; referencia fora do formato nem sai daqui."""
         if not _REFERENCIA_VALIDA.fullmatch(referencia):
             return None
         try:
@@ -240,6 +253,7 @@ class MercadoPagoGateway:
     def buscar_por_referencia_externa(
         self, referencia_externa: str
     ) -> list[SituacaoNoProvedor]:
+        """Tentativas da cobranca, da mais antiga para a mais nova."""
         return self._enviar(
             "buscar_pagamentos",
             "GET",
@@ -254,6 +268,8 @@ class MercadoPagoGateway:
         )
 
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
+        """Estorno total; ``approved`` conclui, ``rejected``/``cancelled``
+        recusam e o resto (``in_process``, sem status) fica em processamento."""
         if not _REFERENCIA_VALIDA.fullmatch(referencia):
             msg = "Referencia de pagamento invalida para estorno"
             raise GatewayPagamentoRecusouError(msg)
@@ -414,8 +430,9 @@ def _data_mp(instante: datetime) -> str:
 def _numero_json(valor: Decimal) -> float:
     """``unit_price`` do Checkout Pro e numero JSON.
 
-    Dinheiro tem 2 casas e a API limita a 10 digitos: o ``repr`` do float e
-    exatamente o decimal. A conferencia falha alto se um dia nao for.
+    Dinheiro tem 2 casas e no maximo 10 digitos inteiros (12 significativos,
+    dentro dos 15 exatos do float): o ``repr`` do float e exatamente o
+    decimal. A conferencia falha alto se um dia nao for.
     """
     numero = float(valor)
     if Decimal(repr(numero)) != valor:

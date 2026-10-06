@@ -39,7 +39,14 @@ _PREFIXO_PREFERENCIA = "sim-pref-"
 
 
 class GatewayPagamentoSimulado:
-    """Provedor falso: checkout proprio e resultado escolhido no botao."""
+    """Provedor falso (``MP_MODE=simulado``): checkout proprio e resultado
+    escolhido no botao.
+
+    O ``checkout_url`` leva um token assinado (pagamento + prazo) que as rotas
+    do simulador exigem; as tentativas ficam em memoria do processo da API, e
+    a conciliacao do ``prazos`` (outro processo) nao as ve: no simulado, a
+    confirmacao chega pela propria rota do simulador.
+    """
 
     provedor = "simulado"
 

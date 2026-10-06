@@ -15,6 +15,8 @@ from src.compartilhado.dominio.aggregate_root import AggregateRoot
 from src.compartilhado.dominio.exceptions import ValorInvalidoError
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from src.compartilhado.dominio.dinheiro import Dinheiro
 
 # Codigo de negocio: maiusculas, digitos e hifens (ex.: SRV-TROCA-OLEO,
@@ -56,6 +58,34 @@ class PrecoServico(AggregateRoot):
         super().__post_init__()
         _validar_codigo("Codigo do servico", self._codigo)
         self._aplicar(self._nome, self._descricao, self._preco)
+
+    @classmethod
+    def cadastrar(
+        cls, *, codigo: str, nome: str, descricao: str, preco: Dinheiro
+    ) -> PrecoServico:
+        """Servico novo na tabela, ativo para os proximos orcamentos."""
+        return cls(_codigo=codigo, _nome=nome, _descricao=descricao, _preco=preco)
+
+    @classmethod
+    def reconstituir(
+        cls,
+        *,
+        id: UUID,  # noqa: A002 - mesmo nome do campo herdado de Entity
+        codigo: str,
+        nome: str,
+        descricao: str,
+        preco: Dinheiro,
+        ativo: bool,
+    ) -> PrecoServico:
+        """Reidrata do armazenamento: as invariantes valem de novo."""
+        return cls(
+            id=id,
+            _codigo=codigo,
+            _nome=nome,
+            _descricao=descricao,
+            _preco=preco,
+            _ativo=ativo,
+        )
 
     @property
     def codigo(self) -> str:
@@ -108,6 +138,24 @@ class PrecoPeca(AggregateRoot):
         super().__post_init__()
         _validar_codigo("SKU da peca", self._sku)
         self._aplicar(self._nome, self._preco)
+
+    @classmethod
+    def cadastrar(cls, *, sku: str, nome: str, preco: Dinheiro) -> PrecoPeca:
+        """Peca nova na tabela, ativa para os proximos orcamentos."""
+        return cls(_sku=sku, _nome=nome, _preco=preco)
+
+    @classmethod
+    def reconstituir(
+        cls,
+        *,
+        id: UUID,  # noqa: A002 - mesmo nome do campo herdado de Entity
+        sku: str,
+        nome: str,
+        preco: Dinheiro,
+        ativo: bool,
+    ) -> PrecoPeca:
+        """Reidrata do armazenamento: as invariantes valem de novo."""
+        return cls(id=id, _sku=sku, _nome=nome, _preco=preco, _ativo=ativo)
 
     @property
     def sku(self) -> str:

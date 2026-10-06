@@ -11,7 +11,10 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
+from src.compartilhado.dominio.exceptions import (
+    TransicaoStatusInvalidaError,
+    ValorInvalidoError,
+)
 from src.compartilhado.dominio.relogio import agora_utc
 from src.orcamento.aplicacao.dtos import OrcamentoDTO
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
@@ -38,7 +41,7 @@ if TYPE_CHECKING:
     from src.compartilhado.dominio.relogio import Relogio
     from src.orcamento.aplicacao.dtos import ItemSolicitado
     from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
-    from src.orcamento.aplicacao.ports import TabelaDePrecosPort
+    from src.orcamento.aplicacao.ports import Cotacao, TabelaDePrecosPort
     from src.orcamento.dominio.repository import OrcamentoRepository
 
 _log = logging.getLogger(__name__)
@@ -80,9 +83,10 @@ class GerarOrcamento:
 
         Idempotente por ``ordem_id``: repetir nao gera outro orcamento e
         republica o ``OrcamentoGerado`` registrado (o reenvio do orquestrador
-        espera a resposta). Falha (diagnostico vazio ou codigo inexistente ou
-        inativo) responde ``GeracaoDeOrcamentoFalhou``; sem orcamento gravado, a
-        repeticao reavalia os mesmos itens e responde a falha de novo. A lapide
+        espera a resposta). Falha (diagnostico vazio, codigo inexistente ou
+        inativo, quantidade fora do limite ou total acima do teto) responde
+        ``GeracaoDeOrcamentoFalhou``; sem orcamento gravado, a repeticao
+        reavalia os mesmos itens e responde a falha de novo. A lapide
         (cancelamento que chegou antes) descarta o comando, sem resposta.
         """
         try:
@@ -108,6 +112,19 @@ class GerarOrcamento:
         if cotacao.invalidos:
             self._falhar(ordem_id, MOTIVO_ITENS_INVALIDOS, cotacao.invalidos)
             return None
+        try:
+            orcamento = self._montar(ordem_id, itens, cotacao)
+        except ValorInvalidoError as exc:
+            # Quantidade fora do limite ou total acima do teto do Dinheiro: a
+            # mensagem do dominio e o motivo (curta, sem o valor recebido).
+            self._falhar(ordem_id, str(exc), ())
+            return None
+        self._orcamentos.salvar(orcamento)
+        return OrcamentoDTO.de(orcamento)
+
+    def _montar(
+        self, ordem_id: UUID, itens: Sequence[ItemSolicitado], cotacao: Cotacao
+    ) -> Orcamento:
         linhas = []
         for item in itens:
             tabela = (
@@ -126,7 +143,7 @@ class GerarOrcamento:
         agora = self._relogio()
         valido_ate = _segundo_cheio_acima(agora + self._validade)
         orcamento_id = uuid4()
-        orcamento = Orcamento.gerar(
+        return Orcamento.gerar(
             id=orcamento_id,
             ordem_id=ordem_id,
             linhas=linhas,
@@ -134,8 +151,6 @@ class GerarOrcamento:
             valido_ate=valido_ate,
             link_decisao=self._link.gerar(orcamento_id, valido_ate),
         )
-        self._orcamentos.salvar(orcamento)
-        return OrcamentoDTO.de(orcamento)
 
     def _repetido(self, existente: Orcamento) -> OrcamentoDTO:
         if existente.valido_ate is None:
@@ -244,7 +259,7 @@ class ExpirarOrcamentosVencidos:
         self._relogio = relogio
 
     def executar(self, *, limite: int = 100) -> int:
-        """Quantidade expirada nesta rodada (cada orcamento na sua transacao)."""
+        """Quantidade expirada neste ciclo (cada orcamento na sua transacao)."""
         agora = self._relogio()
         vencidos = self._orcamentos.listar_vencidos(agora, limite)
         return sum(self._expirar(orcamento_id, agora) for orcamento_id in vencidos)
