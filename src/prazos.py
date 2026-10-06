@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
 from prometheus_client import Gauge, start_http_server
@@ -64,14 +64,21 @@ class ResultadoDoCiclo:
     conciliados: int
     orcamentos_expirados: int
     pagamentos_expirados: int
+    limite: int = field(default=LIMITE_POR_CICLO, compare=False)
 
     @property
     def lote_cheio(self) -> bool:
-        """Algum passo bateu no limite: ha mais trabalho, repetir sem esperar."""
-        return LIMITE_POR_CICLO in (
-            self.conciliados,
-            self.orcamentos_expirados,
-            self.pagamentos_expirados,
+        """Uma expiracao bateu no limite: ha mais vencidos, repetir sem esperar.
+
+        A conciliacao nao conta: consultar um pagamento nao o tira da lista dos
+        solicitados, e repetir na hora so martelaria o provedor com os mesmos.
+        """
+        return self.limite in (self.orcamentos_expirados, self.pagamentos_expirados)
+
+    @property
+    def vazio(self) -> bool:
+        return not (
+            self.conciliados or self.orcamentos_expirados or self.pagamentos_expirados
         )
 
 
@@ -101,7 +108,7 @@ def executar_ciclo(
     expirados = ExpirarPagamentosVencidos(uow, pagamentos, relogio).executar(
         limite=limite
     )
-    return ResultadoDoCiclo(conciliados, orcamentos, expirados)
+    return ResultadoDoCiclo(conciliados, orcamentos, expirados, limite)
 
 
 def rodar(
@@ -126,7 +133,7 @@ def rodar(
         else:
             cheio = resultado.lote_cheio
             ULTIMO_CICLO.set_to_current_time()
-            if resultado != ResultadoDoCiclo(0, 0, 0):
+            if not resultado.vazio:
                 _log.info(
                     "deadlines_cycle_done",
                     extra={

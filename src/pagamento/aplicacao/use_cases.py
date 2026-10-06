@@ -315,7 +315,13 @@ class ConciliarPagamentos:
         self._processar = processar
 
     def executar(self, *, limite: int = 100) -> int:
-        """Quantos pagamentos solicitados foram consultados neste ciclo."""
+        """Quantos pagamentos solicitados foram consultados neste ciclo.
+
+        Os que vencem primeiro vem antes. Teto: ``limite`` consultas por
+        ciclo; com mais checkouts abertos ao mesmo tempo, os demais contam com
+        o webhook ate entrarem entre os primeiros (paginar com cursor entre
+        ciclos se a escala pedir).
+        """
         consultados = 0
         for pagamento_id in self._pagamentos.listar_solicitados(limite):
             try:
@@ -327,6 +333,11 @@ class ConciliarPagamentos:
             except GatewayPagamentoIndisponivelError:
                 # Provedor fora (ou circuito aberto): o resto espera o proximo ciclo.
                 _log.warning("payment_reconciliation_paused")
+                break
+            except GatewayPagamentoRecusouError:
+                # 4xx na busca nao e de um pagamento (token revogado, conta):
+                # um log por ciclo, e nao um por pagamento.
+                _log.error("payment_reconciliation_refused")
                 break
             except Exception:  # noqa: BLE001 - um pagamento com defeito nao trava os demais
                 _log.exception(

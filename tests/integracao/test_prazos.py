@@ -19,7 +19,10 @@ from src.compartilhado.infraestrutura.mongo import BancoNaoPreparadoError
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDosPrazos
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
-from src.pagamento.aplicacao.ports import GatewayPagamentoIndisponivelError
+from src.pagamento.aplicacao.ports import (
+    GatewayPagamentoIndisponivelError,
+    GatewayPagamentoRecusouError,
+)
 from src.pagamento.aplicacao.use_cases import (
     ConciliarPagamentos,
     ProcessarNotificacaoPagamento,
@@ -103,8 +106,39 @@ class TestCiclo:
         assert status(banco, abandonado) == "EXPIRADO"
 
     def test_lote_cheio_e_sinalizado(self) -> None:
-        assert ResultadoDoCiclo(0, prazos.LIMITE_POR_CICLO, 0).lote_cheio
+        limite = prazos.LIMITE_POR_CICLO
+        assert ResultadoDoCiclo(0, limite, 0).lote_cheio
+        assert ResultadoDoCiclo(0, 0, limite).lote_cheio
+        assert ResultadoDoCiclo(0, 0, 2, limite=2).lote_cheio
         assert not ResultadoDoCiclo(1, 2, 3).lote_cheio
+        # Conciliacao cheia nao repete: consultar nao tira o pagamento da lista.
+        assert not ResultadoDoCiclo(limite, 0, 0).lote_cheio
+
+    def test_conciliacao_no_limite_espera_o_proximo_ciclo(self, banco: Banco) -> None:
+        salvar(banco, pagamento(), pagamento())
+        resultado = executar_ciclo(
+            banco,
+            gateway=GatewayRoteirizado(),
+            metricas=MetricasEspia(),
+            max_recusas=3,
+            relogio=RelogioFixo(AGORA),
+            limite=1,
+        )
+        assert resultado == ResultadoDoCiclo(1, 0, 0)
+        assert not resultado.lote_cheio
+
+    def test_expiracao_no_limite_repete_sem_esperar(self, banco: Banco) -> None:
+        salvar(banco, pagamento(validade=timedelta(minutes=10)), pagamento())
+        resultado = executar_ciclo(
+            banco,
+            gateway=None,
+            metricas=MetricasEspia(),
+            max_recusas=3,
+            relogio=RelogioFixo(AGORA + timedelta(hours=2)),
+            limite=1,
+        )
+        assert resultado == ResultadoDoCiclo(0, 0, 1)
+        assert resultado.lote_cheio
 
 
 class TestConciliacao:
@@ -160,6 +194,27 @@ class TestConciliacao:
             assert self.processar(banco, gateway).executar() == 0
         assert gateway.buscas == 1
         assert "payment_reconciliation_paused" in caplog.messages
+
+    def test_recusa_do_provedor_na_busca_para_o_ciclo_com_um_log(
+        self, banco: Banco, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        salvar(banco, pagamento(), pagamento(), pagamento())
+
+        class TokenRevogado(GatewayRoteirizado):
+            def __init__(self) -> None:
+                super().__init__()
+                self.buscas = 0
+
+            def buscar_por_referencia_externa(self, referencia_externa: str) -> Any:
+                self.buscas += 1
+                msg = "Mercado Pago respondeu 401: invalid access token"
+                raise GatewayPagamentoRecusouError(msg)
+
+        gateway = TokenRevogado()
+        with caplog.at_level(logging.ERROR):
+            assert self.processar(banco, gateway).executar() == 0
+        assert gateway.buscas == 1
+        assert caplog.messages.count("payment_reconciliation_refused") == 1
 
     def test_pagamento_com_defeito_nao_trava_os_demais(
         self, banco: Banco, caplog: pytest.LogCaptureFixture
