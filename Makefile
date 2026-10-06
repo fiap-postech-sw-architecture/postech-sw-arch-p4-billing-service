@@ -60,8 +60,10 @@ audit:
 # Smoke da imagem pelo entrypoint real (init do banco, seed, usuario 1001), o
 # job build do CI: sobe a stack, confere a readiness (MongoDB preparado), que
 # rota autenticada sem token responde 401 e que a resposta nao anuncia o
-# servidor; derruba tudo com os volumes, inclusive em falha (depois de mostrar
-# os logs). Projeto e portas proprios para nao derrubar a stack do compose-up.
+# servidor (os cabecalhos vem de uma variavel: num pipe, a falha do curl seria
+# engolida e o smoke passaria sem ter olhado nada); derruba tudo com os volumes,
+# inclusive em falha (depois de mostrar os logs). Projeto e portas proprios para
+# nao derrubar a stack do compose-up.
 SMOKE_PORT ?= 18002
 SMOKE_MONGO_PORT ?= 17017
 SMOKE_URL := http://127.0.0.1:$(SMOKE_PORT)
@@ -74,7 +76,9 @@ smoke:
 	&& curl -fsS --max-time 5 $(SMOKE_URL)/api/v1/saude/pronto && echo \
 	&& codigo="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 $(SMOKE_URL)/api/v1/precos/servicos)" \
 	&& test "$$codigo" = 401 \
-	&& ! curl -sS -D - -o /dev/null --max-time 5 $(SMOKE_URL)/api/v1/saude | grep -qi '^server:' \
+	&& cabecalhos="$$(curl -fsS -D - -o /dev/null --max-time 5 $(SMOKE_URL)/api/v1/saude)" \
+	&& printf '%s\n' "$$cabecalhos" | grep -q '^HTTP/' \
+	&& ! printf '%s\n' "$$cabecalhos" | grep -qi '^server:' \
 	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server" \
 	|| status=$$?; \
 	if [ $$status -ne 0 ]; then $(SMOKE_COMPOSE) logs --no-color --tail=200; fi; \
