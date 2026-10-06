@@ -141,4 +141,4 @@ Cobertura na versão atual (808 testes; `make test` e `python scripts/cobertura_
 | `src/pagamento` | 1156 | 1156 | 100,0% |
 | **total** | 3386 | 3386 | 100,0% (ramos: 100,0%) |
 
-Os runs do CI ficam em [Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml).
+O mesmo resumo sai no summary do job `test` de cada run do CI ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)); o [run do commit `f1f5d30`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/37532957859), com o código desta versão, passou nos 9 checks, inclusive o quality gate do SonarQube.
