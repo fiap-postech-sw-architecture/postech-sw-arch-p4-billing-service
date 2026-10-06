@@ -1,0 +1,24 @@
+# O Dockerfile copia so pyproject/uv.lock, src/ e entrypoint.sh; esta lista
+# reduz o contexto enviado ao daemon e impede segredo local de entrar nele.
+.git
+.github
+.claude
+.cursor
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.import_linter_cache
+.coverage
+coverage.xml
+htmlcov
+reports
+tests
+docs
+*.md
+.env
+.env.*
+docker-compose.yml
+Makefile

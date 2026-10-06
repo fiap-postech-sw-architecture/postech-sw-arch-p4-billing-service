@@ -1,0 +1,105 @@
+# Ambiente de desenvolvimento do Billing (RFC-004 §11): API, processo de prazos
+# e MongoDB 7 em replica set de um no (transacoes exigem replica set). Sem
+# credencial externa: o Mercado Pago roda no modo simulado. A stack completa
+# (OS, Execucao, RabbitMQ, Kong) fica no compose do repo platform.
+name: pytstop-billing
+
+# Processos do Billing: so leitura, sem capabilities e sem escalada de
+# privilegio (a imagem roda como 1001 e nao escreve em disco).
+x-endurecimento: &endurecimento
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-ambiente: &ambiente
+  ENVIRONMENT: development
+  MONGODB_URI: mongodb://mongo:27017/?replicaSet=rs0
+  MONGODB_DB: billing
+  BILLING_PUBLIC_URL: ${BILLING_PUBLIC_URL:-http://localhost:8002}
+  # JWKS do OS Service rodando no host (porta 8001); sem ele as rotas internas
+  # respondem 503 e as publicas (link do cliente, webhook, simulador) seguem.
+  JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8001/.well-known/jwks.json}
+  # Valor de demonstracao (recusado fora de development/test).
+  ORCAMENTO_LINK_SECRET: ${ORCAMENTO_LINK_SECRET:-demo-link-orcamento-pytstop-nao-usar-em-producao}
+  ORCAMENTO_VALIDADE_HORAS: ${ORCAMENTO_VALIDADE_HORAS:-72}
+  PAGAMENTO_VALIDADE_MINUTOS: ${PAGAMENTO_VALIDADE_MINUTOS:-60}
+  MP_MODE: ${MP_MODE:-simulado}
+  MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-}
+  MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
+  PRAZOS_INTERVALO_SEGUNDOS: ${PRAZOS_INTERVALO_SEGUNDOS:-30}
+
+services:
+  api:
+    <<: *endurecimento
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        GIT_DATE: ${GIT_DATE:-unknown}
+    # Mesma imagem para o `prazos`: um build so.
+    image: ${BILLING_IMAGE:-pytstop-billing:dev}
+    command: ["api"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8002}:8000"
+    environment:
+      <<: *ambiente
+      RUN_SEED_ON_STARTUP: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prazos:
+    <<: *endurecimento
+    image: ${BILLING_IMAGE:-pytstop-billing:dev}
+    command: ["prazos"]
+    environment: *ambiente
+    depends_on:
+      mongo:
+        condition: service_healthy
+      api:
+        condition: service_started
+    # O HEALTHCHECK da imagem e o HTTP da API; este processo nao serve HTTP.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+    # Recomendacao do MongoDB: com o limite padrao o WiredTiger aborta por
+    # "Too many open files" quando ha muitas colecoes e indices.
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
+    volumes:
+      - mongo_data:/data/db
+    # Inicia o replica set na primeira vez (idempotente) e so fica saudavel com
+    # primario eleito: a API depende disso para abrir transacoes.
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status() } catch (e) {
+          rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}) };
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  mongo_data:

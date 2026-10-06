@@ -1,0 +1,221 @@
+"""API da tabela de precos: CRUD do admin, leitura interna e validacao."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from fastapi.testclient import TestClient
+
+    Cabecalhos = Callable[[str], dict[str, str]]
+
+SERVICO = {
+    "codigo": "SRV-TROCA-OLEO",
+    "nome": "Troca de oleo",
+    "descricao": "Troca do oleo do motor",
+    "preco": "120.00",
+}
+PECA = {"sku": "PEC-OLEO-5W30", "nome": "Oleo 5W30 (1 L)", "preco": "45.00"}
+
+
+def test_crud_de_servicos(api: TestClient, cabecalhos: Cabecalhos) -> None:
+    admin = cabecalhos("admin")
+
+    criado = api.post("/api/v1/precos/servicos", json=SERVICO, headers=admin)
+    assert criado.status_code == 201
+    assert criado.json() == {**SERVICO, "moeda": "BRL", "ativo": True}
+
+    lido = api.get(
+        "/api/v1/precos/servicos/SRV-TROCA-OLEO", headers=cabecalhos("mecanico")
+    )
+    assert lido.json()["preco"] == "120.00"  # dinheiro como string decimal
+
+    atualizado = api.put(
+        "/api/v1/precos/servicos/SRV-TROCA-OLEO",
+        json={
+            "nome": "Troca de oleo",
+            "descricao": "Nova",
+            "preco": "130.50",
+            "ativo": True,
+        },
+        headers=admin,
+    )
+    assert atualizado.status_code == 200
+    assert atualizado.json()["preco"] == "130.50"
+
+    removido = api.delete("/api/v1/precos/servicos/SRV-TROCA-OLEO", headers=admin)
+    assert removido.status_code == 204
+    lista = api.get("/api/v1/precos/servicos", headers=cabecalhos("atendente"))
+    assert lista.json() == {
+        "items": [
+            {
+                **SERVICO,
+                "descricao": "Nova",
+                "preco": "130.50",
+                "moeda": "BRL",
+                "ativo": False,
+            }
+        ],
+        "total": 1,
+        "offset": 0,
+        "limit": 20,
+    }
+
+
+def test_put_e_substituicao_completa(api: TestClient, cabecalhos: Cabecalhos) -> None:
+    admin = cabecalhos("admin")
+    api.post("/api/v1/precos/servicos", json=SERVICO, headers=admin)
+    sem_ativo = api.put(
+        "/api/v1/precos/servicos/SRV-TROCA-OLEO",
+        json={"nome": "Troca", "descricao": "d", "preco": "130.00"},
+        headers=admin,
+    )
+    assert sem_ativo.status_code == 422
+
+
+def test_crud_de_pecas(api: TestClient, cabecalhos: Cabecalhos) -> None:
+    admin = cabecalhos("admin")
+    assert api.post("/api/v1/precos/pecas", json=PECA, headers=admin).status_code == 201
+    assert (
+        api.delete("/api/v1/precos/pecas/PEC-OLEO-5W30", headers=admin).status_code
+        == 204
+    )
+
+    reativada = api.put(
+        "/api/v1/precos/pecas/PEC-OLEO-5W30",
+        json={"nome": "Oleo 5W30", "preco": "47.90", "ativo": True},
+        headers=admin,
+    )
+    assert reativada.json() == {
+        "sku": "PEC-OLEO-5W30",
+        "nome": "Oleo 5W30",
+        "preco": "47.90",
+        "moeda": "BRL",
+        "ativo": True,
+    }
+    assert (
+        api.get("/api/v1/precos/pecas/PEC-OLEO-5W30", headers=admin).status_code == 200
+    )
+    pagina = api.get("/api/v1/precos/pecas?offset=1&limit=5", headers=admin).json()
+    assert (pagina["items"], pagina["total"], pagina["offset"]) == ([], 1, 1)
+
+
+def test_codigo_repetido_da_409(api: TestClient, cabecalhos: Cabecalhos) -> None:
+    admin = cabecalhos("admin")
+    api.post("/api/v1/precos/servicos", json=SERVICO, headers=admin)
+    resposta = api.post("/api/v1/precos/servicos", json=SERVICO, headers=admin)
+    assert resposta.status_code == 409
+    assert resposta.json()["erro"]["codigo"] == "PRECO_JA_CADASTRADO"
+    api.post("/api/v1/precos/pecas", json=PECA, headers=admin)
+    assert api.post("/api/v1/precos/pecas", json=PECA, headers=admin).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "caminho",
+    [
+        "/api/v1/precos/servicos/SRV-NAO-EXISTE",
+        "/api/v1/precos/pecas/PEC-NAO-EXISTE",
+    ],
+)
+def test_codigo_desconhecido_da_404(
+    api: TestClient, cabecalhos: Cabecalhos, caminho: str
+) -> None:
+    resposta = api.get(caminho, headers=cabecalhos("admin"))
+    assert resposta.status_code == 404
+    assert resposta.json()["erro"]["codigo"] == "PRECO_NAO_ENCONTRADO"
+    assert api.delete(caminho, headers=cabecalhos("admin")).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "corpo",
+    [
+        {**SERVICO, "codigo": "srv minusculo"},
+        {**SERVICO, "preco": "0"},
+        {**SERVICO, "preco": "10.999"},
+        {**SERVICO, "nome": ""},
+        {**SERVICO, "extra": 1},
+    ],
+)
+def test_entrada_invalida_da_422(
+    api: TestClient, cabecalhos: Cabecalhos, corpo: dict[str, object]
+) -> None:
+    resposta = api.post(
+        "/api/v1/precos/servicos", json=corpo, headers=cabecalhos("admin")
+    )
+    assert resposta.status_code == 422
+    erro = resposta.json()["erro"]
+    assert (erro["codigo"], erro["mensagem"]) == (
+        "REQUISICAO_INVALIDA",
+        "Requisicao invalida",
+    )
+    assert erro["id_requisicao"] == resposta.headers["X-Request-ID"]
+    assert erro["detalhes"]
+
+
+@pytest.mark.parametrize("papel", ["atendente", "mecanico"])
+def test_escrita_so_para_admin(
+    api: TestClient, cabecalhos: Cabecalhos, papel: str
+) -> None:
+    resposta = api.post(
+        "/api/v1/precos/servicos", json=SERVICO, headers=cabecalhos(papel)
+    )
+    assert resposta.status_code == 403
+    assert resposta.json()["erro"]["codigo"] == "ACESSO_NEGADO"
+
+
+def test_sem_token_da_401_com_envelope(api: TestClient) -> None:
+    resposta = api.get("/api/v1/precos/servicos")
+    assert resposta.status_code == 401
+    assert resposta.headers["WWW-Authenticate"] == "Bearer"
+    assert resposta.json()["erro"] == {
+        "codigo": "NAO_AUTENTICADO",
+        "mensagem": "Token de autenticacao nao fornecido",
+        "id_requisicao": resposta.headers["X-Request-ID"],
+    }
+
+
+def test_validacao_de_itens_para_a_execucao(
+    api: TestClient, cabecalhos: Cabecalhos
+) -> None:
+    admin = cabecalhos("admin")
+    api.post("/api/v1/precos/servicos", json=SERVICO, headers=admin)
+    api.post("/api/v1/precos/pecas", json=PECA, headers=admin)
+    api.post(
+        "/api/v1/precos/pecas",
+        json={"sku": "PEC-VELA", "nome": "Vela", "preco": "28.00"},
+        headers=admin,
+    )
+    api.delete("/api/v1/precos/pecas/PEC-VELA", headers=admin)
+
+    resposta = api.post(
+        "/api/v1/precos/validacao",
+        json={
+            "servicos": ["SRV-TROCA-OLEO", "SRV-NAO-EXISTE"],
+            "pecas": ["PEC-OLEO-5W30", "PEC-VELA", "lixo qualquer"],
+        },
+        headers=cabecalhos("mecanico"),
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.json() == {
+        "invalidos": ["SRV-NAO-EXISTE", "PEC-VELA", "lixo qualquer"]
+    }
+    tudo_valido = api.post(
+        "/api/v1/precos/validacao",
+        json={"servicos": ["SRV-TROCA-OLEO"]},
+        headers=cabecalhos("mecanico"),
+    )
+    assert tudo_valido.json() == {"invalidos": []}
+
+
+def test_validacao_nao_e_para_atendente(
+    api: TestClient, cabecalhos: Cabecalhos
+) -> None:
+    resposta = api.post(
+        "/api/v1/precos/validacao", json={}, headers=cabecalhos("atendente")
+    )
+    assert resposta.status_code == 403

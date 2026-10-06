@@ -1,0 +1,201 @@
+[project]
+name = "pytstop-billing-service"
+version = "0.1.0"
+description = "Billing Service do PytStop: tabela de precos, orcamento e pagamento (fase 4)"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.142.2,<1",
+    "uvicorn[standard]>=0.54.0,<1",
+    "pydantic>=2.13.5,<3",
+    "pymongo>=4.18.2,<5",
+    "httpx>=0.28.1,<1",
+    # 2.13.x tem 27 advisories (bypass de HMAC vazio, forja de token); [crypto]
+    # traz o cryptography exigido pelo RS256.
+    "pyjwt[crypto]>=2.15.1,<3",
+    "prometheus-client>=0.26.0,<1",
+    "structlog>=26.1.0,<27",
+    # Transitiva do starlette; piso explicito pelo advisory de out/2026.
+    "anyio>=4.15.1,<5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    # Teto por teste: os testes de corrida usam threads + barreira; uma regressao
+    # de concorrencia vira falha em vez de pendurar a suite.
+    "pytest-timeout>=2.4.0",
+    "testcontainers>=4.15.0",
+    "respx>=0.23.1",
+    # TestClient do Starlette 1.x usa o httpx2 (com httpx so emite deprecacao);
+    # o adapter do Mercado Pago segue no httpx, mockado pelo respx.
+    "httpx2>=2.13.1",
+    "ruff>=0.16.10",
+    "mypy>=2.4.0",
+    "bandit>=1.9.4",
+    "import-linter>=2.15",
+]
+
+[build-system]
+requires = ["setuptools>=83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+# Runtime e 3.14, mas o target fica em py313 de proposito (heranca do p3): com
+# py314 o `ruff format` remove os parenteses de `except (A, B):` (PEP 758),
+# sintaxe que o SonarQube e revisores automaticos ainda acusam como erro.
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "TC", "RUF", "S",
+    "PT", "ANN", "BLE001", "FBT001", "C901", "PLR2004", "PLR0912", "PLR0913",
+    "PLR0915", "PLW0603", "PYI034", "LOG014", "FAST",
+]
+
+[tool.ruff.lint.pylint]
+# Casos de uso recebem por DI a unidade de trabalho, repositorios, portas,
+# a politica de prazo e o relogio: 6 colaboradores e o teto honesto.
+max-args = 6
+
+[tool.ruff.lint.flake8-type-checking]
+# Campos de modelos Pydantic sao avaliados em runtime (TC001 falso-positivo).
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101", "S105", "S106", "TC", "SIM105", "PT012", "RUF059", "ANN",
+    "PLR2004", "PLR0913", "PLR0915", "PLR0912", "C901", "FBT001", "BLE001",
+    "LOG014", "PLW0603", "PYI034", "S311",
+]
+"**/interfaces/schemas.py" = ["TC003"]
+# FastAPI avalia as anotacoes das rotas e dependencies em runtime.
+"**/interfaces/router*.py" = ["B008", "TC001", "TC002", "TC003"]
+"**/interfaces/dependencies.py" = ["TC002"]
+# ADR-009: a base se chama DomainException (sufixo Error nas concretas).
+"src/compartilhado/dominio/exceptions.py" = ["N818"]
+
+[tool.importlinter]
+root_packages = ["src"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Camadas por contexto (interfaces -> aplicacao -> dominio)"
+type = "layers"
+layers = ["interfaces", "aplicacao", "dominio"]
+containers = [
+    "src.precos",
+    "src.orcamento",
+    "src.pagamento",
+    "src.compartilhado",
+]
+
+[[tool.importlinter.contracts]]
+name = "Dominio e aplicacao nao importam infraestrutura"
+type = "forbidden"
+source_modules = [
+    "src.precos.dominio",
+    "src.precos.aplicacao",
+    "src.orcamento.dominio",
+    "src.orcamento.aplicacao",
+    "src.pagamento.dominio",
+    "src.pagamento.aplicacao",
+    "src.compartilhado.dominio",
+    "src.compartilhado.aplicacao",
+]
+forbidden_modules = [
+    "src.precos.infraestrutura",
+    "src.orcamento.infraestrutura",
+    "src.pagamento.infraestrutura",
+    "src.compartilhado.infraestrutura",
+]
+
+[[tool.importlinter.contracts]]
+name = "Dominio e aplicacao nao dependem de frameworks nem de drivers"
+type = "forbidden"
+source_modules = [
+    "src.precos.dominio",
+    "src.precos.aplicacao",
+    "src.orcamento.dominio",
+    "src.orcamento.aplicacao",
+    "src.pagamento.dominio",
+    "src.pagamento.aplicacao",
+    "src.compartilhado.dominio",
+    "src.compartilhado.aplicacao",
+]
+forbidden_modules = [
+    "fastapi",
+    "starlette",
+    "pydantic",
+    "pymongo",
+    "bson",
+    "httpx",
+    "jwt",
+    "prometheus_client",
+    "structlog",
+]
+
+# Contextos nao acoplam no nucleo uns dos outros: orcamento le precos e
+# pagamento le orcamento por portas definidas no consumidor, com adapters na
+# infraestrutura (mesmo padrao ACL do p3).
+[[tool.importlinter.contracts]]
+name = "precos nao acopla no nucleo de outros contextos"
+type = "forbidden"
+source_modules = ["src.precos.dominio", "src.precos.aplicacao"]
+forbidden_modules = [
+    "src.orcamento.dominio",
+    "src.orcamento.aplicacao",
+    "src.pagamento.dominio",
+    "src.pagamento.aplicacao",
+]
+
+[[tool.importlinter.contracts]]
+name = "orcamento nao acopla no nucleo de outros contextos"
+type = "forbidden"
+source_modules = ["src.orcamento.dominio", "src.orcamento.aplicacao"]
+forbidden_modules = [
+    "src.precos.dominio",
+    "src.precos.aplicacao",
+    "src.pagamento.dominio",
+    "src.pagamento.aplicacao",
+]
+
+[[tool.importlinter.contracts]]
+name = "pagamento nao acopla no nucleo de outros contextos"
+type = "forbidden"
+source_modules = ["src.pagamento.dominio", "src.pagamento.aplicacao"]
+forbidden_modules = [
+    "src.precos.dominio",
+    "src.precos.aplicacao",
+    "src.orcamento.dominio",
+    "src.orcamento.aplicacao",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+markers = [
+    "integracao: usa MongoDB real (testcontainers em replica set ou TEST_MONGODB_URI)",
+]
+addopts = "--strict-markers"
+testpaths = ["tests"]
+timeout = 120
+
+[tool.bandit]
+targets = ["src"]
