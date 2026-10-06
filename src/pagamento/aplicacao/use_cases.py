@@ -11,7 +11,10 @@ import logging
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
+from src.compartilhado.dominio.exceptions import (
+    EntidadeNaoEncontradaError,
+    TransicaoStatusInvalidaError,
+)
 from src.compartilhado.dominio.relogio import agora_utc
 from src.pagamento.aplicacao.dtos import PagamentoDTO
 from src.pagamento.aplicacao.ports import (
@@ -46,6 +49,13 @@ if TYPE_CHECKING:
     from src.pagamento.dominio.repository import PagamentoRepository
 
 _log = logging.getLogger(__name__)
+
+
+class CheckoutNaoEncontradoError(EntidadeNaoEncontradaError):
+    """Token ausente, invalido, expirado ou de outro pagamento: o mesmo 404."""
+
+    codigo = "CHECKOUT_NAO_ENCONTRADO"
+    mensagem_padrao = "Checkout nao encontrado ou expirado"
 
 
 def _obter(pagamentos: PagamentoRepository, pagamento_id: UUID) -> Pagamento:
@@ -238,7 +248,9 @@ def _uuid(valor: str | None) -> UUID | None:
 class SimularResultadoPagamento:
     """Simulador (MP_MODE=simulado): o "cliente" paga ou tem o cartao recusado.
 
-    Percorre o mesmo ``ProcessarNotificacaoPagamento`` do webhook real.
+    So com o token do ``checkout_url`` (o mesmo 404 para token ausente,
+    invalido, expirado ou de outro pagamento). Percorre o mesmo
+    ``ProcessarNotificacaoPagamento`` do webhook real.
     """
 
     def __init__(
@@ -246,13 +258,21 @@ class SimularResultadoPagamento:
         simulador: SimuladorDePagamento,
         pagamentos: PagamentoRepository,
         processar: ProcessarNotificacaoPagamento,
+        relogio: Relogio = agora_utc,
     ) -> None:
         self._simulador = simulador
         self._pagamentos = pagamentos
         self._processar = processar
+        self._relogio = relogio
 
-    def executar(self, pagamento_id: UUID, *, aprovar: bool) -> PagamentoDTO:
-        pagamento = _obter(self._pagamentos, pagamento_id)
+    def consultar(self, pagamento_id: UUID, token: str | None) -> PagamentoDTO:
+        """Pagamento da pagina de checkout."""
+        return PagamentoDTO.de(self._autorizado(pagamento_id, token))
+
+    def executar(
+        self, pagamento_id: UUID, *, token: str | None, aprovar: bool
+    ) -> PagamentoDTO:
+        pagamento = self._autorizado(pagamento_id, token)
         if pagamento.status is not StatusPagamento.PENDENTE:
             msg = f"Pagamento {pagamento.status} ja foi processado"
             raise TransicaoStatusInvalidaError(msg)
@@ -263,6 +283,15 @@ class SimularResultadoPagamento:
         if dto is None:  # referencia que o proprio provedor simulado nao conhece
             raise PagamentoNaoEncontradoError
         return dto
+
+    def _autorizado(self, pagamento_id: UUID, token: str | None) -> Pagamento:
+        autorizado = self._simulador.checkout_autorizado(
+            pagamento_id, token, agora=self._relogio()
+        )
+        pagamento = self._pagamentos.obter_por_id(pagamento_id) if autorizado else None
+        if pagamento is None:
+            raise CheckoutNaoEncontradoError
+        return pagamento
 
 
 class ExpirarPagamentosVencidos:

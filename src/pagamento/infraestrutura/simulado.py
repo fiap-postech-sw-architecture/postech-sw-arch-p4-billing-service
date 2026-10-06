@@ -1,9 +1,13 @@
-"""Provedor de pagamento simulado (``MP_MODE=simulado``, default em dev/CI/demo).
+"""Provedor de pagamento simulado (``MP_MODE=simulado``: dev, CI, compose e E2E).
 
 Imita o Mercado Pago no que o Billing usa: cria a "cobranca" com um checkout
-servido pelo proprio Billing (``/simulador/checkout/{pagamento_id}``) e
-guarda o resultado de cada pagamento simulado para a consulta, que segue o
-mesmo caminho do webhook real.
+servido pelo proprio Billing e guarda o resultado de cada pagamento simulado
+para a consulta, que segue o mesmo caminho do webhook real.
+
+O ``checkout_url`` leva um token assinado (``pagamento_id`` + expiracao da
+cobranca), exigido pelas rotas do simulador: sem ele, quem soubesse o id do
+pagamento aprovaria a cobranca. O dominio do token e proprio, entao o token do
+link de decisao do orcamento (mesmo segredo) nao abre o checkout.
 
 Estado em memoria e suficiente: aprovar/recusar registra o resultado e
 processa a notificacao na mesma requisicao (mesmo processo). Um estorno de
@@ -17,6 +21,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from src.compartilhado.aplicacao.token_assinado import TokenAssinado
 from src.pagamento.aplicacao.ports import (
     Cobranca,
     GatewayPagamentoRecusouError,
@@ -32,14 +37,18 @@ if TYPE_CHECKING:
     from src.compartilhado.dominio.dinheiro import Dinheiro
     from src.pagamento.aplicacao.ports import ItemCobranca
 
-CAMINHO_CHECKOUT = "/simulador/checkout"
+_DOMINIO_DE_ASSINATURA = "checkout-simulado"
 
 
 class GatewayPagamentoSimulado:
+    """Provedor falso: checkout proprio e resultado escolhido no botao."""
+
     provedor = "simulado"
 
-    def __init__(self, *, url_publica: str) -> None:
-        self._url_checkout = f"{url_publica.rstrip('/')}{CAMINHO_CHECKOUT}"
+    def __init__(self, *, url_checkout: str, segredo: str) -> None:
+        """``url_checkout`` ja inclui o caminho da pagina de checkout."""
+        self._url_checkout = url_checkout.rstrip("/")
+        self._token = TokenAssinado(segredo=segredo, dominio=_DOMINIO_DE_ASSINATURA)
         self._pagamentos: dict[str, SituacaoNoProvedor] = {}
         self._trava = threading.Lock()
 
@@ -50,9 +59,18 @@ class GatewayPagamentoSimulado:
         itens: Sequence[ItemCobranca],
         expira_em: datetime,
     ) -> Cobranca:
+        token = self._token.emitir(pagamento_id, expira_em)
         return Cobranca(
             referencia=f"sim-pref-{pagamento_id}",
-            checkout_url=f"{self._url_checkout}/{pagamento_id}",
+            checkout_url=f"{self._url_checkout}/{pagamento_id}?token={token}",
+        )
+
+    def checkout_autorizado(
+        self, pagamento_id: UUID, token: str | None, *, agora: datetime
+    ) -> bool:
+        """O token e o do ``checkout_url`` deste pagamento e ainda vale."""
+        return token is not None and self._token.validar(token, agora=agora) == (
+            pagamento_id
         )
 
     def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:

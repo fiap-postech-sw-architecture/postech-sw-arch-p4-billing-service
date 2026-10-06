@@ -21,6 +21,7 @@ from src.pagamento.aplicacao.ports import (
     SituacaoNoProvedor,
 )
 from src.pagamento.aplicacao.use_cases import (
+    CheckoutNaoEncontradoError,
     ConsultarPagamentos,
     EstornarPagamento,
     ExpirarPagamentosVencidos,
@@ -36,7 +37,12 @@ from src.pagamento.dominio.pagamento import StatusPagamento
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from tests.factories import dinheiro, orcamento
-from tests.integracao.apoio import GatewayRoteirizado, RelogioFixo, eventos_do_outbox
+from tests.integracao.apoio import (
+    GatewayRoteirizado,
+    RelogioFixo,
+    eventos_do_outbox,
+    token_do_checkout,
+)
 
 if TYPE_CHECKING:
     from pymongo.database import Database
@@ -91,6 +97,21 @@ def simular(
         gateway,
         MongoPagamentoRepository(MongoUnitOfWork(banco)),
         processar(banco, gateway, relogio),
+        relogio,
+    )
+
+
+def pagar(
+    banco: Banco,
+    gateway: GatewayRoteirizado,
+    relogio: RelogioFixo,
+    dto: PagamentoDTO,
+    *,
+    aprovar: bool,
+) -> PagamentoDTO:
+    """O cliente aprova ou recusa no checkout simulado (com o token do link)."""
+    return simular(banco, gateway, relogio).executar(
+        dto.id, token=token_do_checkout(dto.checkout_url), aprovar=aprovar
     )
 
 
@@ -120,7 +141,7 @@ def aprovado(
     banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
 ) -> PagamentoDTO:
     dto = solicitado(banco, gateway, relogio)
-    return simular(banco, gateway, relogio).executar(dto.id, aprovar=True)
+    return pagar(banco, gateway, relogio, dto, aprovar=True)
 
 
 class TestSolicitarPagamento:
@@ -139,7 +160,9 @@ class TestSolicitarPagamento:
             "BRL",
             "simulado",
         )
-        assert dto.checkout_url == f"http://billing.teste/simulador/checkout/{dto.id}"
+        assert dto.checkout_url.startswith(
+            f"http://billing.teste/simulador/checkout/{dto.id}?token="
+        )
         assert dto.expira_em == relogio.agora + timedelta(minutes=60)
         assert gateway.cobrancas == [dto.id]
         [envelope] = eventos_do_outbox(banco, "PagamentoSolicitado")
@@ -397,17 +420,29 @@ class TestSimulador:
         assert pago.referencia_pagamento.startswith("sim-")
 
         outro = solicitado(banco, gateway, relogio)
-        recusado = simular(banco, gateway, relogio).executar(outro.id, aprovar=False)
+        recusado = pagar(banco, gateway, relogio, outro, aprovar=False)
         assert recusado.status == "RECUSADO"
 
-    def test_pagamento_ja_processado_ou_inexistente(
+    def test_pagamento_ja_processado(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
         pago = aprovado(banco, gateway, relogio)
         with pytest.raises(TransicaoStatusInvalidaError, match="APROVADO"):
-            simular(banco, gateway, relogio).executar(pago.id, aprovar=False)
-        with pytest.raises(PagamentoNaoEncontradoError):
-            simular(banco, gateway, relogio).executar(uuid4(), aprovar=True)
+            pagar(banco, gateway, relogio, pago, aprovar=False)
+
+    def test_checkout_exige_o_token_do_pagamento(
+        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+    ) -> None:
+        dto = solicitado(banco, gateway, relogio)
+        outro = solicitado(banco, gateway, relogio)
+        caso = simular(banco, gateway, relogio)
+        for token in (None, "x.y.z", token_do_checkout(outro.checkout_url)):
+            with pytest.raises(CheckoutNaoEncontradoError):
+                caso.executar(dto.id, token=token, aprovar=True)
+            with pytest.raises(CheckoutNaoEncontradoError):
+                caso.consultar(dto.id, token)
+        assert caso.consultar(dto.id, token_do_checkout(dto.checkout_url)) == dto
+        assert eventos_do_outbox(banco, "PagamentoConfirmado") == []
 
     def test_referencia_que_o_provedor_nao_reconhece(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
@@ -423,9 +458,12 @@ class TestSimulador:
             esquecido,
             MongoPagamentoRepository(MongoUnitOfWork(banco)),
             processar(banco, esquecido, relogio),
+            relogio,
         )
         with pytest.raises(PagamentoNaoEncontradoError):
-            caso.executar(dto.id, aprovar=True)
+            caso.executar(
+                dto.id, token=token_do_checkout(dto.checkout_url), aprovar=True
+            )
 
 
 class TestExpirarPagamentos:
@@ -550,7 +588,7 @@ class TestEstornarPagamento:
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
         pendente = solicitado(banco, gateway, relogio)
-        simular(banco, gateway, relogio).executar(pendente.id, aprovar=False)
+        pagar(banco, gateway, relogio, pendente, aprovar=False)
         resultado = estornar(banco, gateway, relogio).executar(
             ordem_id=pendente.ordem_id,
             pagamento_id=pendente.id,
@@ -587,7 +625,7 @@ class TestEstornarPagamento:
         pendente = solicitado(banco, gateway, relogio)
         repo = MongoPagamentoRepository(MongoUnitOfWork(banco))
         antes = repo.obter_por_id(pendente.id)
-        pago = simular(banco, gateway, relogio).executar(pendente.id, aprovar=True)
+        pago = pagar(banco, gateway, relogio, pendente, aprovar=True)
 
         class LeituraAntiga:
             """1a leitura devolve o pagamento ainda PENDENTE (leitura velha)."""

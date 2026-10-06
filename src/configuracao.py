@@ -3,7 +3,10 @@
 Sem ``ENVIRONMENT`` o servico assume producao (falha fechada): enderecos e o
 segredo do link precisam vir explicitos, e o segredo de demonstracao publico
 no repo e recusado (mesma postura do ``validar_segredos_no_startup`` do p3).
-Desenvolvimento e testes declaram ``ENVIRONMENT=development|test``.
+Desenvolvimento e testes declaram ``ENVIRONMENT=development|test``; qualquer
+outro valor e erro de configuracao. ``MP_MODE`` nao tem padrao, e o simulador
+(que aprova pagamento sem provedor) so sobe em producao com
+``SIMULADOR_PERMITIDO=true`` explicito (ADR-040).
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 _AMBIENTES_DE_DESENVOLVIMENTO = frozenset({"development", "test"})
+_AMBIENTES = _AMBIENTES_DE_DESENVOLVIMENTO | {"production"}
 _TAMANHO_MINIMO_SEGREDO = 32
 
 # Valor de demonstracao (compose/testes); proibido fora de development/test.
@@ -60,7 +64,7 @@ class Configuracao:
     @classmethod
     def do_ambiente(cls, env: Mapping[str, str] | None = None) -> Configuracao:
         env = os.environ if env is None else env
-        ambiente = env.get("ENVIRONMENT", "production").lower()
+        ambiente = _ambiente(env)
         desenvolvimento = ambiente in _AMBIENTES_DE_DESENVOLVIMENTO
 
         def exigir(nome: str) -> str:
@@ -75,7 +79,17 @@ class Configuracao:
         segredo = exigir("ORCAMENTO_LINK_SECRET")
         if not desenvolvimento:
             _validar_segredo_de_producao(segredo)
-        modo = _modo(env.get("MP_MODE", ModoMercadoPago.SIMULADO))
+        modo = _modo(env.get("MP_MODE", ""))
+        if (
+            modo is ModoMercadoPago.SIMULADO
+            and not desenvolvimento
+            and env.get("SIMULADOR_PERMITIDO", "").strip().lower() != "true"
+        ):
+            msg = (
+                f"MP_MODE=simulado recusado com ENVIRONMENT={ambiente}: o simulador "
+                "aprova pagamento sem provedor (SIMULADOR_PERMITIDO=true so em demo)"
+            )
+            raise ValueError(msg)
         access_token = env.get("MP_ACCESS_TOKEN") or None
         webhook_secret = env.get("MP_WEBHOOK_SECRET") or None
         if modo is ModoMercadoPago.MERCADOPAGO and not (
@@ -123,9 +137,21 @@ def _validar_segredo_de_producao(segredo: str) -> None:
         raise ValueError(msg)
 
 
+def _ambiente(env: Mapping[str, str]) -> str:
+    valor = env.get("ENVIRONMENT", "production")
+    ambiente = valor.strip().lower()
+    if ambiente not in _AMBIENTES:
+        msg = f"ENVIRONMENT invalido: {valor!r} (use {', '.join(sorted(_AMBIENTES))})"
+        raise ValueError(msg)
+    return ambiente
+
+
 def _modo(valor: str) -> ModoMercadoPago:
+    if not valor:
+        msg = "MP_MODE obrigatoria: simulado ou mercadopago"
+        raise ValueError(msg)
     try:
-        return ModoMercadoPago(valor.lower())
+        return ModoMercadoPago(valor.strip().lower())
     except ValueError:
         msg = f"MP_MODE invalido: {valor!r} (use simulado ou mercadopago)"
         raise ValueError(msg) from None

@@ -21,7 +21,10 @@ def obter_consultar_pagamentos(request: Request) -> ConsultarPagamentos:
 def obter_processar_notificacao(request: Request) -> ProcessarNotificacaoPagamento:
     uow = MongoUnitOfWork(request.app.state.banco)
     return ProcessarNotificacaoPagamento(
-        uow, MongoPagamentoRepository(uow), request.app.state.gateway_pagamento
+        uow,
+        MongoPagamentoRepository(uow),
+        request.app.state.gateway_pagamento,
+        request.app.state.relogio,
     )
 
 
@@ -30,8 +33,10 @@ def obter_simular_resultado(request: Request) -> SimularResultadoPagamento:
     uow = MongoUnitOfWork(request.app.state.banco)
     pagamentos = MongoPagamentoRepository(uow)
     gateway = request.app.state.gateway_pagamento
+    relogio = request.app.state.relogio
     return SimularResultadoPagamento(
         gateway,
         pagamentos,
-        ProcessarNotificacaoPagamento(uow, pagamentos, gateway),
+        ProcessarNotificacaoPagamento(uow, pagamentos, gateway, relogio),
+        relogio,
     )

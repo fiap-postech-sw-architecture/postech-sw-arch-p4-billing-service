@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 def test_saude_sem_autenticacao(api: TestClient) -> None:
     resposta = api.get("/api/v1/saude")
     assert resposta.status_code == 200
-    assert resposta.json() == {"status": "ok"}
+    assert resposta.json() == {"status": "ok", "modo": "simulado"}
     assert resposta.headers["X-Content-Type-Options"] == "nosniff"
 
 
@@ -76,18 +76,26 @@ def test_boot_conecta_no_mongodb_pela_configuracao(
         cliente_mongo.drop_database(nome)
 
 
-def test_producao_desliga_docs_e_avisa_do_simulador(
+PRODUCAO = {
+    "ENVIRONMENT": "production",
+    "ORCAMENTO_LINK_SECRET": secrets.token_hex(32),
+    "MONGODB_URI": "mongodb://nao-usado-com-banco-injetado:27017",
+}
+
+
+def test_producao_recusa_subir_com_o_simulador_sem_permissao() -> None:
+    with pytest.raises(ValueError, match="MP_MODE=simulado recusado"):
+        configuracao(**PRODUCAO)
+
+
+def test_simulador_permitido_em_producao_sobe_e_fica_no_log(
     banco: Banco, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config = configuracao(
-        ENVIRONMENT="production",
-        ORCAMENTO_LINK_SECRET=secrets.token_hex(32),
-        MONGODB_URI="mongodb://nao-usado-com-banco-injetado:27017",
-    )
+    config = configuracao(**PRODUCAO, SIMULADOR_PERMITIDO="true")
     app = criar_app(config, banco=banco)
     with TestClient(app) as cliente:
-        assert cliente.get("/docs").status_code == 404
-    assert "simulador_de_pagamento_ativo_em_producao" in capsys.readouterr().out
+        assert cliente.get("/api/v1/saude").json()["modo"] == "simulado"
+    assert "payment_simulator_enabled_in_production" in capsys.readouterr().out
 
 
 class TestPrazos:
@@ -161,6 +169,7 @@ class TestSeed:
     ) -> None:
         nome = f"teste_{uuid4().hex}"
         monkeypatch.setenv("ENVIRONMENT", "test")
+        monkeypatch.setenv("MP_MODE", "simulado")
         monkeypatch.setenv("MONGODB_URI", mongo_uri)
         monkeypatch.setenv("MONGODB_DB", nome)
         try:

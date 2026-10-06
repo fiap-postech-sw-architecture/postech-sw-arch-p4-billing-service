@@ -105,6 +105,12 @@ class GatewayPagamento(Protocol):
 class SimuladorDePagamento(Protocol):
     """Lado "cliente pagando" do provedor simulado (so com MP_MODE=simulado)."""
 
+    def checkout_autorizado(
+        self, pagamento_id: UUID, token: str | None, *, agora: datetime
+    ) -> bool:
+        """O token e o do ``checkout_url`` deste pagamento e ainda vale."""
+        ...
+
     def registrar_resultado(
         self, *, pagamento_id: UUID, valor: Dinheiro, aprovado: bool
     ) -> str:

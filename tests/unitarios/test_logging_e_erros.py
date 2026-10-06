@@ -54,6 +54,20 @@ class TestLogging:
         registro = linhas_json(saida_de_log)[-1]
         assert registro["event"] == '"GET /api/v1/publico/orcamentos/*** HTTP/1.1" 200'
 
+    def test_token_do_checkout_simulado_sai_mascarado_no_access_log(
+        self, saida_de_log: io.StringIO
+    ) -> None:
+        logging.getLogger("uvicorn.access").info(
+            '"POST /api/v1/simulador/pagamentos/%s/aprovar?token=%s&x=1 HTTP/1.1" 200',
+            "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60",
+            "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60.1791547200.Zm9vYmFy",
+        )
+        registro = linhas_json(saida_de_log)[-1]
+        assert registro["event"] == (
+            '"POST /api/v1/simulador/pagamentos/0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60'
+            '/aprovar?token=***&x=1 HTTP/1.1" 200'
+        )
+
     def test_extra_de_log_stdlib_vira_campo_e_passa_pelo_scrub(
         self, saida_de_log: io.StringIO
     ) -> None:

@@ -10,6 +10,7 @@ import structlog
 from fastapi import FastAPI
 
 from src.banco import preparar_banco
+from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
@@ -27,6 +28,7 @@ from src.pagamento.infraestrutura.mercadopago import (
 )
 from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from src.pagamento.interfaces.router import router as router_pagamentos
+from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
 from src.pagamento.interfaces.router_simulador import router as router_simulador
 from src.precos.interfaces.router import router as router_precos
 
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
 
     from pymongo.database import Database
 
+    from src.compartilhado.dominio.relogio import Relogio
     from src.compartilhado.infraestrutura.mongo import Documento
     from src.pagamento.aplicacao.ports import GatewayPagamento
 
@@ -43,7 +46,11 @@ _log = structlog.get_logger(__name__)
 
 
 def criar_gateway(config: Configuracao) -> GatewayPagamento:
-    """``MP_MODE=mercadopago`` liga o Checkout Pro real; o default e o simulador."""
+    """``MP_MODE=mercadopago`` liga o Checkout Pro real; ``simulado``, o simulador.
+
+    O simulador assina o ``checkout_url`` com o segredo do link de decisao, em
+    dominio proprio (um token nao vale no lugar do outro).
+    """
     if config.mp_modo is ModoMercadoPago.MERCADOPAGO:
         if not config.mp_access_token:  # garantido pela Configuracao
             msg = "MP_ACCESS_TOKEN ausente"
@@ -56,7 +63,10 @@ def criar_gateway(config: Configuracao) -> GatewayPagamento:
                 timeout_segundos=config.mp_timeout_segundos,
             )
         )
-    return GatewayPagamentoSimulado(url_publica=config.url_publica)
+    return GatewayPagamentoSimulado(
+        url_checkout=f"{config.url_publica}{CAMINHO_CHECKOUT}",
+        segredo=config.link_segredo,
+    )
 
 
 def criar_app(
@@ -64,8 +74,9 @@ def criar_app(
     *,
     banco: Database[Documento] | None = None,
     gateway: GatewayPagamento | None = None,
+    relogio: Relogio = agora_utc,
 ) -> FastAPI:
-    """Monta a API. ``banco`` e ``gateway`` injetados servem aos testes."""
+    """Monta a API. ``banco``, ``gateway`` e ``relogio`` injetados servem aos testes."""
     config = config or Configuracao.do_ambiente()
     gateway = gateway or criar_gateway(config)
     producao = config.ambiente == "production"
@@ -74,8 +85,8 @@ def criar_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configurar_logging()
         if producao and config.mp_modo is ModoMercadoPago.SIMULADO:
-            # O simulador aprova pagamento sem autenticacao: so para demo.
-            _log.warning("simulador_de_pagamento_ativo_em_producao")
+            # So chega aqui com SIMULADOR_PERMITIDO=true (demo): fica no log.
+            _log.warning("payment_simulator_enabled_in_production")
         cliente = None if banco is not None else criar_cliente(config.mongodb_uri)
         app.state.banco = banco if cliente is None else cliente[config.mongodb_banco]
         preparar_banco(app.state.banco)
@@ -99,6 +110,7 @@ def criar_app(
         redoc_url=None if producao else "/redoc",
     )
     app.state.config = config
+    app.state.relogio = relogio
     app.state.gateway_pagamento = gateway
     app.state.link_decisao = LinkDeDecisao(
         segredo=config.link_segredo, url_base=config.url_publica

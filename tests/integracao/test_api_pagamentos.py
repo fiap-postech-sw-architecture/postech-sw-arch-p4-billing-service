@@ -11,6 +11,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
 from src.orcamento.dominio.orcamento import CanalDecisao
@@ -22,8 +23,10 @@ from tests.factories import dinheiro, orcamento, pagamento
 from tests.integracao.apoio import (
     SEGREDO_WEBHOOK,
     URL_PUBLICA,
+    RelogioFixo,
     configuracao,
     eventos_do_outbox,
+    token_do_checkout,
 )
 
 if TYPE_CHECKING:
@@ -32,6 +35,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
     from pymongo.database import Database
 
+    from src.compartilhado.dominio.relogio import Relogio
     from src.pagamento.aplicacao.dtos import PagamentoDTO
 
     Cabecalhos = Callable[[str], dict[str, str]]
@@ -63,9 +67,9 @@ def notificacao(data_id: str) -> dict[str, Any]:
     }
 
 
-def solicitado(app: FastAPI) -> PagamentoDTO:
+def solicitado(app: FastAPI, relogio: Relogio = agora_utc) -> PagamentoDTO:
     banco = app.state.banco
-    aprovado = orcamento()
+    aprovado = orcamento(criado_em=relogio())
     aprovado.aprovar(canal=CanalDecisao.LINK, agora=aprovado.criado_em)
     uow = MongoUnitOfWork(banco)
     uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(aprovado))
@@ -76,6 +80,7 @@ def solicitado(app: FastAPI) -> PagamentoDTO:
         OrcamentosMongoAdapter(uow),
         app.state.gateway_pagamento,
         app.state.config.pagamento_validade,
+        relogio,
     ).executar(ordem_id=aprovado.ordem_id, orcamento_id=aprovado.id)
 
 
@@ -94,7 +99,10 @@ class TestConsulta:
             "335.00",
             "BRL",
         )
-        assert corpo["checkout_url"] == f"{URL_PUBLICA}/simulador/checkout/{dto.id}"
+        assert corpo["checkout_url"] == dto.checkout_url
+        assert dto.checkout_url.startswith(
+            f"{URL_PUBLICA}/simulador/checkout/{dto.id}?token="
+        )
         assert corpo["notificacoes"] == []
 
     def test_inexistente_e_permissao(
@@ -199,33 +207,81 @@ class TestWebhook:
 
 
 class TestSimulador:
-    def test_checkout_html_com_botoes(self, api: TestClient, app: FastAPI) -> None:
+    def test_checkout_html_com_botoes_que_levam_o_token(
+        self, api: TestClient, app: FastAPI
+    ) -> None:
         dto = solicitado(app)
-        resposta = api.get(f"/simulador/checkout/{dto.id}")
+        token = token_do_checkout(dto.checkout_url)
+        resposta = api.get(f"/simulador/checkout/{dto.id}", params={"token": token})
         assert resposta.status_code == 200
         assert resposta.headers["content-type"].startswith("text/html")
         base = f"{URL_PUBLICA}/api/v1/simulador/pagamentos/{dto.id}"
-        assert f'action="{base}/aprovar"' in resposta.text
-        assert f'action="{base}/recusar"' in resposta.text
+        assert f'action="{base}/aprovar?token={token}"' in resposta.text
+        assert f'action="{base}/recusar?token={token}"' in resposta.text
         assert "BRL 335.00" in resposta.text
 
-    def test_aprovar_e_recusar(self, api: TestClient, app: FastAPI) -> None:
+    def test_aprovar_e_recusar_com_o_token(self, api: TestClient, app: FastAPI) -> None:
         aprovado = solicitado(app)
-        resposta = api.post(f"/api/v1/simulador/pagamentos/{aprovado.id}/aprovar")
+        token = {"token": token_do_checkout(aprovado.checkout_url)}
+        caminho = f"/api/v1/simulador/pagamentos/{aprovado.id}"
+        resposta = api.post(f"{caminho}/aprovar", params=token)
         assert resposta.status_code == 200
         assert resposta.json()["status"] == "APROVADO"
         assert resposta.json()["notificacoes"][0]["status_provedor"] == "approved"
-        de_novo = api.post(f"/api/v1/simulador/pagamentos/{aprovado.id}/recusar")
-        assert de_novo.status_code == 409
+        assert api.post(f"{caminho}/recusar", params=token).status_code == 409
 
         recusado = solicitado(app)
-        resposta = api.post(f"/api/v1/simulador/pagamentos/{recusado.id}/recusar")
+        resposta = api.post(
+            f"/api/v1/simulador/pagamentos/{recusado.id}/recusar",
+            params={"token": token_do_checkout(recusado.checkout_url)},
+        )
         assert resposta.json()["status"] == "RECUSADO"
 
-    def test_pagamento_inexistente(self, api: TestClient) -> None:
+    @pytest.mark.parametrize(
+        "token",
+        [
+            pytest.param(None, id="sem-token"),
+            pytest.param("x.y.z", id="token-forjado"),
+            pytest.param("outro-pagamento", id="token-de-outro-pagamento"),
+        ],
+    )
+    def test_sem_o_token_do_pagamento_e_o_mesmo_404(
+        self, api: TestClient, app: FastAPI, token: str | None
+    ) -> None:
+        alvo = solicitado(app)
+        if token == "outro-pagamento":
+            token = token_do_checkout(solicitado(app).checkout_url)
+        params = {"token": token} if token else {}
+        respostas = [
+            api.get(f"/simulador/checkout/{alvo.id}", params=params),
+            api.post(f"/api/v1/simulador/pagamentos/{alvo.id}/aprovar", params=params),
+            api.post(f"/api/v1/simulador/pagamentos/{alvo.id}/recusar", params=params),
+        ]
+        assert [r.status_code for r in respostas] == [404, 404, 404]
+        assert {r.json()["erro"]["codigo"] for r in respostas} == {
+            "CHECKOUT_NAO_ENCONTRADO"
+        }
+        assert eventos_do_outbox(app.state.banco, "PagamentoConfirmado") == []
+
+    def test_token_expirado_e_o_mesmo_404(
+        self, banco: Banco, jwks_publicado: dict[str, Any]
+    ) -> None:
+        relogio = RelogioFixo()
+        app = criar_app(configuracao(), banco=banco, relogio=relogio)
+        with TestClient(app) as cliente:
+            dto = solicitado(app, relogio)
+            relogio.avancar(minutes=61)
+            resposta = cliente.post(
+                f"/api/v1/simulador/pagamentos/{dto.id}/aprovar",
+                params={"token": token_do_checkout(dto.checkout_url)},
+            )
+        assert resposta.status_code == 404
+        assert resposta.json()["erro"]["codigo"] == "CHECKOUT_NAO_ENCONTRADO"
+
+    def test_pagamento_inexistente_e_o_mesmo_404(self, api: TestClient) -> None:
         assert api.get(f"/simulador/checkout/{uuid4()}").status_code == 404
         resposta = api.post(f"/api/v1/simulador/pagamentos/{uuid4()}/aprovar")
-        assert resposta.status_code == 404
+        assert resposta.json()["erro"]["codigo"] == "CHECKOUT_NAO_ENCONTRADO"
 
 
 class TestModoMercadoPago:
@@ -243,11 +299,20 @@ class TestModoMercadoPago:
         with TestClient(app) as cliente:
             yield cliente
 
-    def test_simulador_nao_existe(self, api_mp: TestClient) -> None:
-        pagamento_id = uuid4()
-        assert api_mp.get(f"/simulador/checkout/{pagamento_id}").status_code == 404
-        resposta = api_mp.post(f"/api/v1/simulador/pagamentos/{pagamento_id}/aprovar")
+    def test_simulador_nao_existe_nem_para_pagamento_real(
+        self, api_mp: TestClient, banco: Banco
+    ) -> None:
+        pendente = pagamento()
+        uow = MongoUnitOfWork(banco)
+        uow.executar(lambda: MongoPagamentoRepository(uow).salvar(pendente))
+        assert api_mp.get(f"/simulador/checkout/{pendente.id}").status_code == 404
+        resposta = api_mp.post(f"/api/v1/simulador/pagamentos/{pendente.id}/aprovar")
         assert resposta.status_code == 404
+        assert resposta.json()["erro"]["codigo"] == "NAO_ENCONTRADO"
+        documento = banco["pagamentos"].find_one({"_id": pendente.id})
+        assert documento is not None
+        assert documento["status"] == "PENDENTE"
+        assert api_mp.get("/api/v1/saude").json()["modo"] == "mercadopago"
 
     def test_webhook_consulta_o_mercado_pago_de_verdade(
         self, api_mp: TestClient, banco: Banco

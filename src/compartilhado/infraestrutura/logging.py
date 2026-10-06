@@ -1,8 +1,9 @@
 """Logging JSON (structlog) com mascaramento de PII e segredos.
 
 Reaproveitado do p3 @ 08dcffe (``src/compartilhado/infraestrutura/logging.py``);
-acrescimo do Billing: o token do link publico de decisao do orcamento e uma
-credencial no path da URL e sai mascarado dos logs (inclusive access log).
+acrescimo do Billing: o token do link publico de decisao do orcamento (no path)
+e o do checkout simulado (``?token=``) sao credenciais na URL e saem
+mascarados dos logs (inclusive access log).
 """
 
 from __future__ import annotations
@@ -99,9 +100,10 @@ _CHAVES_SENSIVEIS = frozenset(
 
 _MASCARA = "***"
 
-# Token do link publico de decisao (``/publico/orcamentos/<token>``): quem o
-# tem decide o orcamento, entao nao pode ficar legivel no access log.
-_LINK_DECISAO_PATTERN = re.compile(r"(/publico/orcamentos/)[^/\s?#\"']+")
+# Tokens de acesso na URL: o do link de decisao (``/publico/orcamentos/<token>``)
+# decide o orcamento e o do checkout simulado (``?token=<token>``) paga a
+# cobranca, entao nenhum pode ficar legivel no access log.
+_TOKEN_NA_URL_PATTERN = re.compile(r"(/publico/orcamentos/|[?&]token=)[^/\s?&#\"']+")
 
 # Loggers que o uvicorn configura com handler proprio + `propagate=False`.
 # `configurar_logging` os religa ao root para passarem pelo scrubber.
@@ -132,7 +134,7 @@ def _mask_email(match: re.Match[str]) -> str:
 
 
 def _mask_string(value: str) -> str:
-    value = _LINK_DECISAO_PATTERN.sub(rf"\g<1>{_MASCARA}", value)
+    value = _TOKEN_NA_URL_PATTERN.sub(rf"\g<1>{_MASCARA}", value)
     value = _CPF_PATTERN.sub(_mask_cpf, value)
     value = _CNPJ_PATTERN.sub(_mask_cnpj, value)
     value = _EMAIL_PATTERN.sub(_mask_email, value)
