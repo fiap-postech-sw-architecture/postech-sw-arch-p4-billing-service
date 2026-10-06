@@ -49,6 +49,25 @@ if TYPE_CHECKING:
     Banco = Database[dict[str, Any]]
 
 
+class EsperaEspia(threading.Event):
+    """Evento que registra cada espera do laco sem dormir de verdade.
+
+    A ``espera_final``-esima espera marca a parada, e o laco sai: o ciclo e o
+    intervalo do laco aparecem em ``esperas`` sem depender do relogio.
+    """
+
+    def __init__(self, espera_final: int) -> None:
+        super().__init__()
+        self.esperas: list[float | None] = []
+        self._espera_final = espera_final
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.esperas.append(timeout)
+        if len(self.esperas) == self._espera_final:
+            self.set()
+        return self.is_set()
+
+
 def salvar(banco: Banco, *pagamentos: Pagamento) -> None:
     uow = MongoUnitOfWork(banco)
     repo = MongoPagamentoRepository(uow)
@@ -288,28 +307,48 @@ class TestLaco:
         assert caplog.messages.count("deadlines_cycle_failed") == 2
         assert (tmp_path / "hb").exists()
 
+    def test_espera_o_intervalo_entre_os_ciclos(self, tmp_path: Path) -> None:
+        parar = EsperaEspia(espera_final=3)
+        ciclos: list[int] = []
+
+        def um_ciclo() -> ResultadoDoCiclo:
+            ciclos.append(1)
+            if len(ciclos) == 10:  # rede de seguranca: laco ocupado nao trava a suite
+                parar.set()
+            return ResultadoDoCiclo(0, 0, 0)
+
+        rodar(um_ciclo, intervalo=7.5, parar=parar, heartbeat=tmp_path / "hb")
+
+        # Sem espera o laco martelaria o Mongo e o provedor: cada ciclo e
+        # seguido de uma espera do intervalo configurado.
+        assert (len(ciclos), parar.esperas) == (3, [7.5, 7.5, 7.5])
+
     def test_lote_cheio_repete_sem_esperar_o_intervalo(self, tmp_path: Path) -> None:
-        parar = threading.Event()
+        parar = EsperaEspia(espera_final=1)
         resultados = [
             ResultadoDoCiclo(0, prazos.LIMITE_POR_CICLO, 0),
             ResultadoDoCiclo(0, 0, 0),
         ]
+        ciclos: list[ResultadoDoCiclo] = []
 
         def ciclo() -> ResultadoDoCiclo:
-            resultado = resultados.pop(0)
-            if not resultados:
-                parar.set()
-            return resultado
+            ciclos.append(resultados[len(ciclos)])
+            return ciclos[-1]
 
-        # Intervalo de 1 h: se esperasse depois do lote cheio, o teste travaria.
         rodar(ciclo, intervalo=3600, parar=parar, heartbeat=tmp_path / "hb")
-        assert resultados == []
+
+        # O lote cheio vai direto ao proximo ciclo; so o ciclo vazio espera.
+        assert (len(ciclos), parar.esperas) == (2, [3600])
 
 
 def test_sigterm_encerra_o_laco() -> None:
     parar = threading.Event()
     anteriores = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
     try:
+        # Guarda: se instalar_sinais deixasse de tratar o sinal, o padrao do
+        # processo mataria o proprio pytest (rc=-15) em vez de falhar o teste.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         prazos.instalar_sinais(parar)
         signal.raise_signal(signal.SIGTERM)
         assert parar.is_set()
