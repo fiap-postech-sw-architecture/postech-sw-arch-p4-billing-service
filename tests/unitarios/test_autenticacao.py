@@ -59,7 +59,12 @@ def test_papel_valido_insuficiente_e_403(
 ) -> None:
     resposta = chamar(cliente, emitir_token("mecanico"))
     assert resposta.status_code == 403
-    assert resposta.json()["erro"]["codigo"] == "ACESSO_NEGADO"
+    erro = resposta.json()["erro"]
+    # Mesmo texto nos tres servicos.
+    assert (erro["codigo"], erro["mensagem"]) == (
+        "ACESSO_NEGADO",
+        "Papel nao autorizado para esta operacao",
+    )
 
 
 @pytest.mark.parametrize(

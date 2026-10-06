@@ -65,7 +65,7 @@ _CODIGOS_HTTP: dict[int, str] = {
 # (rota inexistente, metodo errado).
 _MENSAGENS_PADRAO: dict[int, str] = {
     404: "Recurso nao encontrado",
-    405: "Metodo nao permitido",
+    405: "Metodo nao permitido para este recurso",
 }
 
 

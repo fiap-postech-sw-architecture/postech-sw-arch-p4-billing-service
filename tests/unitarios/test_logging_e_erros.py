@@ -276,7 +276,7 @@ def test_rota_inexistente_tambem_usa_o_envelope_em_portugues(
     assert resposta.json()["erro"]["mensagem"] == "Recurso nao encontrado"
     metodo = cliente.delete("/corpo")
     assert metodo.status_code == 405
-    assert metodo.json()["erro"]["mensagem"] == "Metodo nao permitido"
+    assert metodo.json()["erro"]["mensagem"] == "Metodo nao permitido para este recurso"
 
 
 def test_422_de_schema_no_formato_do_p3_sem_ecoar_o_valor(cliente: TestClient) -> None:
