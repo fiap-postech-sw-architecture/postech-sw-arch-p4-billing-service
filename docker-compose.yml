@@ -66,9 +66,18 @@ services:
         condition: service_healthy
       api:
         condition: service_started
-    # O HEALTHCHECK da imagem e o HTTP da API; este processo nao serve HTTP.
+    # O HEALTHCHECK da imagem e o HTTP da API; este processo prova vida pelo
+    # heartbeat em arquivo, tocado a cada ciclo (vale 3 intervalos).
     healthcheck:
-      disable: true
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; p=os.environ.get('PRAZOS_HEARTBEAT','/tmp/prazos-heartbeat'); sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 3*float(os.environ.get('PRAZOS_INTERVALO_SEGUNDOS','30')) else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     restart: unless-stopped
 
   mongo:

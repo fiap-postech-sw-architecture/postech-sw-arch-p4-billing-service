@@ -1,9 +1,8 @@
-"""Boot da API, processo de prazos e seed de demonstracao."""
+"""Boot da API e seed de demonstracao."""
 
 from __future__ import annotations
 
 import secrets
-from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -14,13 +13,9 @@ from fastapi.testclient import TestClient
 from src import seed
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
-from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
-from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
-from src.prazos import executar_ciclo
 from src.precos.aplicacao.use_cases import PrecosDeServicos
 from src.precos.infraestrutura.repository import MongoPrecoServicoRepository
-from tests.factories import AGORA, orcamento, pagamento
-from tests.integracao.apoio import RelogioFixo, configuracao, eventos_do_outbox
+from tests.integracao.apoio import configuracao
 
 if TYPE_CHECKING:
     from pymongo import MongoClient
@@ -98,23 +93,6 @@ def test_simulador_permitido_em_producao_sobe_e_fica_no_log(
     assert "payment_simulator_enabled_in_production" in capsys.readouterr().out
 
 
-class TestPrazos:
-    def test_ciclo_expira_orcamentos_e_pagamentos_vencidos(self, banco: Banco) -> None:
-        uow = MongoUnitOfWork(banco)
-        o = orcamento(validade=timedelta(hours=1))
-        p = pagamento(validade=timedelta(minutes=10))
-        uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(o))
-        uow.executar(lambda: MongoPagamentoRepository(uow).salvar(p))
-
-        assert executar_ciclo(banco, relogio=RelogioFixo(AGORA)) == (0, 0)
-        depois = RelogioFixo(AGORA + timedelta(hours=2))
-        assert executar_ciclo(banco, relogio=depois) == (1, 1)
-        assert executar_ciclo(banco, relogio=depois) == (0, 0)
-
-        tipos = {e["tipo"] for e in eventos_do_outbox(banco)}
-        assert {"OrcamentoExpirado", "PagamentoExpirado"} <= tipos
-
-
 class TestSeed:
     def test_seed_e_idempotente_e_nao_sobrescreve_o_admin(self, banco: Banco) -> None:
         assert seed.semear(banco) == (11, 0)
@@ -168,8 +146,8 @@ class TestSeed:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         nome = f"teste_{uuid4().hex}"
+        # So o banco: o seed nao exige segredo, JWKS nem modo de pagamento.
         monkeypatch.setenv("ENVIRONMENT", "test")
-        monkeypatch.setenv("MP_MODE", "simulado")
         monkeypatch.setenv("MONGODB_URI", mongo_uri)
         monkeypatch.setenv("MONGODB_DB", nome)
         try:

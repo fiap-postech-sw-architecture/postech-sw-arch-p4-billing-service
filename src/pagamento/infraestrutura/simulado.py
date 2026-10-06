@@ -79,6 +79,16 @@ class GatewayPagamentoSimulado:
         with self._trava:
             return self._pagamentos.get(referencia)
 
+    def buscar_por_referencia_externa(
+        self, referencia_externa: str
+    ) -> list[SituacaoNoProvedor]:
+        with self._trava:
+            return [
+                situacao
+                for situacao in self._pagamentos.values()
+                if situacao.referencia_externa == referencia_externa
+            ]
+
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
         with self._trava:
             situacao = self._pagamentos.get(referencia)

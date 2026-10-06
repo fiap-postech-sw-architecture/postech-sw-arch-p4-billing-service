@@ -20,6 +20,7 @@ from src.compartilhado.dominio.relogio import agora_utc
 from src.pagamento.aplicacao.dtos import PagamentoDTO
 from src.pagamento.aplicacao.ports import (
     EstornoEmProcessamentoError,
+    GatewayPagamentoIndisponivelError,
     GatewayPagamentoRecusouError,
 )
 from src.pagamento.dominio.cobranca import Cobranca
@@ -291,6 +292,49 @@ def _ignorada(referencia: str, motivo: str) -> None:
 def _estornado_no_provedor(gateway: GatewayPagamento, referencia: str) -> bool:
     situacao = gateway.consultar_pagamento(referencia)
     return situacao is not None and situacao.status is StatusNoProvedor.ESTORNADO
+
+
+class ConciliarPagamentos:
+    """Conciliacao ativa do processo ``prazos`` (ADR-040, passo 4).
+
+    Cada pagamento SOLICITADO e buscado no provedor pela referencia externa, e
+    cada tentativa passa pelo mesmo ``ProcessarNotificacaoPagamento`` do
+    webhook. Cobre notificacao perdida e o kind sem URL publica. Roda antes da
+    expiracao, para um pagamento aprovado no prazo nao vencer por falta do
+    webhook.
+    """
+
+    def __init__(
+        self,
+        pagamentos: PagamentoRepository,
+        gateway: GatewayPagamento,
+        processar: ProcessarNotificacaoPagamento,
+    ) -> None:
+        self._pagamentos = pagamentos
+        self._gateway = gateway
+        self._processar = processar
+
+    def executar(self, *, limite: int = 100) -> int:
+        """Quantos pagamentos solicitados foram consultados nesta rodada."""
+        consultados = 0
+        for pagamento_id in self._pagamentos.listar_solicitados(limite):
+            try:
+                situacoes = self._gateway.buscar_por_referencia_externa(
+                    str(pagamento_id)
+                )
+                for situacao in situacoes:
+                    self._processar.aplicar(situacao)
+            except GatewayPagamentoIndisponivelError:
+                # Provedor fora (ou circuito aberto): o resto espera o proximo ciclo.
+                _log.warning("payment_reconciliation_paused")
+                break
+            except Exception:  # noqa: BLE001 - um pagamento com defeito nao trava os demais
+                _log.exception(
+                    "payment_reconciliation_failed",
+                    extra={"pagamento_id": str(pagamento_id)},
+                )
+            consultados += 1
+        return consultados
 
 
 class SimularResultadoPagamento:

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
-from src.configuracao import Configuracao
+from src.configuracao import ConfiguracaoDoBanco
 from src.precos.aplicacao.use_cases import PrecosDePecas, PrecosDeServicos
 from src.precos.dominio.exceptions import PrecoJaCadastradoError
 from src.precos.infraestrutura.repository import (
@@ -94,7 +94,7 @@ def semear(banco: Database[Documento]) -> tuple[int, int]:
 
 
 def main() -> None:
-    config = Configuracao.do_ambiente()
+    config = ConfiguracaoDoBanco.do_ambiente()
     cliente = criar_cliente(config.mongodb_uri)
     try:
         banco = cliente[config.mongodb_banco]

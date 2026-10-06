@@ -71,6 +71,14 @@ class MongoPagamentoRepository:
         )
         return [doc["_id"] for doc in cursor.sort("expira_em").limit(limite)]
 
+    def listar_solicitados(self, limite: int) -> list[UUID]:
+        cursor = self._colecao.find(
+            {"status": StatusPagamento.SOLICITADO.value},
+            {"_id": 1},
+            session=self._uow.sessao,
+        )
+        return [doc["_id"] for doc in cursor.sort("expira_em").limit(limite)]
+
     def salvar(self, pagamento: Pagamento) -> None:
         self._uow.registrar(pagamento)
         try:

@@ -7,6 +7,8 @@ Contrato (documentacao oficial, referencias nos testes de contrato):
 - ``PUT /checkout/preferences/{id}``: expira a preferencia agora (cancela o
   checkout na compensacao);
 - ``GET /v1/payments/{id}``: status do pagamento (fonte de verdade);
+- ``GET /v1/payments/search?external_reference=``: tentativas da cobranca
+  (conciliacao ativa, ADR-040 passo 4);
 - ``POST /v1/payments/{id}/refunds``: estorno total com ``X-Idempotency-Key``.
 
 A assinatura do webhook (``x-signature``) e validada na borda HTTP, em
@@ -198,17 +200,24 @@ class MercadoPagoGateway:
         if resposta.status_code == _NAO_ENCONTRADO:
             return None
         # parse_float=Decimal: o valor cobrado nunca passa por float.
-        dados = resposta.json(parse_float=Decimal)
-        status = str(dados["status"])
-        externa = dados.get("external_reference")
-        return SituacaoNoProvedor(
-            referencia=str(dados["id"]),
-            referencia_externa=str(externa) if externa else None,
-            status=_status_no_provedor(status),
-            status_provedor=status,
-            detalhe=dados.get("status_detail"),
-            valor=_valor(dados),
+        return _situacao(resposta.json(parse_float=Decimal))
+
+    def buscar_por_referencia_externa(
+        self, referencia_externa: str
+    ) -> list[SituacaoNoProvedor]:
+        resposta = self._enviar(
+            "buscar_pagamentos",
+            "GET",
+            "/v1/payments/search",
+            repetir=True,
+            params={
+                "external_reference": referencia_externa,
+                "sort": "date_created",
+                "criteria": "asc",
+            },
         )
+        dados = resposta.json(parse_float=Decimal)
+        return [_situacao(pagamento) for pagamento in dados.get("results", [])]
 
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
         if not _REFERENCIA_VALIDA.fullmatch(referencia):
@@ -288,6 +297,20 @@ class MercadoPagoGateway:
             raise GatewayPagamentoRecusouError(_mensagem_de_erro(resposta))
         MERCADOPAGO_REQUISICOES.labels(operacao, "sucesso").inc()
         return resposta
+
+
+def _situacao(dados: dict[str, Any]) -> SituacaoNoProvedor:
+    """So id, status, detalhe, valor e moeda: payer e cartao ficam de fora."""
+    status = str(dados["status"])
+    externa = dados.get("external_reference")
+    return SituacaoNoProvedor(
+        referencia=str(dados["id"]),
+        referencia_externa=str(externa) if externa else None,
+        status=_status_no_provedor(status),
+        status_provedor=status,
+        detalhe=dados.get("status_detail"),
+        valor=_valor(dados),
+    )
 
 
 def _status_no_provedor(status: str) -> StatusNoProvedor:

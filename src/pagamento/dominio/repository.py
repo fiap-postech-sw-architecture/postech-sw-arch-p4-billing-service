@@ -21,6 +21,10 @@ class PagamentoRepository(Protocol):
         """Ids dos solicitados com ``expira_em`` anterior a ``agora``."""
         ...
 
+    def listar_solicitados(self, limite: int) -> list[UUID]:
+        """Ids dos solicitados (checkout aberto), os de prazo mais curto antes."""
+        ...
+
     def salvar(self, pagamento: Pagamento) -> None:
         """Insere ou atualiza.
 

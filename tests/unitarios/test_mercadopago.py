@@ -5,6 +5,7 @@ Payloads no formato da documentacao oficial do Mercado Pago:
 - Criar preferencia (Checkout Pro): https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-pro-preferences/create-preference/post
 - Atualizar preferencia: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-pro-preferences/update-preference/put
 - Obter pagamento: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api-payments/get-payment/get
+- Buscar pagamentos: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-pro-preferences/search-payments/get
 - Criar reembolso: https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api-payments/create-refund/post
 - Notificacoes (x-signature): https://www.mercadopago.com.br/developers/pt/docs/checkout-pro-preferences/payment-notifications
 """
@@ -366,6 +367,56 @@ class TestConsultarPagamento:
             rota = mp.route()
             assert gateway.consultar_pagamento(referencia) is None
         assert rota.call_count == 0
+
+
+class TestBuscarPorReferenciaExterna:
+    def test_busca_as_tentativas_da_cobranca(self, gateway: MercadoPagoGateway) -> None:
+        pagamento_id = str(uuid4())
+        resultados = [
+            pagamento_no_provedor(
+                id=1, status="rejected", external_reference=pagamento_id
+            ),
+            pagamento_no_provedor(
+                id=2, status="approved", external_reference=pagamento_id
+            ),
+        ]
+        with respx.mock(base_url=API) as mp:
+            rota = mp.get("/v1/payments/search").respond(
+                200,
+                json={
+                    "paging": {"total": 2, "limit": 30, "offset": 0},
+                    "results": resultados,
+                },
+            )
+            situacoes = gateway.buscar_por_referencia_externa(pagamento_id)
+        parametros = rota.calls.last.request.url.params
+        assert parametros["external_reference"] == pagamento_id
+        assert (parametros["sort"], parametros["criteria"]) == ("date_created", "asc")
+        assert [(s.referencia, s.status) for s in situacoes] == [
+            ("1", StatusNoProvedor.RECUSADO),
+            ("2", StatusNoProvedor.APROVADO),
+        ]
+        assert {s.referencia_externa for s in situacoes} == {pagamento_id}
+
+    def test_sem_tentativas(self, gateway: MercadoPagoGateway) -> None:
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/search").respond(
+                200, json={"paging": {"total": 0}, "results": []}
+            )
+            assert gateway.buscar_por_referencia_externa(str(uuid4())) == []
+
+    def test_repete_falha_transitoria(
+        self, gateway: MercadoPagoGateway, esperas: Esperas
+    ) -> None:
+        with respx.mock(base_url=API) as mp:
+            rota = mp.get("/v1/payments/search").mock(
+                side_effect=[
+                    httpx.Response(503),
+                    httpx.Response(200, json={"results": []}),
+                ]
+            )
+            assert gateway.buscar_por_referencia_externa("x") == []
+        assert (rota.call_count, len(esperas)) == (2, 1)
 
 
 class TestEstornar:

@@ -6,7 +6,13 @@ from uuid import uuid4
 
 import pytest
 
-from src.configuracao import SEGREDO_LINK_DEMO, Configuracao, ModoMercadoPago
+from src.configuracao import (
+    SEGREDO_LINK_DEMO,
+    Configuracao,
+    ConfiguracaoDoBanco,
+    ConfiguracaoDosPrazos,
+    ModoMercadoPago,
+)
 from src.main import criar_gateway
 from src.pagamento.aplicacao.ports import GatewayPagamentoRecusouError
 from src.pagamento.dominio.estados import StatusNoProvedor
@@ -92,6 +98,22 @@ class TestGatewaySimulado:
         assert situacao.status is StatusNoProvedor.ESTORNADO
         # Pagamento anterior a um restart do processo: aceito.
         simulado.estornar("sim-perdido", chave_idempotencia="k")
+
+    def test_busca_as_tentativas_pela_referencia_externa(
+        self, simulado: GatewayPagamentoSimulado
+    ) -> None:
+        pagamento_id = uuid4()
+        referencias = {
+            simulado.registrar_resultado(
+                pagamento_id=pagamento_id, valor=dinheiro("1.00"), aprovado=aprovado
+            )
+            for aprovado in (False, True)
+        }
+        simulado.registrar_resultado(
+            pagamento_id=uuid4(), valor=dinheiro("1.00"), aprovado=True
+        )
+        encontradas = simulado.buscar_por_referencia_externa(str(pagamento_id))
+        assert {s.referencia for s in encontradas} == referencias
 
     def test_cancelar_cobranca_nao_tem_estado_a_fechar(
         self, simulado: GatewayPagamentoSimulado
@@ -252,6 +274,38 @@ class TestConfiguracao:
         assert Configuracao.do_ambiente(DEV).pagamento_max_recusas == 3
         config = Configuracao.do_ambiente({**DEV, "PAGAMENTO_MAX_RECUSAS": "1"})
         assert config.pagamento_max_recusas == 1
+
+    def test_seed_e_preparacao_do_banco_so_precisam_do_banco(self) -> None:
+        config = ConfiguracaoDoBanco.do_ambiente(
+            {"ENVIRONMENT": "production", "MONGODB_URI": "mongodb://mongo:27017"}
+        )
+        assert (config.ambiente, config.mongodb_banco) == ("production", "billing")
+        assert "mongo:27017" not in repr(config)
+        with pytest.raises(ValueError, match="MONGODB_URI obrigatoria"):
+            ConfiguracaoDoBanco.do_ambiente({"ENVIRONMENT": "production"})
+
+    def test_prazos_sem_segredo_do_link_jwks_nem_segredo_do_webhook(self) -> None:
+        config = ConfiguracaoDosPrazos.do_ambiente(
+            {
+                "ENVIRONMENT": "production",
+                "MONGODB_URI": "mongodb://mongo:27017",
+                "MP_MODE": "mercadopago",
+                "MP_ACCESS_TOKEN": "TEST-token-de-teste",  # gitleaks:allow
+                "PRAZOS_INTERVALO_SEGUNDOS": "15",
+                "PRAZOS_HEARTBEAT": "/tmp/hb",  # noqa: S108
+                "METRICS_PORT": "9100",
+            }
+        )
+        assert (config.intervalo_segundos, config.porta_metricas) == (15, 9100)
+        assert str(config.heartbeat) == "/tmp/hb"  # noqa: S108
+        assert config.pagamento_max_recusas == 3
+        assert "TEST-token" not in repr(config)
+
+    def test_prazos_com_mercado_pago_exige_o_token(self) -> None:
+        with pytest.raises(ValueError, match="MP_ACCESS_TOKEN"):
+            ConfiguracaoDosPrazos.do_ambiente(
+                {"ENVIRONMENT": "test", "MP_MODE": "mercadopago"}
+            )
 
     def test_prazos_curtos_para_demo(self) -> None:
         config = Configuracao.do_ambiente(

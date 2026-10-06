@@ -89,6 +89,13 @@ class GatewayPagamento(Protocol):
         """Situacao atual no provedor; ``None`` se a referencia nao existe la."""
         ...
 
+    def buscar_por_referencia_externa(
+        self, referencia_externa: str
+    ) -> list[SituacaoNoProvedor]:
+        """Tentativas de pagamento da cobranca (``external_reference`` = id do
+        pagamento): a conciliacao ativa do processo ``prazos``."""
+        ...
+
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
         """Estorno total concluido; a chave torna a repeticao segura.
 
