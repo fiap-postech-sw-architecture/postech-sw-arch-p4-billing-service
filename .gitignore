@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Testes e qualidade
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit*.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.scannerwork/
+reports/
+
+# Ambiente local
+.env
+.env.*
+!.env.example
+*.local.*
+kubeconfig*
+*-kubeconfig
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Editores e SO
+.idea/
+.vscode/
+.DS_Store
