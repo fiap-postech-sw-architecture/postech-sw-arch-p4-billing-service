@@ -6,6 +6,11 @@ de schema mantem o formato do p3 (``{"detail": [...], "id_requisicao"}``) e o
 codigo generico de nao encontrado e ``ENTIDADE_NAO_ENCONTRADA``. Acrescimos do
 Billing: 410 (recurso expirado), 503 (dependencia externa fora) e o handler de
 ``HTTPException`` (401/403 da autenticacao, 404/405 de roteamento).
+
+Os handlers sao ``async`` de proposito, sem ``await`` (por isso o NOSONAR da
+regra S7503): o Starlette chama handler async direto no event loop; um sync
+iria para o threadpool, e com o pool cheio ate a resposta de erro esperaria
+uma thread.
 """
 
 from __future__ import annotations
@@ -94,7 +99,7 @@ def _mensagem_http(exc: StarletteHTTPException) -> str:
     return detalhe
 
 
-async def _domain_exception_handler(
+async def _domain_exception_handler(  # NOSONAR - async de proposito
     request: Request, exc: DomainException
 ) -> JSONResponse:
     request_id = _obter_request_id(request)
@@ -113,7 +118,7 @@ async def _domain_exception_handler(
     )
 
 
-async def _http_exception_handler(
+async def _http_exception_handler(  # NOSONAR - async de proposito
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
     request_id = _obter_request_id(request)
@@ -131,7 +136,7 @@ async def _http_exception_handler(
     )
 
 
-async def _request_validation_handler(
+async def _request_validation_handler(  # NOSONAR - async de proposito
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     # O detail default do FastAPI ecoa o ``input`` cru de cada campo invalido;
@@ -152,7 +157,7 @@ async def _request_validation_handler(
     )
 
 
-async def _valor_invalido_handler(
+async def _valor_invalido_handler(  # NOSONAR - async de proposito
     request: Request, exc: ValorInvalidoError
 ) -> JSONResponse:
     # Invariante de value object/agregado violada pela entrada: 422 com a
@@ -167,7 +172,9 @@ async def _valor_invalido_handler(
     )
 
 
-async def _generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+async def _generic_exception_handler(  # NOSONAR - async de proposito
+    request: Request, exc: Exception
+) -> JSONResponse:
     # Rede de seguranca: o SecurityHeadersMiddleware ja converte o erro das
     # rotas; aqui so chega o que escapar de um middleware mais externo.
     return resposta_erro_interno(request, exc)

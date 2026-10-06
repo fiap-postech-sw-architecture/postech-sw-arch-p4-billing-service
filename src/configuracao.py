@@ -42,8 +42,10 @@ _PADROES_DE_DESENVOLVIMENTO = {
     "BILLING_PUBLIC_URL": "http://localhost:8002",
     "ORCAMENTO_LINK_SECRET": SEGREDO_LINK_DEMO,
 }
-# Caminho efemero do container (tmpfs), como o heartbeat do relay do p3.
-_HEARTBEAT_PADRAO = "/tmp/prazos-heartbeat"  # noqa: S108  # nosec B108
+# Caminho efemero do container, como o heartbeat do relay do p3. O nome e fixo
+# de proposito (o healthcheck le o arquivo), e o /tmp e o tmpfs privado do
+# container, onde so roda o usuario do servico: por isso as supressoes.
+_HEARTBEAT_PADRAO = "/tmp/prazos-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
 
 
 class ModoMercadoPago(StrEnum):
