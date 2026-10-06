@@ -24,13 +24,20 @@ x-ambiente: &ambiente
   # ele as rotas internas respondem 503 e as publicas (link do cliente,
   # webhook, simulador) seguem.
   JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8000/.well-known/jwks.json}
+  JWT_ISSUER: ${JWT_ISSUER:-pytstop-os-service}
+  JWT_AUDIENCE: ${JWT_AUDIENCE:-pytstop}
   # Valor de demonstracao (recusado fora de development/test).
   ORCAMENTO_LINK_SECRET: ${ORCAMENTO_LINK_SECRET:-demo-link-orcamento-pytstop-nao-usar-em-producao}
   ORCAMENTO_VALIDADE_HORAS: ${ORCAMENTO_VALIDADE_HORAS:-72}
   PAGAMENTO_VALIDADE_MINUTOS: ${PAGAMENTO_VALIDADE_MINUTOS:-60}
+  PAGAMENTO_MAX_RECUSAS: ${PAGAMENTO_MAX_RECUSAS:-3}
   MP_MODE: ${MP_MODE:-simulado}
   MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-}
   MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
+  MP_API_URL: ${MP_API_URL:-https://api.mercadopago.com}
+  # Vazio: <BILLING_PUBLIC_URL>/api/v1/webhooks/mercadopago.
+  MP_NOTIFICATION_URL: ${MP_NOTIFICATION_URL:-}
+  MP_TIMEOUT_SEGUNDOS: ${MP_TIMEOUT_SEGUNDOS:-5}
   PRAZOS_INTERVALO_SEGUNDOS: ${PRAZOS_INTERVALO_SEGUNDOS:-30}
 
 services:

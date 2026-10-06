@@ -4,7 +4,7 @@ Serviço de orçamento e pagamento da oficina: tabela de preços de serviços e 
 
 Parte da fase 4 do Tech Challenge (FIAP Pós Tech, Software Architecture, 15SOAT): o PytStop, sistema de gestão de oficina mecânica das fases anteriores, refatorado em microsserviços com Saga Pattern, mensageria assíncrona, CI/CD por serviço e deploy automatizado em Kubernetes.
 
-O serviço participa da saga de atendimento orquestrada pelo OS Service pelos casos de uso de comando (`GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento`, `EstornarPagamento`), que o consumidor de comandos da mensageria chama (ADR-036). Cada resposta da saga é gravada na outbox transacional (coleção `outbox`), na mesma transação do estado, já no formato do envelope das mensagens.
+O serviço participa da saga de atendimento orquestrada pelo OS Service pelos casos de uso dos comandos da saga (`GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento`, `EstornarPagamento`), que gravam cada resposta na outbox transacional (coleção `outbox`), na mesma transação do estado, já no formato do envelope das mensagens. O consumidor desses comandos e o relay da outbox para o RabbitMQ (ADR-036) não fazem parte desta versão da imagem; os testes exercitam os casos de uso diretamente.
 
 Arquitetura da fase 4: [RFC-004 e ADRs 034 a 043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/tree/main/docs/arquitetura) no repositório `platform` (divisão dos serviços, saga, catálogo de mensagens, rotas, dados e segurança). Este serviço segue em especial o ADR-037 (banco por serviço), o ADR-039 (autenticação entre serviços), o ADR-040 (Mercado Pago), o ADR-041 (testes e qualidade) e o ADR-042 (CI/CD).
 
@@ -77,7 +77,7 @@ Variáveis (lista completa com valores de demonstração em [`.env.example`](.en
 | `JWKS_URL`, `JWT_ISSUER`, `JWT_AUDIENCE` | `http://localhost:8000/.well-known/jwks.json`, `pytstop-os-service`, `pytstop` | validação do JWT |
 | `BILLING_PUBLIC_URL` | `http://localhost:8002` | base do link de decisão e do checkout simulado (https fora de development/test) |
 | `ORCAMENTO_LINK_SECRET` | valor de demonstração | segredo HMAC do link e do checkout simulado (fora de development/test: obrigatório, ≥ 32 bytes, nunca o de demonstração) |
-| `ORCAMENTO_VALIDADE_HORAS`, `PAGAMENTO_VALIDADE_MINUTOS` | `72`, `60` | prazo de decisão do orçamento e de pagamento da cobrança, usados por `GerarOrcamento` e `SolicitarPagamento` (os casos de uso que o consumidor de comandos chama); aceitam fração, para demo |
+| `ORCAMENTO_VALIDADE_HORAS`, `PAGAMENTO_VALIDADE_MINUTOS` | `72`, `60` | prazo de decisão do orçamento e de pagamento da cobrança, usados por `GerarOrcamento` e `SolicitarPagamento` (casos de uso dos comandos da saga); aceitam fração, para demo |
 | `PAGAMENTO_MAX_RECUSAS` | `3` | recusas do provedor que encerram a cobrança |
 | `MP_MODE` | sem padrão | `simulado` ou `mercadopago` (este exige `MP_ACCESS_TOKEN` e `MP_WEBHOOK_SECRET`) |
 | `SIMULADOR_PERMITIDO` | `false` | libera o simulador com `ENVIRONMENT=production` (só demonstração) |
@@ -130,15 +130,15 @@ make audit   # pip-audit nas dependencias de runtime
 
 Unitários (domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens) e integração com MongoDB 7.0.43 real em replica set via testcontainers (casos de uso, API, matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência, corridas reais entre decisão, webhook e expiração). O gate exige 90% de linhas e ramos (`.coveragerc`); o CI publica o resumo por pacote no summary do job `test` e o SonarQube aplica o quality gate (ADR-041).
 
-Cobertura na versão atual (800 testes; `make test` e `python scripts/cobertura_resumo.py coverage.xml`):
+Cobertura na versão atual (808 testes; `make test` e `python scripts/cobertura_resumo.py coverage.xml`):
 
 | Pacote | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
-| `src` (composição, configuração, processos) | 370 | 370 | 100,0% |
-| `src/compartilhado` | 777 | 777 | 100,0% |
-| `src/precos` | 436 | 436 | 100,0% |
-| `src/orcamento` | 628 | 628 | 100,0% |
-| `src/pagamento` | 1152 | 1152 | 100,0% |
-| **total** | 3363 | 3363 | 100,0% (ramos: 100,0%) |
+| `src` (composição, configuração, processos) | 374 | 374 | 100,0% |
+| `src/compartilhado` | 789 | 789 | 100,0% |
+| `src/precos` | 438 | 438 | 100,0% |
+| `src/orcamento` | 629 | 629 | 100,0% |
+| `src/pagamento` | 1156 | 1156 | 100,0% |
+| **total** | 3386 | 3386 | 100,0% (ramos: 100,0%) |
 
 Os runs do CI ficam em [Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml).
