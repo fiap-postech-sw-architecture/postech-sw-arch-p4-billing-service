@@ -115,11 +115,26 @@ class TestGatewaySimulado:
         encontradas = simulado.buscar_por_referencia_externa(str(pagamento_id))
         assert {s.referencia for s in encontradas} == referencias
 
-    def test_cancelar_cobranca_nao_tem_estado_a_fechar(
+    def test_cancelar_cobranca_nao_mexe_no_provedor_simulado(
         self, simulado: GatewayPagamentoSimulado
     ) -> None:
-        # O checkout simulado so aceita pagamento SOLICITADO (status gravado).
-        simulado.cancelar_cobranca("sim-pref-qualquer")  # nao falha nem muda nada
+        pagamento_id = uuid4()
+        cobranca = simulado.criar_cobranca(
+            pagamento_id=pagamento_id, itens=[], expira_em=EXPIRA_EM
+        )
+        simulado.registrar_resultado(
+            pagamento_id=pagamento_id, valor=dinheiro("1.00"), aprovado=False
+        )
+        antes = simulado.buscar_por_referencia_externa(str(pagamento_id))
+
+        simulado.cancelar_cobranca(cobranca.referencia)
+
+        # Nada a fechar aqui: o que impede pagar depois do cancelamento e o
+        # status CANCELADO do pagamento, que a rota do simulador confere (teste
+        # da API); o provedor simulado segue como estava.
+        assert simulado.buscar_por_referencia_externa(str(pagamento_id)) == antes
+        [token] = parse_qs(urlsplit(cobranca.checkout_url).query)["token"]
+        assert simulado.checkout_autorizado(pagamento_id, token, agora=AGORA)
 
     def test_estorno_de_recusado_e_recusado(
         self, simulado: GatewayPagamentoSimulado

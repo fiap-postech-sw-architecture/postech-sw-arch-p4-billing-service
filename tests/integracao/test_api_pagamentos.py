@@ -17,7 +17,7 @@ from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
-from src.pagamento.aplicacao.use_cases import SolicitarPagamento
+from src.pagamento.aplicacao.use_cases import EstornarPagamento, SolicitarPagamento
 from src.pagamento.dominio.cobranca import SituacaoNoProvedor
 from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
@@ -388,6 +388,32 @@ class TestSimulador:
             "CHECKOUT_NAO_ENCONTRADO"
         }
         assert eventos_do_outbox(app.state.banco, "PagamentoConfirmado") == []
+
+    def test_depois_da_compensacao_aprovar_no_simulador_da_409(
+        self, api: TestClient, app: FastAPI
+    ) -> None:
+        # O simulador nao tem checkout a fechar (cancelar_cobranca nao faz nada):
+        # quem impede pagar depois do cancelamento e o status CANCELADO.
+        dto = solicitado(app)
+        uow = MongoUnitOfWork(app.state.banco)
+        EstornarPagamento(
+            uow,
+            MongoPagamentoRepository(uow),
+            app.state.gateway_pagamento,
+            app.state.metricas_pagamento,
+        ).executar(ordem_id=dto.ordem_id, motivo="cancelamento")
+
+        token = {"token": token_do_checkout(dto.checkout_url)}
+
+        resposta = api.post(
+            f"/api/v1/simulador/pagamentos/{dto.id}/aprovar", params=token
+        )
+
+        assert resposta.status_code == 409
+        assert resposta.json()["erro"]["codigo"] == "TRANSICAO_STATUS_INVALIDA"
+        assert eventos_do_outbox(app.state.banco, "PagamentoConfirmado") == []
+        pagina = api.get(f"/simulador/checkout/{dto.id}", params=token)
+        assert "<dd>CANCELADO</dd>" in pagina.text
 
     def test_token_expirado_e_o_mesmo_404(
         self, banco: Banco, jwks_publicado: dict[str, Any]
