@@ -13,13 +13,10 @@ from src.compartilhado.infraestrutura.mongo import (
     dinheiro_para_bson,
     reidratacao,
 )
-from src.pagamento.dominio.cobranca import (
-    Cobranca,
-    EstornoAutomatico,
-    NotificacaoRecebida,
-)
+from src.pagamento.dominio.cobranca import Cobranca
 from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
 from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
+from src.pagamento.dominio.historico import EstornoAutomatico, NotificacaoRecebida
 from src.pagamento.dominio.pagamento import Pagamento
 
 if TYPE_CHECKING:

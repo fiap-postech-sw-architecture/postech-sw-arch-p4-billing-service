@@ -2,7 +2,9 @@
 
 O status so muda pelo que o provedor confirma na consulta (nunca pelo corpo
 do webhook), pelo prazo ou pela compensacao da saga (ADR-040). Estados,
-transicoes e planos em ``estados.py``; value objects em ``cobranca.py``.
+transicoes e planos em ``estados.py``; value objects em ``cobranca.py``; o que o
+provedor ja mostrou de cada tentativa e os estornos automaticos, em
+``historico.py``.
 """
 
 from __future__ import annotations
@@ -15,12 +17,7 @@ from src.compartilhado.dominio.exceptions import (
     TransicaoStatusInvalidaError,
     ValorInvalidoError,
 )
-from src.pagamento.dominio.cobranca import (
-    EstornoAutomatico,
-    NotificacaoRecebida,
-    exigir_texto,
-    exigir_timezone,
-)
+from src.pagamento.dominio.cobranca import exigir_texto, exigir_timezone
 from src.pagamento.dominio.estados import (
     ENCERRADOS_SEM_PAGAMENTO,
     TRANSICOES,
@@ -38,6 +35,11 @@ from src.pagamento.dominio.events import (
     PagamentoExpiradoEvent,
     PagamentoRecusadoEvent,
     PagamentoSolicitadoEvent,
+)
+from src.pagamento.dominio.historico import (
+    EstornoAutomatico,
+    HistoricoDoProvedor,
+    NotificacaoRecebida,
 )
 
 if TYPE_CHECKING:
@@ -81,8 +83,7 @@ class Pagamento(AggregateRoot):
     _motivo: str | None = None
     _estornado_em: datetime | None = None
     _motivo_estorno: MotivoEstorno | None = None
-    _notificacoes: list[NotificacaoRecebida] = field(default_factory=list)
-    _estornos_automaticos: list[EstornoAutomatico] = field(default_factory=list)
+    _historico: HistoricoDoProvedor = field(default_factory=HistoricoDoProvedor)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -178,8 +179,7 @@ class Pagamento(AggregateRoot):
             _motivo=motivo,
             _estornado_em=estornado_em,
             _motivo_estorno=motivo_estorno,
-            _notificacoes=list(notificacoes),
-            _estornos_automaticos=list(estornos_automaticos),
+            _historico=HistoricoDoProvedor(notificacoes, estornos_automaticos),
         )
 
     @property
@@ -229,11 +229,11 @@ class Pagamento(AggregateRoot):
 
     @property
     def notificacoes(self) -> tuple[NotificacaoRecebida, ...]:
-        return tuple(self._notificacoes)
+        return self._historico.notificacoes
 
     @property
     def estornos_automaticos(self) -> tuple[EstornoAutomatico, ...]:
-        return tuple(self._estornos_automaticos)
+        return self._historico.estornos_automaticos
 
     def desfecho_da_solicitacao(self) -> PagamentoSolicitadoEvent:
         """``PagamentoSolicitado`` desta cobranca (republicado na repeticao)."""
@@ -289,7 +289,7 @@ class Pagamento(AggregateRoot):
         if isinstance(max_recusas, bool) or max_recusas < 1:
             msg = "max_recusas deve ser um inteiro maior que zero"
             raise ValorInvalidoError(msg)
-        nova = self._registrar_notificacao(
+        nova = self._historico.registrar_notificacao(
             NotificacaoRecebida(
                 recebida_em=agora,
                 referencia_pagamento=situacao.referencia,
@@ -319,9 +319,9 @@ class Pagamento(AggregateRoot):
         Recusado pelo provedor (``falha``): fica marcado para intervencao
         manual, sem evento (nenhuma saga espera por ele). Repetir: ``False``.
         """
-        if self._estorno_automatico(referencia) is not None:
+        if self._historico.estorno_automatico(referencia) is not None:
             return False
-        self._estornos_automaticos.append(
+        self._historico.registrar_estorno_automatico(
             EstornoAutomatico(
                 referencia_pagamento=referencia,
                 registrado_em=agora,
@@ -407,8 +407,9 @@ class Pagamento(AggregateRoot):
         self, situacao: SituacaoNoProvedor, agora: datetime
     ) -> ResultadoNotificacao | None:
         referencia = situacao.referencia
-        if referencia == self._referencia_pagamento or self._estorno_automatico(
-            referencia
+        if (
+            referencia == self._referencia_pagamento
+            or self._historico.estorno_automatico(referencia) is not None
         ):
             return None
         cobranca = self._cobranca
@@ -446,26 +447,6 @@ class Pagamento(AggregateRoot):
             )
         )
         return ResultadoNotificacao.RECUSADO
-
-    def _registrar_notificacao(self, notificacao: NotificacaoRecebida) -> bool:
-        repetida = any(
-            n.referencia_pagamento == notificacao.referencia_pagamento
-            and n.status_provedor == notificacao.status_provedor
-            for n in self._notificacoes
-        )
-        if not repetida:
-            self._notificacoes.append(notificacao)
-        return not repetida
-
-    def _estorno_automatico(self, referencia: str) -> EstornoAutomatico | None:
-        return next(
-            (
-                e
-                for e in self._estornos_automaticos
-                if e.referencia_pagamento == referencia
-            ),
-            None,
-        )
 
     def _encerrar(self, destino: StatusPagamento, agora: datetime, motivo: str) -> None:
         self._transitar(destino)

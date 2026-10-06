@@ -67,33 +67,3 @@ class SituacaoNoProvedor(ValueObject):
     def __post_init__(self) -> None:
         exigir_texto("Referencia do pagamento", self.referencia)
         exigir_texto("Status do provedor", self.status_provedor)
-
-
-@dataclass(frozen=True, slots=True)
-class NotificacaoRecebida(ValueObject):
-    """Historico: tentativa consultada no provedor e o status que ele deu."""
-
-    recebida_em: datetime
-    referencia_pagamento: str
-    status_provedor: str
-
-    def __post_init__(self) -> None:
-        exigir_timezone("recebida_em", self.recebida_em)
-        exigir_texto("Referencia do pagamento", self.referencia_pagamento)
-        exigir_texto("Status do provedor", self.status_provedor)
-
-
-@dataclass(frozen=True, slots=True)
-class EstornoAutomatico(ValueObject):
-    """Dinheiro devolvido sem pedido da saga: tentativa aprovada que a cobranca
-    nao aceitava (encerrada, ou valor/moeda diferentes). ``falha`` preenchida =
-    o provedor recusou o estorno e a devolucao fica para intervencao manual.
-    """
-
-    referencia_pagamento: str
-    registrado_em: datetime
-    falha: str | None = None
-
-    def __post_init__(self) -> None:
-        exigir_texto("Referencia do pagamento", self.referencia_pagamento)
-        exigir_timezone("registrado_em", self.registrado_em)

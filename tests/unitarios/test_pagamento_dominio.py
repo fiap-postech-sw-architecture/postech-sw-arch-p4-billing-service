@@ -12,12 +12,7 @@ from src.compartilhado.dominio.exceptions import (
     TransicaoStatusInvalidaError,
     ValorInvalidoError,
 )
-from src.pagamento.dominio.cobranca import (
-    Cobranca,
-    EstornoAutomatico,
-    NotificacaoRecebida,
-    SituacaoNoProvedor,
-)
+from src.pagamento.dominio.cobranca import Cobranca, SituacaoNoProvedor
 from src.pagamento.dominio.estados import (
     TRANSICOES,
     MotivoEstorno,
@@ -35,6 +30,7 @@ from src.pagamento.dominio.events import (
     PagamentoRecusadoEvent,
     PagamentoSolicitadoEvent,
 )
+from src.pagamento.dominio.historico import EstornoAutomatico
 from src.pagamento.dominio.pagamento import (
     MOTIVO_PRAZO_ESGOTADO,
     TAMANHO_MAXIMO_MOTIVO,
@@ -681,25 +677,6 @@ class TestHistorico:
             ("1", "pending"),
             ("1", "approved"),
         ]
-
-    @pytest.mark.parametrize(
-        "dados",
-        [
-            pytest.param(
-                {"recebida_em": datetime(2026, 10, 6, 12, 0)}, id="data-sem-timezone"
-            ),
-            pytest.param({"referencia_pagamento": " "}, id="referencia-vazia"),
-            pytest.param({"status_provedor": ""}, id="status-vazio"),
-        ],
-    )
-    def test_notificacao_valida(self, dados: dict[str, object]) -> None:
-        base: dict[str, object] = {
-            "recebida_em": AGORA,
-            "referencia_pagamento": "1",
-            "status_provedor": "approved",
-        }
-        with pytest.raises(ValorInvalidoError, match=r"timezone|vazio"):
-            NotificacaoRecebida(**(base | dados))  # type: ignore[arg-type]
 
 
 S, CF, R, E, CA, ES = (
