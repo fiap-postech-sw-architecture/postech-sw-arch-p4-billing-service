@@ -1,0 +1,147 @@
+name: CI
+
+# Gates de todo PR. Na main este workflow roda chamado pelo cd.yml
+# (workflow_call), antes da imagem: o deploy so acontece com estes jobs verdes
+# no mesmo commit, e o CI nao roda duas vezes no push (ADR-042). Os nomes dos
+# jobs sao estaveis porque viram checks obrigatorios da branch protection.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+# Um run por ref; em PR o push novo cancela o anterior, na main o run conclui.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  UV_PYTHON: "3.14"
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: uv.lock em dia com o pyproject
+        run: uv lock --check
+      - name: Instala dependencias do lockfile
+        run: uv sync --all-extras --frozen
+      - name: ruff check + ruff format --check (make lint)
+        run: make lint
+      - name: Contratos de camada (import-linter)
+        run: uv run lint-imports
+
+  type-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras --frozen
+      - name: mypy strict (make typecheck)
+        run: make typecheck
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras --frozen
+      - name: bandit (make security)
+        run: make security
+
+  # Unitarios + integracao (testcontainers usa o Docker do runner) + BDD, com
+  # gate de cobertura do .coveragerc. Os relatorios viram artefato e o resumo
+  # por pacote vai para o summary do job: evidencia de cobertura sem precisar
+  # rodar nada localmente.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --all-extras --frozen
+      - name: Testes com cobertura (make test)
+        run: make test
+      - name: Resumo da cobertura no summary
+        if: always()
+        run: uv run python scripts/cobertura_resumo.py coverage.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Publica relatorios
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relatorios-de-teste
+          path: |
+            coverage.xml
+            htmlcov/
+            reports/
+          retention-days: 90
+
+  # SonarQube Community efemero dentro do runner: sobe o servidor, aplica o
+  # quality gate versionado em .sonar/quality-gate.json, analisa com o
+  # coverage.xml do job test e falha se o gate reprovar. Nao depende de conta
+  # externa nem de segredo (ADR-041).
+  sonarqube:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      sonarqube:
+        image: sonarqube:26.9.0.129388-community
+        ports:
+          - 9000:9000
+        env:
+          SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: relatorios-de-teste
+      - name: Sobe, configura e analisa
+        run: bash scripts/sonar/analisar.sh
+      - name: Resumo do SonarQube
+        if: always()
+        run: bash scripts/sonar/resumo.sh >> "$GITHUB_STEP_SUMMARY"
+      - name: Publica o relatorio do SonarQube
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sonarqube
+          path: reports/sonarqube.json
+          retention-days: 90
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build da imagem
+        run: docker build -t "pytstop-servico:ci-${GITHUB_SHA}" .
+      - name: Imagem sobe e importa a aplicacao
+        run: docker run --rm --entrypoint python "pytstop-servico:ci-${GITHUB_SHA}" -c "import src.main"

@@ -1,0 +1,71 @@
+name: Security
+
+# pip-audit (CVE nas dependencias de runtime), gitleaks (segredos na arvore) e
+# trivy (CVE na imagem). Bandit fica no ci.yml. Roda em todo PR, na main
+# chamado pelo cd.yml antes da imagem (ADR-042) e toda segunda-feira, para
+# pegar CVE nova sem depender de push.
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "security-${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      # Dependencias de runtime com os extras que a imagem instala; ferramentas de teste ficam fora.
+      - name: Exporta o lockfile de producao
+        run: >-
+          uv export --frozen --no-emit-project --no-dev --all-extras --no-hashes
+          --format requirements-txt -o requirements-prod.txt
+      - name: pip-audit
+        run: uvx pip-audit==2.10.1 -r requirements-prod.txt --strict --progress-spinner off
+
+  gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # Binario direto: o gitleaks-action exige licenca em repositorio de organizacao.
+      - name: Instala gitleaks
+        run: >-
+          curl -sSfL
+          https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          | tar -xz -C /usr/local/bin gitleaks
+      - name: gitleaks (arvore atual)
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --verbose
+
+  trivy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build da imagem de runtime
+        run: docker build -t "pytstop-servico:scan-${GITHUB_SHA}" .
+      - name: Instala trivy
+        run: >-
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh
+          | sh -s -- -b /usr/local/bin v0.72.0
+      - name: trivy (HIGH e CRITICAL com correcao disponivel)
+        run: >-
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress
+          --exit-code 1 "pytstop-servico:scan-${GITHUB_SHA}"
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db

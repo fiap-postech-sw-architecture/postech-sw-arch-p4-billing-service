@@ -1,0 +1,11 @@
+{
+  "nome": "PytStop fase 4",
+  "descricao": "Gate aplicado sobre o codigo total (o projeto nasce a cada run, entao nao ha baseline de codigo novo). Cobertura >= 80% e o minimo do enunciado; o gate do pytest exige 90%.",
+  "condicoes": [
+    {"metricas": ["coverage"], "operador": "LT", "limite": "80"},
+    {"metricas": ["duplicated_lines_density"], "operador": "GT", "limite": "3"},
+    {"metricas": ["software_quality_reliability_rating", "reliability_rating"], "operador": "GT", "limite": "1"},
+    {"metricas": ["software_quality_security_rating", "security_rating"], "operador": "GT", "limite": "1"},
+    {"metricas": ["software_quality_maintainability_rating", "sqale_rating"], "operador": "GT", "limite": "1"}
+  ]
+}
