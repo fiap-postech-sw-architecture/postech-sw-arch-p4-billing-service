@@ -35,9 +35,11 @@ dev = [
     "bandit>=1.9.4",
     "import-linter>=2.15",
     # Contrato dos eventos: cada mensagem valida contra os JSON Schemas da
-    # plataforma copiados em tests/contratos/.
+    # plataforma copiados em tests/contratos/ (o rfc3339-validator liga a
+    # checagem de date-time, que o FormatChecker pularia sem ele).
     "jsonschema>=4.25",
     "types-jsonschema>=4.25",
+    "rfc3339-validator>=0.1.4",
 ]
 
 [build-system]

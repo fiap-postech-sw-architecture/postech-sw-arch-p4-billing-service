@@ -160,6 +160,13 @@ def _exemplos_de_pagamento() -> dict[str, IntegrationEvent]:
 EXEMPLOS = {**_exemplos_de_orcamento(), **_exemplos_de_pagamento()}
 
 
+def test_formatos_do_contrato_sao_checados() -> None:
+    # Sem o validador instalado o FormatChecker aceita qualquer date-time.
+    formatos = FormatChecker()
+    assert {"date-time", "uuid"} <= set(formatos.checkers)
+    assert not formatos.conforms("ontem", "date-time")
+
+
 def test_os_exemplos_cobrem_todo_o_catalogo() -> None:
     assert {evento.tipo for evento in EXEMPLOS.values()} == CATALOGO_DO_BILLING
 
