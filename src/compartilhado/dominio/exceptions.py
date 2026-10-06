@@ -1,8 +1,11 @@
 """Excecoes de dominio; o ``codigo`` estavel vai para o envelope de erro da API.
 
 Cada familia mapeia um status HTTP em ``interfaces/error_handler.py``; as
-subclasses dos contextos so trocam ``codigo`` e a mensagem padrao.
-``ValorInvalidoError`` e a invariante de valor (422 ``VALOR_INVALIDO``).
+subclasses dos contextos trocam a mensagem padrao e, nos 409, o ``codigo``. O 404
+de entidade sai sempre como ``ENTIDADE_NAO_ENCONTRADA`` (convencao dos tres
+servicos); so as duas rotas publicas com token, que respondem o mesmo 404 para
+qualquer falha do token, tem codigo proprio. ``ValorInvalidoError`` e a
+invariante de valor (422 ``VALOR_INVALIDO``).
 """
 
 from __future__ import annotations

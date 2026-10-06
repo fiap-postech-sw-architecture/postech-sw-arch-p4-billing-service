@@ -114,7 +114,9 @@ class TestConsulta:
         self, api: TestClient, cabecalhos: Cabecalhos
     ) -> None:
         caminho = f"/api/v1/pagamentos/{uuid4()}"
-        assert api.get(caminho, headers=cabecalhos("admin")).status_code == 404
+        inexistente = api.get(caminho, headers=cabecalhos("admin"))
+        assert inexistente.status_code == 404
+        assert inexistente.json()["erro"]["codigo"] == "ENTIDADE_NAO_ENCONTRADA"
         assert api.get(caminho, headers=cabecalhos("mecanico")).status_code == 403
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import logging
@@ -229,6 +230,26 @@ def test_envelope_de_erro(
     assert erro["id_requisicao"] == "req-123"
     assert "123.456.789" not in erro["mensagem"]
     assert "Expecting value" not in erro["mensagem"]
+
+
+def _subclasses(base: type[DomainException]) -> set[type[DomainException]]:
+    diretas = set(base.__subclasses__())
+    return diretas | {c for d in diretas for c in _subclasses(d)}
+
+
+def test_404_de_dominio_so_foge_do_codigo_generico_nas_rotas_com_token() -> None:
+    # Convencao dos tres servicos: o cliente trata "nao encontrado" de um jeito
+    # so. Excecao nova de 404 entra aqui de proposito, e nao por esquecimento.
+    importlib.import_module("src.main")  # carrega as excecoes de todos os contextos
+    codigos = {c.__name__: c.codigo for c in _subclasses(EntidadeNaoEncontradaError)}
+    assert codigos == {
+        "OrcamentoNaoEncontradoError": "ENTIDADE_NAO_ENCONTRADA",
+        "PrecoNaoEncontradoError": "ENTIDADE_NAO_ENCONTRADA",
+        "PagamentoNaoEncontradoError": "ENTIDADE_NAO_ENCONTRADA",
+        # Rotas publicas com token: o mesmo 404 para qualquer falha do token.
+        "LinkDeDecisaoInvalidoError": "LINK_DECISAO_INVALIDO",
+        "CheckoutNaoEncontradoError": "CHECKOUT_NAO_ENCONTRADO",
+    }
 
 
 def test_500_sai_com_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:

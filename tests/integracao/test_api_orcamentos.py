@@ -134,7 +134,7 @@ class TestApiInterna:
     def test_inexistente_da_404(self, api: TestClient, cabecalhos: Cabecalhos) -> None:
         resposta = api.get(f"/api/v1/orcamentos/{uuid4()}", headers=cabecalhos("admin"))
         assert resposta.status_code == 404
-        assert resposta.json()["erro"]["codigo"] == "ORCAMENTO_NAO_ENCONTRADO"
+        assert resposta.json()["erro"]["codigo"] == "ENTIDADE_NAO_ENCONTRADA"
 
     def test_atendente_decide_em_nome_do_cliente(
         self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos

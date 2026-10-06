@@ -8,7 +8,6 @@ from src.compartilhado.dominio.exceptions import (
 
 
 class OrcamentoNaoEncontradoError(EntidadeNaoEncontradaError):
-    codigo = "ORCAMENTO_NAO_ENCONTRADO"
     mensagem_padrao = "Orcamento nao encontrado"
 
 

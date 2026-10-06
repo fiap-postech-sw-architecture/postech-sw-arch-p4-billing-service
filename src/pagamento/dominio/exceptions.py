@@ -8,7 +8,6 @@ from src.compartilhado.dominio.exceptions import (
 
 
 class PagamentoNaoEncontradoError(EntidadeNaoEncontradaError):
-    codigo = "PAGAMENTO_NAO_ENCONTRADO"
     mensagem_padrao = "Pagamento nao encontrado"
 
 

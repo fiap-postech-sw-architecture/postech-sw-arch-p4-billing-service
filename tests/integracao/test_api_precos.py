@@ -146,7 +146,7 @@ def test_codigo_desconhecido_da_404(
 ) -> None:
     resposta = api.get(caminho, headers=cabecalhos("admin"))
     assert resposta.status_code == 404
-    assert resposta.json()["erro"]["codigo"] == "PRECO_NAO_ENCONTRADO"
+    assert resposta.json()["erro"]["codigo"] == "ENTIDADE_NAO_ENCONTRADA"
     assert api.delete(caminho, headers=cabecalhos("admin")).status_code == 404
 
 

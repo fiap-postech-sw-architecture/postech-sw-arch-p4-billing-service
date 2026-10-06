@@ -7,7 +7,6 @@ from src.compartilhado.dominio.exceptions import (
 
 
 class PrecoNaoEncontradoError(EntidadeNaoEncontradaError):
-    codigo = "PRECO_NAO_ENCONTRADO"
     mensagem_padrao = "Preco nao encontrado"
 
 
