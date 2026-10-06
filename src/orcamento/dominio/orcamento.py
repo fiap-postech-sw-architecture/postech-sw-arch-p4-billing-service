@@ -3,15 +3,20 @@
 Precos ficam congelados nas linhas na geracao; mudancas posteriores na tabela
 de precos nao alteram orcamentos ja gerados.
 
-Transicoes (allow-list em ``_TRANSICOES``)::
+Transicoes (allow-list em ``_TRANSICOES``; RFC-004 secao 7.1)::
 
     PENDENTE -> APROVADO | RECUSADO | EXPIRADO | CANCELADO
     APROVADO -> CANCELADO
+
+A lapide e o orcamento ja CANCELADO, sem linhas nem validade: o
+``CancelarOrcamento`` que chega antes do ``GerarOrcamento`` (passo em voo)
+a grava, e o ``GerarOrcamento`` atrasado a encontra pelo ``ordem_id``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from functools import reduce
 from operator import add
@@ -19,6 +24,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from src.compartilhado.dominio.aggregate_root import AggregateRoot
+from src.compartilhado.dominio.dinheiro import Dinheiro
 from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
 from src.compartilhado.dominio.value_object import ValueObject
 from src.orcamento.dominio.events import (
@@ -35,8 +41,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
     from uuid import UUID
-
-    from src.compartilhado.dominio.dinheiro import Dinheiro
 
 
 class TipoItem(StrEnum):
@@ -114,22 +118,23 @@ class Decisao(ValueObject):
 @dataclass(eq=False, kw_only=True)
 class Orcamento(AggregateRoot):
     _ordem_id: UUID
-    _linhas: tuple[LinhaOrcamento, ...]
     _criado_em: datetime
-    _valido_ate: datetime
+    # Vazias (e sem validade) so na lapide.
+    _linhas: tuple[LinhaOrcamento, ...] = ()
+    _valido_ate: datetime | None = None
     _status: StatusOrcamento = StatusOrcamento.PENDENTE
     _decisao: Decisao | None = None
     _motivo_cancelamento: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if not self._linhas:
-            msg = "Orcamento deve ter ao menos uma linha"
-            raise ValueError(msg)
+        _exigir_timezone("criado_em", self._criado_em)
+        if not self._linhas or self._valido_ate is None:
+            self._validar_lapide()
+            return
         if len({linha.preco_unitario.moeda for linha in self._linhas}) > 1:
             msg = "Linhas do orcamento devem ter a mesma moeda"
             raise ValueError(msg)
-        _exigir_timezone("criado_em", self._criado_em)
         _exigir_timezone("valido_ate", self._valido_ate)
         if self._valido_ate <= self._criado_em:
             msg = "valido_ate deve ser posterior a criado_em"
@@ -137,6 +142,15 @@ class Orcamento(AggregateRoot):
         if self._valido_ate.microsecond:
             # O token do link assina exp = valido_ate em epoch de segundos.
             msg = "valido_ate deve estar em segundo cheio"
+            raise ValueError(msg)
+
+    def _validar_lapide(self) -> None:
+        if (
+            self._linhas
+            or self._valido_ate is not None
+            or self._status is not StatusOrcamento.CANCELADO
+        ):
+            msg = "Orcamento exige linhas e validade (sem elas, so a lapide CANCELADA)"
             raise ValueError(msg)
 
     @classmethod
@@ -162,27 +176,34 @@ class Orcamento(AggregateRoot):
             _criado_em=criado_em,
             _valido_ate=valido_ate,
         )
-        total = orcamento.total
-        orcamento._registrar_evento(
-            OrcamentoGeradoEvent(
-                ordem_id=ordem_id,
-                orcamento_id=orcamento.id,
-                linhas=tuple(
-                    LinhaOrcamentoGerado(
-                        codigo=linha.codigo,
-                        descricao=linha.descricao,
-                        quantidade=linha.quantidade,
-                        preco_unitario=linha.preco_unitario.valor,
-                        subtotal=linha.subtotal.valor,
-                    )
-                    for linha in orcamento.linhas
-                ),
-                total=total.valor,
-                moeda=total.moeda,
-                valido_ate=valido_ate,
-                link_decisao=link_decisao,
-            )
+        orcamento._registrar_evento(orcamento.desfecho_da_geracao(link_decisao))
+        return orcamento
+
+    @classmethod
+    def lapide(
+        cls,
+        *,
+        id: UUID,  # noqa: A002 - mesmo nome do campo herdado de Entity
+        ordem_id: UUID,
+        cancelado_em: datetime,
+        motivo: str,
+    ) -> Orcamento:
+        """Compensacao que chegou antes do ``GerarOrcamento`` (passo em voo).
+
+        Grava o orcamento ja CANCELADO, sem linhas, e responde
+        ``OrcamentoCancelado``; o ``GerarOrcamento`` atrasado e descartado.
+        """
+        if not motivo.strip():
+            msg = "Motivo do cancelamento e obrigatorio"
+            raise ValueError(msg)
+        orcamento = cls(
+            id=id,
+            _ordem_id=ordem_id,
+            _criado_em=cancelado_em,
+            _status=StatusOrcamento.CANCELADO,
+            _motivo_cancelamento=motivo,
         )
+        orcamento._registrar_evento(orcamento.desfecho_do_cancelamento())
         return orcamento
 
     @property
@@ -195,14 +216,17 @@ class Orcamento(AggregateRoot):
 
     @property
     def total(self) -> Dinheiro:
-        return reduce(add, (linha.subtotal for linha in self._linhas))
+        """Soma das linhas (zero na lapide, que nao tem linha)."""
+        return reduce(
+            add, (linha.subtotal for linha in self._linhas), Dinheiro(Decimal(0))
+        )
 
     @property
     def criado_em(self) -> datetime:
         return self._criado_em
 
     @property
-    def valido_ate(self) -> datetime:
+    def valido_ate(self) -> datetime | None:
         return self._valido_ate
 
     @property
@@ -219,7 +243,47 @@ class Orcamento(AggregateRoot):
 
     def vencido(self, agora: datetime) -> bool:
         """Pendente com o prazo de decisao esgotado (candidato a expirar)."""
-        return self._status is StatusOrcamento.PENDENTE and agora > self._valido_ate
+        return (
+            self._status is StatusOrcamento.PENDENTE
+            and self._valido_ate is not None
+            and agora > self._valido_ate
+        )
+
+    def desfecho_da_geracao(self, link_decisao: str) -> OrcamentoGeradoEvent:
+        """``OrcamentoGerado`` deste orcamento (republicado na repeticao)."""
+        if self._valido_ate is None:
+            msg = "A lapide nao foi gerada: nao tem OrcamentoGerado"
+            raise TransicaoStatusInvalidaError(msg)
+        total = self.total
+        return OrcamentoGeradoEvent(
+            ordem_id=self._ordem_id,
+            orcamento_id=self.id,
+            linhas=tuple(
+                LinhaOrcamentoGerado(
+                    codigo=linha.codigo,
+                    descricao=linha.descricao,
+                    quantidade=linha.quantidade,
+                    preco_unitario=linha.preco_unitario.valor,
+                    subtotal=linha.subtotal.valor,
+                )
+                for linha in self._linhas
+            ),
+            total=total.valor,
+            moeda=total.moeda,
+            valido_ate=self._valido_ate,
+            link_decisao=link_decisao,
+        )
+
+    def desfecho_do_cancelamento(self) -> OrcamentoCanceladoEvent:
+        """Resposta ao ``CancelarOrcamento`` com o orcamento ja encerrado.
+
+        Cancelado, recusado ou expirado: ``OrcamentoCancelado``, para a saga
+        seguir (RFC-004, secao 4.5); nada muda aqui.
+        """
+        if self._status not in _ENCERRADOS_SEM_DECISAO_VALIDA:
+            msg = f"Orcamento {self._status} ainda pode ser cancelado"
+            raise TransicaoStatusInvalidaError(msg)
+        return OrcamentoCanceladoEvent(ordem_id=self._ordem_id, orcamento_id=self.id)
 
     def aprovar(self, *, canal: CanalDecisao, agora: datetime) -> None:
         self._decidir(StatusOrcamento.APROVADO, canal, agora)
@@ -253,11 +317,12 @@ class Orcamento(AggregateRoot):
         )
 
     def cancelar(self, *, motivo: str) -> bool:
-        """Compensacao da saga; ``False`` quando nao ha o que cancelar.
+        """Compensacao da saga; ``False`` quando ja esta encerrado.
 
-        Orcamento ja cancelado, recusado ou expirado nao muda: o evento desse
-        encerramento ja esta no outbox, e a compensacao que cruzar com ele
-        (OS cancelada enquanto o prazo vencia) nao vira erro permanente.
+        Orcamento ja cancelado, recusado ou expirado nao muda: o caso de uso
+        responde com ``desfecho_do_cancelamento``, e a compensacao que cruzar
+        com o encerramento (OS cancelada enquanto o prazo vencia) nao vira
+        erro permanente.
         """
         if self._status in _ENCERRADOS_SEM_DECISAO_VALIDA:
             return False
@@ -266,9 +331,7 @@ class Orcamento(AggregateRoot):
             raise ValueError(msg)
         self._transitar(StatusOrcamento.CANCELADO)
         self._motivo_cancelamento = motivo
-        self._registrar_evento(
-            OrcamentoCanceladoEvent(ordem_id=self._ordem_id, orcamento_id=self.id)
-        )
+        self._registrar_evento(self.desfecho_do_cancelamento())
         return True
 
     def _decidir(

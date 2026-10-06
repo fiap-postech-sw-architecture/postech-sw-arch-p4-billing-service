@@ -78,25 +78,26 @@ class GerarOrcamento:
     ) -> OrcamentoDTO | None:
         """Gera o orcamento da ordem; ``None`` quando a geracao falha.
 
-        Idempotente por ``ordem_id``: repetir devolve o orcamento existente,
-        sem novo documento nem novo evento. Falha (diagnostico vazio ou codigo
-        inexistente/inativo) grava ``GeracaoDeOrcamentoFalhou``.
+        Idempotente por ``ordem_id``: repetir nao gera outro orcamento e
+        republica o ``OrcamentoGerado`` registrado (o reenvio do orquestrador
+        espera a resposta). Falha (diagnostico vazio ou codigo inexistente ou
+        inativo) responde ``GeracaoDeOrcamentoFalhou``; sem orcamento gravado, a
+        repeticao reavalia os mesmos itens e responde a falha de novo. A lapide
+        (cancelamento que chegou antes) descarta o comando, sem resposta.
         """
         try:
             return self._uow.executar(lambda: self._gerar(ordem_id, itens))
         except OrcamentoJaGeradoError:
-            # Outra geracao da mesma ordem comitou entre a leitura e a escrita.
-            existente = self._orcamentos.obter_por_ordem(ordem_id)
-            if existente is None:
-                raise
-            return OrcamentoDTO.de(existente)
+            # Outra geracao (ou a lapide) da mesma ordem comitou entre a
+            # leitura e a escrita: a nova tentativa a encontra.
+            return self._uow.executar(lambda: self._gerar(ordem_id, itens))
 
     def _gerar(
         self, ordem_id: UUID, itens: Sequence[ItemSolicitado]
     ) -> OrcamentoDTO | None:
         existente = self._orcamentos.obter_por_ordem(ordem_id)
         if existente is not None:
-            return OrcamentoDTO.de(existente)
+            return self._repetido(existente)
         if not itens:
             self._falhar(ordem_id, MOTIVO_SEM_ITENS, ())
             return None
@@ -135,6 +136,20 @@ class GerarOrcamento:
         )
         self._orcamentos.salvar(orcamento)
         return OrcamentoDTO.de(orcamento)
+
+    def _repetido(self, existente: Orcamento) -> OrcamentoDTO:
+        if existente.valido_ate is None:
+            _log.info(
+                "command_discarded",
+                extra={
+                    "comando": "GerarOrcamento",
+                    "ordem_id": str(existente.ordem_id),
+                },
+            )
+            return OrcamentoDTO.de(existente)
+        link = self._link.gerar(existente.id, existente.valido_ate)
+        self._uow.registrar_evento(existente.desfecho_da_geracao(link))
+        return OrcamentoDTO.de(existente)
 
     def _falhar(self, ordem_id: UUID, motivo: str, invalidos: Sequence[str]) -> None:
         self._uow.registrar_evento(
@@ -240,31 +255,63 @@ class ExpirarOrcamentosVencidos:
             return self._uow.executar(trabalho)
         except Exception:  # noqa: BLE001 - um documento com defeito nao trava a fila
             _log.exception(
-                "expiracao_falhou", extra={"orcamento_id": str(orcamento_id)}
+                "budget_expiration_failed", extra={"orcamento_id": str(orcamento_id)}
             )
             return False
 
 
 class CancelarOrcamento:
-    """Compensacao ``CancelarOrcamento`` da saga. Repetir nao gera outro evento."""
+    """Compensacao ``CancelarOrcamento`` da saga, sempre com resposta.
 
-    def __init__(self, uow: UnitOfWork, orcamentos: OrcamentoRepository) -> None:
+    Acha o orcamento pelo ``ordem_id`` (o ``orcamento_id`` so vem quando o
+    orquestrador ja o conhece). Pendente ou aprovado: cancela. Ja encerrado
+    (inclusive na repeticao): responde ``OrcamentoCancelado`` sem mudar nada.
+    Sem orcamento (``GerarOrcamento`` ainda em voo): grava a lapide.
+    """
+
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        orcamentos: OrcamentoRepository,
+        relogio: Relogio = agora_utc,
+    ) -> None:
         self._uow = uow
         self._orcamentos = orcamentos
+        self._relogio = relogio
 
     def executar(
-        self, *, ordem_id: UUID, orcamento_id: UUID, motivo: str
+        self, *, ordem_id: UUID, orcamento_id: UUID | None = None, motivo: str
     ) -> OrcamentoDTO:
-        def trabalho() -> Orcamento:
-            orcamento = _obter(self._orcamentos, orcamento_id)
-            if orcamento.ordem_id != ordem_id:
-                msg = "Orcamento nao pertence a ordem de servico informada"
-                raise OrcamentoNaoEncontradoError(msg)
-            if orcamento.cancelar(motivo=motivo):
-                self._orcamentos.salvar(orcamento)
-            return orcamento
+        try:
+            return self._uow.executar(
+                lambda: self._cancelar(ordem_id, orcamento_id, motivo)
+            )
+        except OrcamentoJaGeradoError:
+            # A geracao (ou outra lapide) comitou primeiro: cancela o que existe.
+            return self._uow.executar(
+                lambda: self._cancelar(ordem_id, orcamento_id, motivo)
+            )
 
-        return OrcamentoDTO.de(self._uow.executar(trabalho))
+    def _cancelar(
+        self, ordem_id: UUID, orcamento_id: UUID | None, motivo: str
+    ) -> OrcamentoDTO:
+        orcamento = self._orcamentos.obter_por_ordem(ordem_id)
+        if orcamento is None:
+            orcamento = Orcamento.lapide(
+                id=uuid4(),
+                ordem_id=ordem_id,
+                cancelado_em=self._relogio(),
+                motivo=motivo,
+            )
+            self._orcamentos.salvar(orcamento)
+        elif orcamento_id is not None and orcamento.id != orcamento_id:
+            msg = "Orcamento nao pertence a ordem de servico informada"
+            raise OrcamentoNaoEncontradoError(msg)
+        elif orcamento.cancelar(motivo=motivo):
+            self._orcamentos.salvar(orcamento)
+        else:
+            self._uow.registrar_evento(orcamento.desfecho_do_cancelamento())
+        return OrcamentoDTO.de(orcamento)
 
 
 class ConsultarOrcamentos:

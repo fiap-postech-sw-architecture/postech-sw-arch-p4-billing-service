@@ -30,7 +30,7 @@ class OrcamentoResponse(BaseModel):
     total: Decimal
     moeda: str
     criado_em: datetime
-    valido_ate: datetime
+    valido_ate: datetime | None
     decisao: DecisaoResponse | None
     motivo_cancelamento: str | None
 

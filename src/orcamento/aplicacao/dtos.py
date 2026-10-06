@@ -45,7 +45,8 @@ class OrcamentoDTO:
     total: Decimal
     moeda: str
     criado_em: datetime
-    valido_ate: datetime
+    # Nulo so na lapide (cancelamento que chegou antes da geracao).
+    valido_ate: datetime | None
     decisao: DecisaoDTO | None
     motivo_cancelamento: str | None
 

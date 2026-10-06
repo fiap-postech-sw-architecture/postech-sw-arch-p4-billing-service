@@ -202,6 +202,18 @@ class TestLapide:
         assert tumulo.compensar() is PlanoDeCompensacao.RESPONDER_CANCELADO
         assert not tumulo.vencido(DEPOIS_DO_PRAZO)
 
+    def test_lapide_nao_tem_pagamento_solicitado(self) -> None:
+        tumulo = Pagamento.lapide(
+            id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="x"
+        )
+        with pytest.raises(TransicaoStatusInvalidaError, match="lapide"):
+            tumulo.desfecho_da_solicitacao()
+
+    def test_solicitacao_republicada_igual(self) -> None:
+        p = pagamento()
+        [original] = p.coletar_eventos()
+        assert p.desfecho_da_solicitacao() == original
+
     def test_sem_cobranca_so_como_lapide_cancelada(self) -> None:
         with pytest.raises(ValueError, match="lapide"):
             Pagamento(_ordem_id=uuid4(), _criado_em=AGORA)

@@ -14,7 +14,7 @@ from bson.decimal128 import Decimal128
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.exceptions import OrcamentoJaGeradoError
-from src.orcamento.dominio.orcamento import CanalDecisao
+from src.orcamento.dominio.orcamento import CanalDecisao, Orcamento, StatusOrcamento
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.dominio.estados import (
     MotivoEstorno,
@@ -197,6 +197,37 @@ class TestRepositorioDeOrcamento:
         assert repo.obter_por_ordem(gerado.ordem_id) == lido
         assert repo.obter_por_ordem(uuid4()) is None
 
+    def test_ida_e_volta_da_lapide(self, banco: Banco) -> None:
+        uow = MongoUnitOfWork(banco)
+        repo = MongoOrcamentoRepository(uow)
+        tumulo = Orcamento.lapide(
+            id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="cancelamento"
+        )
+        uow.executar(lambda: repo.salvar(tumulo))
+        lido = repo.obter_por_ordem(tumulo.ordem_id)
+        assert lido is not None
+        assert (lido.status, lido.linhas, lido.valido_ate, lido.total) == (
+            StatusOrcamento.CANCELADO,
+            (),
+            None,
+            dinheiro("0.00"),
+        )
+        assert lido.motivo_cancelamento == "cancelamento"
+
+    def test_documento_antigo_sem_campos_opcionais_continua_legivel(
+        self, banco: Banco
+    ) -> None:
+        uow = MongoUnitOfWork(banco)
+        repo = MongoOrcamentoRepository(uow)
+        gerado = orcamento()
+        uow.executar(lambda: repo.salvar(gerado))
+        banco["orcamentos"].update_one(
+            {"_id": gerado.id}, {"$unset": {"decisao": "", "motivo_cancelamento": ""}}
+        )
+        lido = repo.obter_por_id(gerado.id)
+        assert lido is not None
+        assert (lido.decisao, lido.motivo_cancelamento) == (None, None)
+
     def test_dinheiro_persistido_como_decimal128(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)
         gerado = orcamento()
@@ -278,9 +309,9 @@ class TestRepositorioDePagamento:
             1,
             MotivoEstorno.COMPENSACAO,
         )
-        assert p.cobranca is not None
         repo = MongoPagamentoRepository(MongoUnitOfWork(banco))
-        assert repo.obter_por_orcamento(p.cobranca.orcamento_id) == lido
+        assert repo.obter_por_ordem(p.ordem_id) == lido
+        assert repo.obter_por_ordem(uuid4()) is None
 
     def test_ida_e_volta_da_lapide_sem_cobranca(self, banco: Banco) -> None:
         tumulo = Pagamento.lapide(
@@ -313,13 +344,38 @@ class TestRepositorioDePagamento:
         assert lido is not None
         assert (lido.recusas, lido.estornos_automaticos) == (0, ())
 
-    def test_um_pagamento_por_orcamento(self, banco: Banco) -> None:
+    def test_um_pagamento_por_orcamento_e_um_por_ordem(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)
         repo = MongoPagamentoRepository(uow)
-        orcamento_id = uuid4()
-        uow.executar(lambda: repo.salvar(pagamento(orcamento_id=orcamento_id)))
+        orcamento_id, ordem_id = uuid4(), uuid4()
+        uow.executar(
+            lambda: repo.salvar(pagamento(orcamento_id=orcamento_id, ordem_id=ordem_id))
+        )
         with pytest.raises(PagamentoJaSolicitadoError):
             uow.executar(lambda: repo.salvar(pagamento(orcamento_id=orcamento_id)))
+        with pytest.raises(PagamentoJaSolicitadoError):
+            uow.executar(lambda: repo.salvar(pagamento(ordem_id=ordem_id)))
+
+    def test_lapides_de_ordens_diferentes_convivem(self, banco: Banco) -> None:
+        # A lapide nao tem orcamento_id: o indice unico dele e parcial.
+        uow = MongoUnitOfWork(banco)
+        repo = MongoPagamentoRepository(uow)
+        for _ in range(2):
+            tumulo = Pagamento.lapide(
+                id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="x"
+            )
+            uow.executar(lambda tumulo=tumulo: repo.salvar(tumulo))
+        assert banco["pagamentos"].count_documents({}) == 2
+
+    def test_a_mesma_tentativa_nao_confirma_dois_pagamentos(self, banco: Banco) -> None:
+        uow = MongoUnitOfWork(banco)
+        repo = MongoPagamentoRepository(uow)
+        primeiro, segundo = pagamento(), pagamento()
+        confirmar(primeiro, referencia="mp-1")
+        confirmar(segundo, referencia="mp-1")
+        uow.executar(lambda: repo.salvar(primeiro))
+        with pytest.raises(PagamentoJaSolicitadoError):
+            uow.executar(lambda: repo.salvar(segundo))
 
     def test_vencidos(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)

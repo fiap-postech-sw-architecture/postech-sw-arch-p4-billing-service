@@ -86,6 +86,11 @@ def consultar(banco: Banco, relogio: RelogioFixo) -> ConsultarOrcamentos:
     )
 
 
+def cancelamento(banco: Banco, relogio: RelogioFixo) -> CancelarOrcamento:
+    uow = MongoUnitOfWork(banco)
+    return CancelarOrcamento(uow, MongoOrcamentoRepository(uow), relogio)
+
+
 def gerado(banco: Banco, relogio: RelogioFixo) -> OrcamentoDTO:
     dto = gerar(banco, relogio).executar(ordem_id=uuid4(), itens=ITENS)
     assert dto is not None
@@ -154,18 +159,62 @@ class TestGerarOrcamento:
         )
         assert consultar(banco, relogio).por_id(dto.id).total == Decimal("335.00")
 
-    def test_repetir_a_geracao_nao_duplica(
-        self, banco: Banco, relogio: RelogioFixo
+    @pytest.mark.parametrize(
+        "itens_da_repeticao",
+        [
+            pytest.param(ITENS[:1], id="itens-validos"),
+            pytest.param(
+                [ItemSolicitado(TipoItem.SERVICO, "SRV-NAO-EXISTE", 1)],
+                id="itens-invalidos",
+            ),
+        ],
+    )
+    def test_repetir_a_geracao_republica_o_orcamento_gerado(
+        self,
+        banco: Banco,
+        relogio: RelogioFixo,
+        itens_da_repeticao: list[ItemSolicitado],
     ) -> None:
         ordem_id = uuid4()
         primeiro = gerar(banco, relogio).executar(ordem_id=ordem_id, itens=ITENS)
         relogio.avancar(minutes=5)
-        segundo = gerar(banco, relogio).executar(ordem_id=ordem_id, itens=ITENS[:1])
+        segundo = gerar(banco, relogio).executar(
+            ordem_id=ordem_id, itens=itens_da_repeticao
+        )
 
         assert primeiro is not None
         assert segundo == primeiro
         assert banco["orcamentos"].count_documents({}) == 1
-        assert len(eventos_do_outbox(banco, "OrcamentoGerado")) == 1
+        gerados = eventos_do_outbox(banco, "OrcamentoGerado")
+        assert len(gerados) == 2
+        assert gerados[0]["dados"] == gerados[1]["dados"]
+        assert eventos_do_outbox(banco, "GeracaoDeOrcamentoFalhou") == []
+
+    def test_falha_repetida_responde_a_falha_de_novo(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        ordem_id = uuid4()
+        for _ in range(2):
+            assert gerar(banco, relogio).executar(ordem_id=ordem_id, itens=[]) is None
+        falhas = eventos_do_outbox(banco, "GeracaoDeOrcamentoFalhou")
+        assert len(falhas) == 2
+        assert falhas[0]["dados"] == falhas[1]["dados"]
+        assert banco["orcamentos"].count_documents({}) == 0
+
+    def test_geracao_depois_da_lapide_e_descartada(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        ordem_id = uuid4()
+        uow = MongoUnitOfWork(banco)
+        CancelarOrcamento(uow, MongoOrcamentoRepository(uow), relogio).executar(
+            ordem_id=ordem_id, motivo="cancelamento"
+        )
+
+        resultado = gerar(banco, relogio).executar(ordem_id=ordem_id, itens=ITENS)
+
+        assert resultado is not None
+        assert (resultado.status, resultado.linhas) == ("CANCELADO", ())
+        assert [e["tipo"] for e in eventos_do_outbox(banco)] == ["OrcamentoCancelado"]
 
     def test_codigo_inexistente_ou_inativo_grava_falha(
         self, banco: Banco, relogio: RelogioFixo
@@ -304,50 +353,80 @@ class TestExpirarECancelar:
             str(vencido_2.id),
         }
 
-    def test_cancelamento_e_idempotente(
+    def test_cancelamento_repetido_republica_a_resposta(
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:
         dto = gerado(banco, relogio)
-        uow = MongoUnitOfWork(banco)
-        cancelar = CancelarOrcamento(uow, MongoOrcamentoRepository(uow))
+        cancelar = cancelamento(banco, relogio)
 
         primeiro = cancelar.executar(
-            ordem_id=dto.ordem_id, orcamento_id=dto.id, motivo="Pagamento recusado"
+            ordem_id=dto.ordem_id, orcamento_id=dto.id, motivo="cancelamento"
         )
-        segundo = cancelar.executar(
-            ordem_id=dto.ordem_id, orcamento_id=dto.id, motivo="Reenvio"
-        )
+        segundo = cancelar.executar(ordem_id=dto.ordem_id, motivo="reenvio")
 
         assert primeiro.status == segundo.status == "CANCELADO"
-        assert segundo.motivo_cancelamento == "Pagamento recusado"
+        assert segundo.motivo_cancelamento == "cancelamento"
+        cancelados = eventos_do_outbox(banco, "OrcamentoCancelado")
+        assert [e["dados"] for e in cancelados] == [
+            {"ordem_id": str(dto.ordem_id), "orcamento_id": str(dto.id)}
+        ] * 2
+
+    def test_cancelar_exige_que_o_id_informado_seja_o_da_ordem(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        dto = gerado(banco, relogio)
+        with pytest.raises(OrcamentoNaoEncontradoError, match="nao pertence"):
+            cancelamento(banco, relogio).executar(
+                ordem_id=dto.ordem_id, orcamento_id=uuid4(), motivo="x"
+            )
+        assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
+
+    @pytest.mark.parametrize("encerramento", ["recusa", "expiracao"])
+    def test_cancelar_orcamento_encerrado_responde_cancelado_sem_mudar(
+        self, banco: Banco, relogio: RelogioFixo, encerramento: str
+    ) -> None:
+        dto = gerado(banco, relogio)
+        if encerramento == "recusa":
+            decidir(banco, relogio).por_atendente(dto.id, aprovar=False)
+        else:
+            relogio.avancar(hours=73)
+            uow = MongoUnitOfWork(banco)
+            ExpirarOrcamentosVencidos(
+                uow, MongoOrcamentoRepository(uow), relogio
+            ).executar()
+        antes = consultar(banco, relogio).por_id(dto.id)
+
+        resultado = cancelamento(banco, relogio).executar(
+            ordem_id=dto.ordem_id, motivo="x"
+        )
+
+        assert resultado == antes
+        [envelope] = eventos_do_outbox(banco, "OrcamentoCancelado")
+        assert envelope["dados"]["orcamento_id"] == str(dto.id)
+
+    def test_cancelamento_antes_da_geracao_grava_lapide(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        ordem_id = uuid4()
+
+        lapide = cancelamento(banco, relogio).executar(
+            ordem_id=ordem_id, motivo="cancelamento"
+        )
+
+        assert (lapide.status, lapide.linhas, lapide.valido_ate) == (
+            "CANCELADO",
+            (),
+            None,
+        )
         [envelope] = eventos_do_outbox(banco, "OrcamentoCancelado")
         assert envelope["dados"] == {
-            "ordem_id": str(dto.ordem_id),
-            "orcamento_id": str(dto.id),
+            "ordem_id": str(ordem_id),
+            "orcamento_id": str(lapide.id),
         }
-
-    def test_cancelar_exige_a_ordem_dona_do_orcamento(
-        self, banco: Banco, relogio: RelogioFixo
-    ) -> None:
-        dto = gerado(banco, relogio)
-        uow = MongoUnitOfWork(banco)
-        cancelar = CancelarOrcamento(uow, MongoOrcamentoRepository(uow))
-        with pytest.raises(OrcamentoNaoEncontradoError, match="nao pertence"):
-            cancelar.executar(ordem_id=uuid4(), orcamento_id=dto.id, motivo="x")
-        with pytest.raises(OrcamentoNaoEncontradoError):
-            cancelar.executar(ordem_id=dto.ordem_id, orcamento_id=uuid4(), motivo="x")
-
-    def test_cancelar_orcamento_ja_recusado_nao_falha_nem_emite(
-        self, banco: Banco, relogio: RelogioFixo
-    ) -> None:
-        dto = gerado(banco, relogio)
-        decidir(banco, relogio).por_atendente(dto.id, aprovar=False)
-        uow = MongoUnitOfWork(banco)
-        resultado = CancelarOrcamento(uow, MongoOrcamentoRepository(uow)).executar(
-            ordem_id=dto.ordem_id, orcamento_id=dto.id, motivo="x"
-        )
-        assert resultado.status == "RECUSADO"
-        assert eventos_do_outbox(banco, "OrcamentoCancelado") == []
+        # Repetir responde de novo, sem outra lapide.
+        cancelamento(banco, relogio).executar(ordem_id=ordem_id, motivo="reenvio")
+        assert banco["orcamentos"].count_documents({"ordem_id": ordem_id}) == 1
+        assert len(eventos_do_outbox(banco, "OrcamentoCancelado")) == 2
 
     def test_documento_com_defeito_nao_trava_a_fila_de_expiracao(
         self, banco: Banco, relogio: RelogioFixo, caplog: pytest.LogCaptureFixture
@@ -370,7 +449,7 @@ class TestExpirarECancelar:
             assert expirar.executar() == 1
 
         assert consultar(banco, relogio).por_id(saudavel.id).status == "EXPIRADO"
-        assert "expiracao_falhou" in caplog.messages
+        assert "budget_expiration_failed" in caplog.messages
 
 
 class TestConsultar:

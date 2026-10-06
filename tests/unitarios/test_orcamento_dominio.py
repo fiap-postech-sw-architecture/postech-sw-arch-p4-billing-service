@@ -101,13 +101,22 @@ class TestGeracao:
         )
         assert reidratado.coletar_eventos() == []
 
-    def test_sem_linhas_e_invalido(self) -> None:
-        with pytest.raises(ValueError, match="ao menos uma linha"):
+    @pytest.mark.parametrize(
+        ("linhas", "valido_ate"),
+        [
+            pytest.param((), AGORA + timedelta(hours=1), id="sem-linhas"),
+            pytest.param(tuple(linhas_padrao()), None, id="sem-validade"),
+        ],
+    )
+    def test_sem_linhas_ou_validade_so_como_lapide(
+        self, linhas: tuple[LinhaOrcamento, ...], valido_ate: datetime | None
+    ) -> None:
+        with pytest.raises(ValueError, match="lapide"):
             Orcamento(
                 _ordem_id=uuid4(),
-                _linhas=(),
+                _linhas=linhas,
                 _criado_em=AGORA,
-                _valido_ate=AGORA + timedelta(hours=1),
+                _valido_ate=valido_ate,
             )
 
     def test_linhas_em_moedas_diferentes_sao_invalidas(self) -> None:
@@ -155,6 +164,69 @@ class TestGeracao:
                 _criado_em=criado_em,
                 _valido_ate=valido_ate,
             )
+
+
+class TestLapide:
+    def test_lapide_nasce_cancelada_sem_linhas_e_responde(self) -> None:
+        ordem_id = uuid4()
+        tumulo = Orcamento.lapide(
+            id=uuid4(), ordem_id=ordem_id, cancelado_em=AGORA, motivo="cancelamento"
+        )
+        assert (tumulo.status, tumulo.linhas, tumulo.valido_ate) == (
+            StatusOrcamento.CANCELADO,
+            (),
+            None,
+        )
+        assert tumulo.total == dinheiro("0.00")
+        assert tumulo.motivo_cancelamento == "cancelamento"
+        assert tumulo.coletar_eventos() == [
+            OrcamentoCanceladoEvent(ordem_id=ordem_id, orcamento_id=tumulo.id)
+        ]
+        assert not tumulo.vencido(DEPOIS_DO_PRAZO)
+        assert tumulo.cancelar(motivo="de novo") is False
+
+    def test_lapide_exige_motivo(self) -> None:
+        with pytest.raises(ValueError, match="Motivo"):
+            Orcamento.lapide(
+                id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo=""
+            )
+
+    def test_lapide_nao_tem_orcamento_gerado(self) -> None:
+        tumulo = Orcamento.lapide(
+            id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="x"
+        )
+        with pytest.raises(TransicaoStatusInvalidaError, match="lapide"):
+            tumulo.desfecho_da_geracao(LINK)
+        with pytest.raises(TransicaoStatusInvalidaError):
+            tumulo.aprovar(canal=CanalDecisao.LINK, agora=AGORA)
+
+
+class TestDesfechos:
+    def test_orcamento_gerado_e_republicado_igual(self) -> None:
+        gerado = orcamento()
+        [original] = gerado.coletar_eventos()
+        assert gerado.desfecho_da_geracao(LINK) == original
+
+    @pytest.mark.parametrize("estado", ["cancelado", "recusado", "expirado"])
+    def test_encerrado_responde_cancelado(self, estado: str) -> None:
+        gerado = orcamento()
+        if estado == "cancelado":
+            gerado.cancelar(motivo="x")
+        elif estado == "recusado":
+            gerado.recusar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
+        else:
+            gerado.expirar(agora=DEPOIS_DO_PRAZO)
+        assert gerado.desfecho_do_cancelamento() == OrcamentoCanceladoEvent(
+            ordem_id=gerado.ordem_id, orcamento_id=gerado.id
+        )
+
+    @pytest.mark.parametrize("aprovar", [False, True], ids=["pendente", "aprovado"])
+    def test_pendente_ou_aprovado_ainda_cancela(self, aprovar: bool) -> None:
+        gerado = orcamento()
+        if aprovar:
+            gerado.aprovar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
+        with pytest.raises(TransicaoStatusInvalidaError, match="pode ser cancelado"):
+            gerado.desfecho_do_cancelamento()
 
 
 class TestDecisao:

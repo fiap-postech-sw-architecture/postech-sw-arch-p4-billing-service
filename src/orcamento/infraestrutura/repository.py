@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pymongo.errors import DuplicateKeyError
 
@@ -101,8 +101,10 @@ def _para_documento(orcamento: Orcamento) -> Documento:
     }
 
 
-def _de_documento(doc: dict[str, Any]) -> Orcamento:
-    decisao = doc["decisao"]
+def _de_documento(doc: Documento) -> Orcamento:
+    # Campos opcionais lidos com ``get``: documento gravado por versao anterior
+    # (sem um campo novo) continua legivel (expand/contract).
+    decisao = doc.get("decisao")
     return Orcamento(
         id=doc["_id"],
         _ordem_id=doc["ordem_id"],
@@ -114,10 +116,10 @@ def _de_documento(doc: dict[str, Any]) -> Orcamento:
                 quantidade=linha["quantidade"],
                 preco_unitario=dinheiro_de_bson(linha["preco_unitario"]),
             )
-            for linha in doc["linhas"]
+            for linha in doc.get("linhas", [])
         ),
         _criado_em=doc["criado_em"],
-        _valido_ate=doc["valido_ate"],
+        _valido_ate=doc.get("valido_ate"),
         _status=StatusOrcamento(doc["status"]),
         _decisao=(
             Decisao(
@@ -127,5 +129,5 @@ def _de_documento(doc: dict[str, Any]) -> Orcamento:
             if decisao
             else None
         ),
-        _motivo_cancelamento=doc["motivo_cancelamento"],
+        _motivo_cancelamento=doc.get("motivo_cancelamento"),
     )

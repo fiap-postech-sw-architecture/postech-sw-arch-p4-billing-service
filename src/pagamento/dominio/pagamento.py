@@ -108,16 +108,7 @@ class Pagamento(AggregateRoot):
         pagamento = cls(
             id=id, _ordem_id=ordem_id, _criado_em=criado_em, _cobranca=cobranca
         )
-        pagamento._registrar_evento(
-            PagamentoSolicitadoEvent(
-                ordem_id=ordem_id,
-                pagamento_id=pagamento.id,
-                valor=cobranca.valor.valor,
-                moeda=cobranca.valor.moeda,
-                checkout_url=cobranca.checkout_url,
-                expira_em=cobranca.expira_em,
-            )
-        )
+        pagamento._registrar_evento(pagamento.desfecho_da_solicitacao())
         return pagamento
 
     @classmethod
@@ -198,6 +189,21 @@ class Pagamento(AggregateRoot):
     @property
     def estornos_automaticos(self) -> tuple[EstornoAutomatico, ...]:
         return tuple(self._estornos_automaticos)
+
+    def desfecho_da_solicitacao(self) -> PagamentoSolicitadoEvent:
+        """``PagamentoSolicitado`` desta cobranca (republicado na repeticao)."""
+        cobranca = self._cobranca
+        if cobranca is None:
+            msg = "A lapide nao tem cobranca: nao tem PagamentoSolicitado"
+            raise TransicaoStatusInvalidaError(msg)
+        return PagamentoSolicitadoEvent(
+            ordem_id=self._ordem_id,
+            pagamento_id=self.id,
+            valor=cobranca.valor.valor,
+            moeda=cobranca.valor.moeda,
+            checkout_url=cobranca.checkout_url,
+            expira_em=cobranca.expira_em,
+        )
 
     def vencido(self, agora: datetime) -> bool:
         """Solicitado com o prazo esgotado (candidato a expirar)."""

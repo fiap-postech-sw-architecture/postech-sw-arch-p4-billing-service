@@ -87,16 +87,6 @@ def _obter(pagamentos: PagamentoRepository, pagamento_id: UUID) -> Pagamento:
     return pagamento
 
 
-def _obter_da_ordem(
-    pagamentos: PagamentoRepository, pagamento_id: UUID, ordem_id: UUID
-) -> Pagamento:
-    pagamento = _obter(pagamentos, pagamento_id)
-    if pagamento.ordem_id != ordem_id:
-        msg = "Pagamento nao pertence a ordem de servico informada"
-        raise PagamentoNaoEncontradoError(msg)
-    return pagamento
-
-
 def _uuid(valor: str | None) -> UUID | None:
     try:
         return UUID(valor) if valor else None
@@ -124,11 +114,12 @@ class SolicitarPagamento:
         self._relogio = relogio
 
     def executar(self, *, ordem_id: UUID, orcamento_id: UUID) -> PagamentoDTO:
-        """Idempotente por orcamento: repetir devolve o pagamento existente,
-        sem nova cobranca no provedor nem novo evento."""
-        existente = self._pagamentos.obter_por_orcamento(orcamento_id)
+        """Idempotente pela ordem: repetir nao cria outra cobranca e republica
+        o ``PagamentoSolicitado`` registrado. Se a compensacao chegou antes
+        (lapide), o comando e descartado: nenhuma cobranca, nenhuma resposta."""
+        existente = self._pagamentos.obter_por_ordem(ordem_id)
         if existente is not None:
-            return PagamentoDTO.de(existente)
+            return self._repetido(existente)
         orcamento = self._orcamentos.obter(orcamento_id)
         if orcamento is None or orcamento.ordem_id != ordem_id:
             msg = "Orcamento nao encontrado para a ordem de servico informada"
@@ -157,13 +148,28 @@ class SolicitarPagamento:
         try:
             self._uow.executar(lambda: self._pagamentos.salvar(pagamento))
         except PagamentoJaSolicitadoError:
-            # Outra solicitacao do mesmo orcamento comitou primeiro; a cobranca
-            # criada aqui fica orfa no provedor e expira sozinha.
-            existente = self._pagamentos.obter_por_orcamento(orcamento_id)
+            # Outra solicitacao (ou a lapide) da mesma ordem comitou primeiro; a
+            # cobranca criada aqui fica orfa no provedor e expira sozinha (o
+            # link dela nunca e publicado).
+            existente = self._pagamentos.obter_por_ordem(ordem_id)
             if existente is None:
                 raise
-            return PagamentoDTO.de(existente)
+            return self._repetido(existente)
         return PagamentoDTO.de(pagamento)
+
+    def _repetido(self, existente: Pagamento) -> PagamentoDTO:
+        if existente.cobranca is None:
+            _log.info(
+                "command_discarded",
+                extra={
+                    "comando": "SolicitarPagamento",
+                    "ordem_id": str(existente.ordem_id),
+                },
+            )
+        else:
+            evento = existente.desfecho_da_solicitacao()
+            self._uow.executar(lambda: self._uow.registrar_evento(evento))
+        return PagamentoDTO.de(existente)
 
 
 class ProcessarNotificacaoPagamento:
@@ -404,21 +410,40 @@ class EstornarPagamento:
         self._relogio = relogio
 
     def executar(
-        self, *, ordem_id: UUID, pagamento_id: UUID, motivo: str
+        self, *, ordem_id: UUID, pagamento_id: UUID | None = None, motivo: str
     ) -> PagamentoDTO:
+        """Acha o pagamento pelo ``ordem_id`` (o ``pagamento_id`` so vem quando
+        o orquestrador ja o conhece); sem pagamento (``SolicitarPagamento``
+        ainda em voo), grava a lapide CANCELADA e responde ``PagamentoCancelado``.
+        """
         for _ in range(_TENTATIVAS_DE_COMPENSACAO):
-            pagamento = _obter_da_ordem(self._pagamentos, pagamento_id, ordem_id)
-            plano = pagamento.compensar()
+            pagamento = self._pagamentos.obter_por_ordem(ordem_id)
             try:
+                if pagamento is None:
+                    return self._gravar_lapide(ordem_id, motivo)
+                if pagamento_id is not None and pagamento.id != pagamento_id:
+                    msg = "Pagamento nao pertence a ordem de servico informada"
+                    raise PagamentoNaoEncontradoError(msg)
+                plano = pagamento.compensar()
                 if plano is PlanoDeCompensacao.CANCELAR_COBRANCA:
                     return self._cancelar(pagamento, motivo)
                 if plano is PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR:
                     return self._estornar(pagamento, motivo)
                 return self._republicar(pagamento.id)
-            except _PlanoMudouError:
+            except (_PlanoMudouError, PagamentoJaSolicitadoError):
+                # O pagamento mudou (ou nasceu) entre a leitura e a gravacao.
                 continue
         msg = f"Compensacao do pagamento {pagamento_id} nao estabilizou"
         raise RuntimeError(msg)
+
+    def _gravar_lapide(self, ordem_id: UUID, motivo: str) -> PagamentoDTO:
+        lapide = Pagamento.lapide(
+            id=uuid4(), ordem_id=ordem_id, cancelado_em=self._relogio(), motivo=motivo
+        )
+        # Indice unico por ordem: se o SolicitarPagamento gravar antes, a
+        # gravacao falha e a compensacao replaneja com o pagamento real.
+        self._uow.executar(lambda: self._pagamentos.salvar(lapide))
+        return PagamentoDTO.de(lapide)
 
     def _cancelar(self, pagamento: Pagamento, motivo: str) -> PagamentoDTO:
         # SOLICITADO sempre tem cobranca (so a lapide nao tem, e ela e CANCELADA).

@@ -17,6 +17,7 @@ import pytest
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.orcamento.aplicacao.dtos import ItemSolicitado
 from src.orcamento.aplicacao.use_cases import (
+    CancelarOrcamento,
     DecidirOrcamento,
     ExpirarOrcamentosVencidos,
     GerarOrcamento,
@@ -200,7 +201,10 @@ def test_gerar_orcamento_em_paralelo_para_a_mesma_ordem_nao_duplica(
     assert not isinstance(primeiro, Exception), primeiro
     assert primeiro == segundo
     assert banco["orcamentos"].count_documents({"ordem_id": ordem_id}) == 1
-    assert len(eventos_do_outbox(banco, "OrcamentoGerado")) == 1
+    # A perdedora rele o orcamento da vencedora e republica a mesma resposta.
+    gerados = eventos_do_outbox(banco, "OrcamentoGerado")
+    assert len(gerados) == 2
+    assert gerados[0]["dados"] == gerados[1]["dados"]
 
 
 def test_solicitar_pagamento_em_paralelo_para_o_mesmo_orcamento_nao_duplica(
@@ -215,9 +219,7 @@ def test_solicitar_pagamento_em_paralelo_para_o_mesmo_orcamento_nao_duplica(
 
     def solicitar() -> object:
         uow = MongoUnitOfWork(banco)
-        repo = ComBarreira(
-            MongoPagamentoRepository(uow), "obter_por_orcamento", barreira
-        )
+        repo = ComBarreira(MongoPagamentoRepository(uow), "obter_por_ordem", barreira)
         return SolicitarPagamento(
             uow,
             repo,
@@ -231,7 +233,9 @@ def test_solicitar_pagamento_em_paralelo_para_o_mesmo_orcamento_nao_duplica(
     assert not isinstance(primeiro, Exception), primeiro
     assert primeiro == segundo
     assert banco["pagamentos"].count_documents({}) == 1
-    assert len(eventos_do_outbox(banco, "PagamentoSolicitado")) == 1
+    solicitados = eventos_do_outbox(banco, "PagamentoSolicitado")
+    assert len(solicitados) == 2
+    assert solicitados[0]["dados"] == solicitados[1]["dados"]
     # As duas threads criaram cobranca antes de gravar: a perdedora fica orfa
     # no provedor e expira sozinha (custo aceito da chamada fora da transacao).
     assert len(gateway.cobrancas) == 2
@@ -287,7 +291,7 @@ def test_gerar_orcamento_que_perde_no_indice_unico_devolve_o_existente(
     )
 
     assert segundo == primeiro
-    assert len(eventos_do_outbox(banco, "OrcamentoGerado")) == 1
+    assert len(eventos_do_outbox(banco, "OrcamentoGerado")) == 2
     # Se nem a releitura acha o orcamento, o erro do indice sobe.
     with pytest.raises(OrcamentoJaGeradoError):
         gerar_com_leitura_atrasada(banco, 3).executar(ordem_id=ordem_id, itens=itens)
@@ -304,9 +308,7 @@ def test_solicitacao_sem_o_pagamento_na_releitura_propaga_o_erro(
 
     def solicitar(vezes: int) -> object:
         uow = MongoUnitOfWork(banco)
-        repo = LeituraAtrasada(
-            MongoPagamentoRepository(uow), "obter_por_orcamento", vezes
-        )
+        repo = LeituraAtrasada(MongoPagamentoRepository(uow), "obter_por_ordem", vezes)
         return SolicitarPagamento(
             uow, repo, OrcamentosMongoAdapter(uow), gateway, timedelta(minutes=60)
         ).executar(ordem_id=aprovado.ordem_id, orcamento_id=aprovado.id)
@@ -478,10 +480,10 @@ def test_compensacao_que_nunca_estabiliza_falha_alto(banco: Banco) -> None:
         def __getattr__(self, nome: str) -> Any:
             return getattr(self._repo, nome)
 
-        def obter_por_id(self, pagamento_id: Any) -> Any:
+        def obter_por_ordem(self, ordem_id: Any) -> Any:
             if self._uow.sessao is None:
                 return antes
-            return self._repo.obter_por_id(pagamento_id)
+            return self._repo.obter_por_ordem(ordem_id)
 
     uow = MongoUnitOfWork(banco)
     caso = EstornarPagamento(
@@ -489,3 +491,22 @@ def test_compensacao_que_nunca_estabiliza_falha_alto(banco: Banco) -> None:
     )
     with pytest.raises(RuntimeError, match="nao estabilizou"):
         caso.executar(ordem_id=pendente.ordem_id, pagamento_id=pendente.id, motivo="x")
+
+
+def test_lapide_que_perde_para_a_geracao_cancela_o_orcamento_gerado(
+    banco: Banco,
+) -> None:
+    """CancelarOrcamento leu a ordem vazia; a geracao comitou antes da lapide."""
+    gerado = orcamento(criado_em=AGORA)
+    uow = MongoUnitOfWork(banco)
+    uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(gerado))
+
+    uow = MongoUnitOfWork(banco)
+    repo = LeituraAtrasada(MongoOrcamentoRepository(uow), "obter_por_ordem", 1)
+    resultado = CancelarOrcamento(uow, repo, RelogioFixo()).executar(
+        ordem_id=gerado.ordem_id, motivo="cancelamento"
+    )
+
+    assert (resultado.id, resultado.status) == (gerado.id, "CANCELADO")
+    assert banco["orcamentos"].count_documents({}) == 1
+    assert len(eventos_do_outbox(banco, "OrcamentoCancelado")) == 1

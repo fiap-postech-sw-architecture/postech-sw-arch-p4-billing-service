@@ -236,7 +236,7 @@ class TestSolicitarPagamento:
             "expira_em": "2026-10-06T13:00:00.000Z",
         }
 
-    def test_solicitar_duas_vezes_nao_duplica(
+    def test_solicitar_de_novo_republica_sem_nova_cobranca(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
         o = salvar_orcamento(banco, relogio, aprovar=True)
@@ -248,6 +248,49 @@ class TestSolicitarPagamento:
         assert segundo == primeiro
         assert banco["pagamentos"].count_documents({}) == 1
         assert len(gateway.cobrancas) == 1
+        solicitados = eventos_do_outbox(banco, "PagamentoSolicitado")
+        assert len(solicitados) == 2
+        assert solicitados[0]["dados"] == solicitados[1]["dados"]
+
+    def test_solicitacao_depois_da_lapide_e_descartada(
+        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+    ) -> None:
+        o = salvar_orcamento(banco, relogio, aprovar=True)
+        estornar(banco, gateway, relogio).executar(
+            ordem_id=o.ordem_id, motivo="cancelamento"
+        )
+
+        resultado = solicitar(banco, gateway, relogio).executar(
+            ordem_id=o.ordem_id, orcamento_id=o.id
+        )
+
+        assert (resultado.status, resultado.checkout_url) == ("CANCELADO", None)
+        assert gateway.cobrancas == []
+        assert eventos_do_outbox(banco, "PagamentoSolicitado") == []
+        assert len(eventos_do_outbox(banco, "PagamentoCancelado")) == 1
+
+    def test_lapide_gravada_durante_a_solicitacao_descarta_a_cobranca(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        o = salvar_orcamento(banco, relogio, aprovar=True)
+
+        class CompensacaoNoMeio(GatewayRoteirizado):
+            def criar_cobranca(self, **dados: Any) -> Any:
+                # A compensacao passa enquanto o provedor cria a cobranca.
+                estornar(banco, GatewayRoteirizado(), relogio).executar(
+                    ordem_id=o.ordem_id, motivo="cancelamento"
+                )
+                return super().criar_cobranca(**dados)
+
+        gateway = CompensacaoNoMeio()
+        resultado = solicitar(banco, gateway, relogio).executar(
+            ordem_id=o.ordem_id, orcamento_id=o.id
+        )
+
+        assert resultado.status == "CANCELADO"
+        assert len(gateway.cobrancas) == 1  # orfa no provedor, link nunca publicado
+        assert eventos_do_outbox(banco, "PagamentoSolicitado") == []
+        assert banco["pagamentos"].count_documents({}) == 1
 
     def test_orcamento_nao_aprovado(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
@@ -827,11 +870,11 @@ class TestEstornarPagamento:
             def __getattr__(self, nome: str) -> Any:
                 return getattr(self._repo, nome)
 
-            def obter_por_id(self, pagamento_id: UUID) -> Any:
+            def obter_por_ordem(self, ordem_id: UUID) -> Any:
                 if self._primeira:
                     self._primeira = False
                     return antes
-                return self._repo.obter_por_id(pagamento_id)
+                return self._repo.obter_por_ordem(ordem_id)
 
         uow = MongoUnitOfWork(banco)
         caso = EstornarPagamento(
@@ -941,11 +984,85 @@ class TestEstornarPagamento:
         assert consultar(banco, pendente.id).status == "SOLICITADO"
         assert eventos_do_outbox(banco, "PagamentoCancelado") == []
 
-    def test_exige_a_ordem_dona_do_pagamento(
+    def test_acha_o_pagamento_pela_ordem_sem_o_id(
+        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+    ) -> None:
+        pago = confirmado(banco, gateway, relogio)
+        resultado = estornar(banco, gateway, relogio).executar(
+            ordem_id=pago.ordem_id, motivo="cancelamento"
+        )
+        assert (resultado.id, resultado.status) == (pago.id, "ESTORNADO")
+
+    def test_id_informado_tem_de_ser_o_da_ordem(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
         pago = confirmado(banco, gateway, relogio)
         with pytest.raises(PagamentoNaoEncontradoError, match="nao pertence"):
             estornar(banco, gateway, relogio).executar(
-                ordem_id=uuid4(), pagamento_id=pago.id, motivo="x"
+                ordem_id=pago.ordem_id, pagamento_id=uuid4(), motivo="x"
             )
+        assert gateway.estornos == []
+
+    def test_compensacao_antes_da_solicitacao_grava_lapide(
+        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+    ) -> None:
+        ordem_id = uuid4()
+        caso = estornar(banco, gateway, relogio)
+
+        lapide = caso.executar(ordem_id=ordem_id, motivo="cancelamento")
+        repetida = caso.executar(ordem_id=ordem_id, motivo="reenvio")
+
+        assert (lapide.status, lapide.checkout_url, lapide.orcamento_id) == (
+            "CANCELADO",
+            None,
+            None,
+        )
+        assert repetida == lapide
+        assert banco["pagamentos"].count_documents({"ordem_id": ordem_id}) == 1
+        cancelados = eventos_do_outbox(banco, "PagamentoCancelado")
+        assert [e["dados"] for e in cancelados] == [
+            {
+                "ordem_id": str(ordem_id),
+                "pagamento_id": str(lapide.id),
+                "cancelado_em": "2026-10-06T12:00:00.000Z",
+            }
+        ] * 2
+        assert gateway.cancelamentos == []
+
+    def test_solicitacao_gravada_durante_a_lapide_e_compensada(
+        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+    ) -> None:
+        o = salvar_orcamento(banco, relogio, aprovar=True)
+
+        class SolicitacaoNoMeio:
+            """1a leitura pela ordem nao ve nada; a solicitacao grava logo depois."""
+
+            def __init__(self, repo: MongoPagamentoRepository) -> None:
+                self._repo = repo
+                self._primeira = True
+
+            def __getattr__(self, nome: str) -> Any:
+                return getattr(self._repo, nome)
+
+            def obter_por_ordem(self, ordem_id: UUID) -> Any:
+                if self._primeira:
+                    self._primeira = False
+                    solicitar(banco, gateway, relogio).executar(
+                        ordem_id=o.ordem_id, orcamento_id=o.id
+                    )
+                    return None
+                return self._repo.obter_por_ordem(ordem_id)
+
+        uow = MongoUnitOfWork(banco)
+        resultado = EstornarPagamento(
+            uow,
+            SolicitacaoNoMeio(MongoPagamentoRepository(uow)),
+            gateway,
+            MetricasEspia(),
+            relogio,
+        ).executar(ordem_id=o.ordem_id, motivo="cancelamento")
+
+        assert resultado.status == "CANCELADO"
+        assert resultado.checkout_url is not None  # cancelou a cobranca real
+        assert len(gateway.cancelamentos) == 1
+        assert banco["pagamentos"].count_documents({}) == 1

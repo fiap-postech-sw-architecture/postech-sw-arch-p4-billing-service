@@ -32,8 +32,21 @@ COLECAO = "pagamentos"
 
 
 def criar_indices_pagamentos(banco: Database[Documento]) -> None:
-    # Um pagamento por orcamento: a idempotencia do SolicitarPagamento depende dele.
-    banco[COLECAO].create_index("orcamento_id", unique=True)
+    # Um pagamento (ou lapide) por ordem: a compensacao acha a cobranca por ele,
+    # e o SolicitarPagamento atrasado encontra a lapide (RFC-004 secao 7.4).
+    banco[COLECAO].create_index("ordem_id", unique=True)
+    # Uma cobranca por orcamento; a lapide nao tem orcamento_id.
+    banco[COLECAO].create_index(
+        "orcamento_id",
+        unique=True,
+        partialFilterExpression={"orcamento_id": {"$exists": True}},
+    )
+    # Uma tentativa do provedor confirma no maximo um pagamento.
+    banco[COLECAO].create_index(
+        "referencia_pagamento",
+        unique=True,
+        partialFilterExpression={"referencia_pagamento": {"$type": "string"}},
+    )
     banco[COLECAO].create_index([("status", 1), ("expira_em", 1)])
 
 
@@ -46,10 +59,8 @@ class MongoPagamentoRepository:
         doc = self._colecao.find_one({"_id": pagamento_id}, session=self._uow.sessao)
         return _de_documento(doc) if doc else None
 
-    def obter_por_orcamento(self, orcamento_id: UUID) -> Pagamento | None:
-        doc = self._colecao.find_one(
-            {"orcamento_id": orcamento_id}, session=self._uow.sessao
-        )
+    def obter_por_ordem(self, ordem_id: UUID) -> Pagamento | None:
+        doc = self._colecao.find_one({"ordem_id": ordem_id}, session=self._uow.sessao)
         return _de_documento(doc) if doc else None
 
     def listar_vencidos(self, agora: datetime, limite: int) -> list[UUID]:
