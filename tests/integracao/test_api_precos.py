@@ -153,13 +153,10 @@ def test_entrada_invalida_da_422(
         "/api/v1/precos/servicos", json=corpo, headers=cabecalhos("admin")
     )
     assert resposta.status_code == 422
-    erro = resposta.json()["erro"]
-    assert (erro["codigo"], erro["mensagem"]) == (
-        "REQUISICAO_INVALIDA",
-        "Requisicao invalida",
-    )
-    assert erro["id_requisicao"] == resposta.headers["X-Request-ID"]
-    assert erro["detalhes"]
+    corpo = resposta.json()
+    assert corpo["id_requisicao"] == resposta.headers["X-Request-ID"]
+    assert corpo["detail"]
+    assert all(set(item) == {"type", "loc", "msg"} for item in corpo["detail"])
 
 
 @pytest.mark.parametrize("papel", ["atendente", "mecanico"])

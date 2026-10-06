@@ -16,7 +16,10 @@ A assinatura do webhook (``x-signature``) e validada na borda HTTP, em
 
 Resiliencia: timeout em toda chamada, retry com backoff e jitter so nas
 operacoes idempotentes (consulta, cancelamento e estorno com chave) e circuit
-breaker compartilhado por todas as operacoes.
+breaker compartilhado por todas as operacoes. A leitura do corpo acontece
+dentro da chamada protegida: resposta fora do contrato (3xx, corpo que nao e
+JSON, campo faltando ou invalido) e falha transitoria como um 5xx, conta no
+disjuntor e aparece como ``resultado="resposta_invalida"`` na metrica.
 """
 
 from __future__ import annotations
@@ -89,6 +92,17 @@ _NAO_ENCONTRADO = 404
 _MUITAS_REQUISICOES = 429
 _ERRO_DE_SERVIDOR = 500
 _ERRO_DE_CLIENTE = 400
+_REDIRECIONAMENTO = 300
+# O que a leitura de um corpo fora do contrato levanta: JSON invalido
+# (ValueError), campo ausente (LookupError), tipo errado (TypeError,
+# AttributeError) e numero invalido (decimal.InvalidOperation e ArithmeticError).
+_CORPO_FORA_DO_CONTRATO = (
+    ValueError,
+    LookupError,
+    TypeError,
+    AttributeError,
+    ArithmeticError,
+)
 _BACKOFF_BASE_SEGUNDOS = 0.2
 _JITTER_MAXIMO_SEGUNDOS = 0.1
 _aleatorio = secrets.SystemRandom()
@@ -105,6 +119,26 @@ class ConfiguracaoMercadoPago:
 
 class _FalhaTransitoriaError(Exception):
     """Timeout, erro de conexao, 429 ou 5xx: vale repetir e conta no disjuntor."""
+
+    resultado = "falha_transitoria"
+
+
+class _RespostaInvalidaError(_FalhaTransitoriaError):
+    """2xx com corpo fora do contrato ou 3xx: tratada como falha transitoria."""
+
+    resultado = "resposta_invalida"
+
+
+class _PagamentoNaoEncontradoError(GatewayPagamentoRecusouError):
+    """404 do provedor: na consulta, a referencia nao existe la."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Recusa:
+    """4xx (menos 429): o provedor respondeu e recusou; nao conta no disjuntor."""
+
+    status: int
+    mensagem: str
 
 
 class MercadoPagoGateway:
@@ -160,12 +194,13 @@ class MercadoPagoGateway:
             "date_of_expiration": _data_mp(expira_em),
         }
         # Criar preferencia nao e idempotente: uma tentativa so.
-        resposta = self._enviar(
-            "criar_cobranca", "POST", "/checkout/preferences", repetir=False, json=corpo
-        )
-        dados = resposta.json()
-        return CobrancaCriada(
-            referencia=str(dados["id"]), checkout_url=dados["init_point"]
+        return self._enviar(
+            "criar_cobranca",
+            "POST",
+            "/checkout/preferences",
+            ler=_ler_cobranca,
+            repetir=False,
+            json=corpo,
         )
 
     def cancelar_cobranca(self, referencia_preferencia: str) -> None:
@@ -179,6 +214,7 @@ class MercadoPagoGateway:
             "cancelar_cobranca",
             "PUT",
             f"/checkout/preferences/{referencia_preferencia}",
+            ler=_ignorar_corpo,
             repetir=True,
             json={
                 "expires": True,
@@ -190,25 +226,25 @@ class MercadoPagoGateway:
     def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:
         if not _REFERENCIA_VALIDA.fullmatch(referencia):
             return None
-        resposta = self._enviar(
-            "consultar_pagamento",
-            "GET",
-            f"/v1/payments/{referencia}",
-            repetir=True,
-            aceitar_404=True,
-        )
-        if resposta.status_code == _NAO_ENCONTRADO:
+        try:
+            return self._enviar(
+                "consultar_pagamento",
+                "GET",
+                f"/v1/payments/{referencia}",
+                ler=_ler_situacao,
+                repetir=True,
+            )
+        except _PagamentoNaoEncontradoError:
             return None
-        # parse_float=Decimal: o valor cobrado nunca passa por float.
-        return _situacao(resposta.json(parse_float=Decimal))
 
     def buscar_por_referencia_externa(
         self, referencia_externa: str
     ) -> list[SituacaoNoProvedor]:
-        resposta = self._enviar(
+        return self._enviar(
             "buscar_pagamentos",
             "GET",
             "/v1/payments/search",
+            ler=_ler_tentativas,
             repetir=True,
             params={
                 "external_reference": referencia_externa,
@@ -216,22 +252,20 @@ class MercadoPagoGateway:
                 "criteria": "asc",
             },
         )
-        dados = resposta.json(parse_float=Decimal)
-        return [_situacao(pagamento) for pagamento in dados.get("results", [])]
 
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
         if not _REFERENCIA_VALIDA.fullmatch(referencia):
             msg = "Referencia de pagamento invalida para estorno"
             raise GatewayPagamentoRecusouError(msg)
-        resposta = self._enviar(
+        status = self._enviar(
             "estornar",
             "POST",
             f"/v1/payments/{referencia}/refunds",
+            ler=_ler_status_do_estorno,
             repetir=True,
             json={},
             headers={"X-Idempotency-Key": chave_idempotencia},
         )
-        status = _status_do_estorno(resposta)
         if status in _ESTORNO_RECUSADO:
             msg = f"Mercado Pago recusou o estorno (status {status})"
             raise GatewayPagamentoRecusouError(msg)
@@ -240,28 +274,28 @@ class MercadoPagoGateway:
         if status != _ESTORNO_CONCLUIDO:
             raise EstornoEmProcessamentoError
 
-    def _enviar(
+    def _enviar[T](
         self,
         operacao: str,
         metodo: str,
         caminho: str,
         *,
+        ler: Callable[[httpx.Response], T],
         repetir: bool,
-        aceitar_404: bool = False,
         **opcoes: Any,  # noqa: ANN401 - repassadas ao httpx (json, headers)
-    ) -> httpx.Response:
+    ) -> T:
         tentativas = self._config.tentativas if repetir else 1
         tentativa = 1
         while True:
             try:
-                resposta = self._breaker.chamar(
-                    lambda: self._requisitar(metodo, caminho, opcoes)
+                resultado = self._breaker.chamar(
+                    lambda: self._requisitar(metodo, caminho, opcoes, ler)
                 )
             except CircuitoAbertoError:
                 MERCADOPAGO_REQUISICOES.labels(operacao, "circuito_aberto").inc()
                 raise GatewayPagamentoIndisponivelError from None
-            except _FalhaTransitoriaError:
-                MERCADOPAGO_REQUISICOES.labels(operacao, "falha_transitoria").inc()
+            except _FalhaTransitoriaError as exc:
+                MERCADOPAGO_REQUISICOES.labels(operacao, exc.resultado).inc()
                 if tentativa >= tentativas:
                     raise GatewayPagamentoIndisponivelError from None
                 self._dormir(
@@ -270,45 +304,93 @@ class MercadoPagoGateway:
                 )
                 tentativa += 1
                 continue
-            return self._verificar(operacao, resposta, aceitar_404=aceitar_404)
+            if isinstance(resultado, _Recusa):
+                if resultado.status == _NAO_ENCONTRADO:
+                    MERCADOPAGO_REQUISICOES.labels(operacao, "nao_encontrado").inc()
+                    raise _PagamentoNaoEncontradoError(resultado.mensagem)
+                MERCADOPAGO_REQUISICOES.labels(operacao, "recusado").inc()
+                raise GatewayPagamentoRecusouError(resultado.mensagem)
+            MERCADOPAGO_REQUISICOES.labels(operacao, "sucesso").inc()
+            return resultado
 
-    def _requisitar(
-        self, metodo: str, caminho: str, opcoes: dict[str, Any]
-    ) -> httpx.Response:
+    def _requisitar[T](
+        self,
+        metodo: str,
+        caminho: str,
+        opcoes: dict[str, Any],
+        ler: Callable[[httpx.Response], T],
+    ) -> T | _Recusa:
         try:
             resposta = self._http.request(metodo, caminho, **opcoes)
         except httpx.TransportError as exc:
             raise _FalhaTransitoriaError(type(exc).__name__) from exc
-        if (
-            resposta.status_code == _MUITAS_REQUISICOES
-            or resposta.status_code >= _ERRO_DE_SERVIDOR
-        ):
-            raise _FalhaTransitoriaError(f"HTTP {resposta.status_code}")
-        return resposta
+        status = resposta.status_code
+        if status == _MUITAS_REQUISICOES or status >= _ERRO_DE_SERVIDOR:
+            raise _FalhaTransitoriaError(f"HTTP {status}")
+        if status >= _ERRO_DE_CLIENTE:
+            return _Recusa(status, _mensagem_de_erro(resposta))
+        if status >= _REDIRECIONAMENTO:
+            raise _RespostaInvalidaError(f"HTTP {status}")
+        try:
+            return ler(resposta)
+        except _CORPO_FORA_DO_CONTRATO as exc:
+            raise _RespostaInvalidaError(type(exc).__name__) from exc
 
-    def _verificar(
-        self, operacao: str, resposta: httpx.Response, *, aceitar_404: bool
-    ) -> httpx.Response:
-        if resposta.status_code == _NAO_ENCONTRADO and aceitar_404:
-            MERCADOPAGO_REQUISICOES.labels(operacao, "nao_encontrado").inc()
-            return resposta
-        if resposta.status_code >= _ERRO_DE_CLIENTE:
-            MERCADOPAGO_REQUISICOES.labels(operacao, "recusado").inc()
-            raise GatewayPagamentoRecusouError(_mensagem_de_erro(resposta))
-        MERCADOPAGO_REQUISICOES.labels(operacao, "sucesso").inc()
-        return resposta
+
+def _ler_cobranca(resposta: httpx.Response) -> CobrancaCriada:
+    dados = resposta.json()
+    return CobrancaCriada(
+        referencia=_texto(dados, "id"), checkout_url=_texto(dados, "init_point")
+    )
+
+
+def _ignorar_corpo(_resposta: httpx.Response) -> None:
+    return None
+
+
+def _ler_situacao(resposta: httpx.Response) -> SituacaoNoProvedor:
+    # parse_float=Decimal: o valor cobrado nunca passa por float.
+    return _situacao(resposta.json(parse_float=Decimal))
+
+
+def _ler_tentativas(resposta: httpx.Response) -> list[SituacaoNoProvedor]:
+    resultados = resposta.json(parse_float=Decimal)["results"]
+    if not isinstance(resultados, list):
+        msg = "results deveria ser uma lista"
+        raise TypeError(msg)
+    return [_situacao(pagamento) for pagamento in resultados]
+
+
+def _ler_status_do_estorno(resposta: httpx.Response) -> str | None:
+    """Status do reembolso criado (``None`` quando o corpo nao traz)."""
+    corpo = resposta.json()
+    if not isinstance(corpo, dict):
+        msg = "reembolso deveria ser um objeto"
+        raise TypeError(msg)
+    status = corpo.get("status")
+    return str(status) if status is not None else None
+
+
+def _texto(dados: dict[str, Any], campo: str) -> str:
+    """Campo obrigatorio como texto (id numerico do provedor vira texto)."""
+    valor = dados[campo]
+    if isinstance(valor, bool) or not isinstance(valor, str | int) or valor == "":
+        msg = f"{campo} ausente ou invalido"
+        raise ValueError(msg)
+    return str(valor)
 
 
 def _situacao(dados: dict[str, Any]) -> SituacaoNoProvedor:
     """So id, status, detalhe, valor e moeda: payer e cartao ficam de fora."""
-    status = str(dados["status"])
+    status = _texto(dados, "status")
     externa = dados.get("external_reference")
+    detalhe = dados.get("status_detail")
     return SituacaoNoProvedor(
-        referencia=str(dados["id"]),
+        referencia=_texto(dados, "id"),
         referencia_externa=str(externa) if externa else None,
         status=_status_no_provedor(status),
         status_provedor=status,
-        detalhe=dados.get("status_detail"),
+        detalhe=str(detalhe) if detalhe is not None else None,
         valor=_valor(dados),
     )
 
@@ -327,16 +409,6 @@ def _status_no_provedor(status: str) -> StatusNoProvedor:
 
 def _data_mp(instante: datetime) -> str:
     return instante.astimezone(UTC).isoformat(timespec="milliseconds")
-
-
-def _status_do_estorno(resposta: httpx.Response) -> str | None:
-    """Status do reembolso criado (``None`` quando o corpo nao traz)."""
-    try:
-        corpo = resposta.json()
-    except ValueError:
-        return None
-    status = corpo.get("status") if isinstance(corpo, dict) else None
-    return str(status) if status is not None else None
 
 
 def _numero_json(valor: Decimal) -> float:

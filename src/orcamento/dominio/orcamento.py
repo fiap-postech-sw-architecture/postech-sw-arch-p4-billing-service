@@ -25,7 +25,10 @@ from typing import TYPE_CHECKING, Final
 
 from src.compartilhado.dominio.aggregate_root import AggregateRoot
 from src.compartilhado.dominio.dinheiro import Dinheiro
-from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
+from src.compartilhado.dominio.exceptions import (
+    TransicaoStatusInvalidaError,
+    ValorInvalidoError,
+)
 from src.compartilhado.dominio.value_object import ValueObject
 from src.orcamento.dominio.events import (
     LinhaOrcamentoGerado,
@@ -84,7 +87,7 @@ _ENCERRADOS_SEM_DECISAO_VALIDA: Final = frozenset(
 def _exigir_timezone(rotulo: str, instante: datetime) -> None:
     if instante.tzinfo is None:
         msg = f"{rotulo} precisa de timezone (UTC)"
-        raise ValueError(msg)
+        raise ValorInvalidoError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,11 +101,11 @@ class LinhaOrcamento(ValueObject):
     def __post_init__(self) -> None:
         if not self.codigo or not self.descricao:
             msg = "Linha do orcamento exige codigo e descricao"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         # bool e subclasse de int: True nao pode virar quantidade 1.
         if isinstance(self.quantidade, bool) or self.quantidade <= 0:
             msg = f"Quantidade deve ser inteiro maior que zero: {self.quantidade!r}"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
     @property
     def subtotal(self) -> Dinheiro:
@@ -124,10 +127,10 @@ class Decisao(ValueObject):
             self.decidido_por and self.decidido_por.strip()
         ):
             msg = "Decisao do atendente exige decidido_por (sub do atendente)"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         if self.canal is CanalDecisao.LINK and self.decidido_por is not None:
             msg = "Decisao pelo link e do cliente: sem decidido_por"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
 
 @dataclass(eq=False, kw_only=True)
@@ -149,15 +152,15 @@ class Orcamento(AggregateRoot):
             return
         if len({linha.preco_unitario.moeda for linha in self._linhas}) > 1:
             msg = "Linhas do orcamento devem ter a mesma moeda"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         _exigir_timezone("valido_ate", self._valido_ate)
         if self._valido_ate <= self._criado_em:
             msg = "valido_ate deve ser posterior a criado_em"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         if self._valido_ate.microsecond:
             # O token do link assina exp = valido_ate em epoch de segundos.
             msg = "valido_ate deve estar em segundo cheio"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
     def _validar_lapide(self) -> None:
         if (
@@ -166,7 +169,7 @@ class Orcamento(AggregateRoot):
             or self._status is not StatusOrcamento.CANCELADO
         ):
             msg = "Orcamento exige linhas e validade (sem elas, so a lapide CANCELADA)"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
     @classmethod
     def gerar(
@@ -210,7 +213,7 @@ class Orcamento(AggregateRoot):
         """
         if not motivo.strip():
             msg = "Motivo do cancelamento e obrigatorio"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         orcamento = cls(
             id=id,
             _ordem_id=ordem_id,
@@ -351,7 +354,7 @@ class Orcamento(AggregateRoot):
             return False
         if not motivo.strip():
             msg = "Motivo do cancelamento e obrigatorio"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         self._transitar(StatusOrcamento.CANCELADO)
         self._motivo_cancelamento = motivo
         self._registrar_evento(self.desfecho_do_cancelamento())

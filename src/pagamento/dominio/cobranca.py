@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from src.compartilhado.dominio.exceptions import ValorInvalidoError
 from src.compartilhado.dominio.value_object import ValueObject
 
 if TYPE_CHECKING:
@@ -18,13 +19,13 @@ if TYPE_CHECKING:
 def exigir_timezone(rotulo: str, instante: datetime) -> None:
     if instante.tzinfo is None:
         msg = f"{rotulo} precisa de timezone (UTC)"
-        raise ValueError(msg)
+        raise ValorInvalidoError(msg)
 
 
 def exigir_texto(rotulo: str, valor: str) -> None:
     if not valor.strip():
         msg = f"{rotulo} nao pode ser vazio"
-        raise ValueError(msg)
+        raise ValorInvalidoError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +42,7 @@ class Cobranca(ValueObject):
     def __post_init__(self) -> None:
         if self.valor.valor <= 0:
             msg = f"Valor do pagamento deve ser maior que zero: {self.valor.valor}"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         exigir_texto("Provedor", self.provedor)
         exigir_texto("Referencia da cobranca", self.referencia_preferencia)
         exigir_texto("checkout_url", self.checkout_url)

@@ -8,7 +8,10 @@ from uuid import uuid4
 import pytest
 
 from src.compartilhado.dominio.dinheiro import Dinheiro
-from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
+from src.compartilhado.dominio.exceptions import (
+    TransicaoStatusInvalidaError,
+    ValorInvalidoError,
+)
 from src.pagamento.dominio.cobranca import (
     Cobranca,
     EstornoAutomatico,
@@ -136,7 +139,7 @@ class TestSolicitacao:
         ]
 
     def test_valor_zero_e_invalido(self) -> None:
-        with pytest.raises(ValueError, match="maior que zero"):
+        with pytest.raises(ValorInvalidoError, match="maior que zero"):
             pagamento(valor="0.00")
 
     @pytest.mark.parametrize(
@@ -152,7 +155,7 @@ class TestSolicitacao:
             "expira_em": AGORA,
             campo: " ",
         }
-        with pytest.raises(ValueError, match="vazio"):
+        with pytest.raises(ValorInvalidoError, match="vazio"):
             Cobranca(**dados)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
@@ -165,7 +168,7 @@ class TestSolicitacao:
     def test_datas_com_timezone(
         self, criado_em: datetime, validade: str | None
     ) -> None:
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ValorInvalidoError, match="timezone"):
             if validade is None:
                 pagamento(criado_em=criado_em)
             else:
@@ -179,7 +182,7 @@ class TestSolicitacao:
                 )
 
     def test_expiracao_deve_ser_posterior_a_criacao(self) -> None:
-        with pytest.raises(ValueError, match="posterior"):
+        with pytest.raises(ValorInvalidoError, match="posterior"):
             pagamento(validade=timedelta(0))
 
 
@@ -215,7 +218,7 @@ class TestLapide:
         assert p.desfecho_da_solicitacao() == original
 
     def test_sem_cobranca_so_como_lapide_cancelada(self) -> None:
-        with pytest.raises(ValueError, match="lapide"):
+        with pytest.raises(ValorInvalidoError, match="lapide"):
             Pagamento(_ordem_id=uuid4(), _criado_em=AGORA)
 
 
@@ -535,7 +538,7 @@ class TestCompensacao:
         )
 
     def test_motivo_obrigatorio(self) -> None:
-        with pytest.raises(ValueError, match="Motivo"):
+        with pytest.raises(ValorInvalidoError, match="Motivo"):
             solicitado().concluir_compensacao(agora=AGORA, motivo=" ")
 
     def test_falha_de_estorno_registra_evento_sem_mudar_status(self) -> None:
@@ -598,14 +601,14 @@ class TestReidratacao:
         self, status: StatusPagamento, faltando: str
     ) -> None:
         cobranca = pagamento().cobranca
-        with pytest.raises(ValueError, match="dados incompletos"):
+        with pytest.raises(ValorInvalidoError, match="dados incompletos"):
             Pagamento(
                 _ordem_id=uuid4(), _criado_em=AGORA, _cobranca=cobranca, _status=status
             )
 
     def test_datas_dos_eventos_com_timezone(self) -> None:
         cobranca = pagamento().cobranca
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ValorInvalidoError, match="timezone"):
             Pagamento(
                 _ordem_id=uuid4(),
                 _criado_em=AGORA,
@@ -617,7 +620,7 @@ class TestReidratacao:
 
     @pytest.mark.parametrize("recusas", [-1, True], ids=["negativa", "bool"])
     def test_recusas_inteiro_nao_negativo(self, recusas: int) -> None:
-        with pytest.raises(ValueError, match="recusas"):
+        with pytest.raises(ValorInvalidoError, match="recusas"):
             Pagamento(
                 _ordem_id=uuid4(),
                 _criado_em=AGORA,
@@ -655,5 +658,5 @@ class TestHistorico:
             "referencia_pagamento": "1",
             "status_provedor": "approved",
         }
-        with pytest.raises(ValueError, match=r"timezone|vazio"):
+        with pytest.raises(ValorInvalidoError, match=r"timezone|vazio"):
             NotificacaoRecebida(**(base | dados))  # type: ignore[arg-type]

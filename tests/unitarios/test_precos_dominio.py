@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.compartilhado.dominio.exceptions import ValorInvalidoError
 from src.precos.dominio.preco import PrecoPeca, PrecoServico
 from src.precos.dominio.validacao import codigos_invalidos
 from tests.factories import dinheiro
@@ -38,7 +39,7 @@ class TestPrecoServico:
         "codigo", ["", "srv-troca", "SRV TROCA", "SRV--X", "-SRV", "S" * 51]
     )
     def test_codigo_fora_do_formato_e_rejeitado(self, codigo: str) -> None:
-        with pytest.raises(ValueError, match="Codigo do servico invalido"):
+        with pytest.raises(ValorInvalidoError, match="Codigo do servico invalido"):
             servico(codigo)
 
     @pytest.mark.parametrize("campo", ["_nome", "_descricao"])
@@ -50,11 +51,11 @@ class TestPrecoServico:
             "_preco": dinheiro("1.00"),
             campo: "   ",
         }
-        with pytest.raises(ValueError, match="nao pode ser vazio"):
+        with pytest.raises(ValorInvalidoError, match="nao pode ser vazio"):
             PrecoServico(**dados)  # type: ignore[arg-type]
 
     def test_preco_zero_e_rejeitado(self) -> None:
-        with pytest.raises(ValueError, match="maior que zero"):
+        with pytest.raises(ValorInvalidoError, match="maior que zero"):
             PrecoServico(
                 _codigo="SRV-X", _nome="N", _descricao="D", _preco=dinheiro("0")
             )
@@ -70,7 +71,7 @@ class TestPrecoServico:
             dinheiro("130.00"),
             True,
         )
-        with pytest.raises(ValueError, match="maior que zero"):
+        with pytest.raises(ValorInvalidoError, match="maior que zero"):
             preco.atualizar(nome="T", descricao="D", preco=dinheiro("0"), ativo=True)
 
     def test_desativar_e_idempotente(self) -> None:
@@ -98,11 +99,11 @@ class TestPrecoPeca:
         assert preco.ativo is False
 
     def test_sku_invalido_e_rejeitado(self) -> None:
-        with pytest.raises(ValueError, match="SKU da peca invalido"):
+        with pytest.raises(ValorInvalidoError, match="SKU da peca invalido"):
             peca("pec oleo")
 
     def test_nome_vazio_e_rejeitado(self) -> None:
-        with pytest.raises(ValueError, match="Nome da peca"):
+        with pytest.raises(ValorInvalidoError, match="Nome da peca"):
             PrecoPeca(_sku="PEC-X", _nome="", _preco=dinheiro("1.00"))
 
 

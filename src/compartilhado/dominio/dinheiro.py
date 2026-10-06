@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from src.compartilhado.dominio.exceptions import ValorInvalidoError
 from src.compartilhado.dominio.value_object import ValueObject
 
 _DUAS_CASAS = Decimal("0.01")
@@ -27,11 +28,11 @@ class Dinheiro(ValueObject):
                 object.__setattr__(self, "valor", Decimal(str(self.valor)))
             except InvalidOperation as exc:
                 msg = "valor monetario invalido"
-                raise ValueError(msg) from exc
+                raise ValorInvalidoError(msg) from exc
 
         if not self.valor.is_finite():
             msg = "Valor monetario deve ser finito"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
         quantizado = self.valor.quantize(_DUAS_CASAS, rounding=ROUND_HALF_UP)
         # Normaliza zero negativo (-0.00 -> 0.00) antes das validacoes.
@@ -40,7 +41,7 @@ class Dinheiro(ValueObject):
 
         if self.valor < 0:
             msg = f"Valor nao pode ser negativo: {self.valor}"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
         moeda_valida = (
             len(self.moeda) == _TAMANHO_CODIGO_MOEDA
@@ -51,14 +52,14 @@ class Dinheiro(ValueObject):
         )
         if not moeda_valida:
             msg = f"Moeda deve ter 3 letras maiusculas: {self.moeda}"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
 
     def __add__(self, outro: Dinheiro) -> Dinheiro:
         if not isinstance(outro, Dinheiro):
             return NotImplemented
         if self.moeda != outro.moeda:
             msg = f"Moedas diferentes: {self.moeda} e {outro.moeda}"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         return Dinheiro(valor=self.valor + outro.valor, moeda=self.moeda)
 
     def __mul__(self, fator: int) -> Dinheiro:

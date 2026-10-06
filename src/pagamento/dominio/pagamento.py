@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
 from src.compartilhado.dominio.aggregate_root import AggregateRoot
-from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
+from src.compartilhado.dominio.exceptions import (
+    TransicaoStatusInvalidaError,
+    ValorInvalidoError,
+)
 from src.pagamento.dominio.cobranca import (
     EstornoAutomatico,
     NotificacaoRecebida,
@@ -82,13 +85,13 @@ class Pagamento(AggregateRoot):
         exigir_timezone("criado_em", self._criado_em)
         if self._cobranca is None and self._status is not StatusPagamento.CANCELADO:
             msg = "Pagamento sem cobranca so existe como lapide CANCELADA"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         if self._cobranca is not None and self._cobranca.expira_em <= self._criado_em:
             msg = "expira_em deve ser posterior a criado_em"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         if isinstance(self._recusas, bool) or self._recusas < 0:
             msg = "recusas deve ser um inteiro nao negativo"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         self._exigir_campos_do_status()
 
     @classmethod
@@ -441,7 +444,7 @@ class Pagamento(AggregateRoot):
             exigidos = (self._encerrado_em, self._motivo)
         if any(valor is None for valor in exigidos):
             msg = f"Pagamento {self._status} com dados incompletos"
-            raise ValueError(msg)
+            raise ValorInvalidoError(msg)
         for rotulo, instante in (
             ("confirmado_em", self._confirmado_em),
             ("encerrado_em", self._encerrado_em),

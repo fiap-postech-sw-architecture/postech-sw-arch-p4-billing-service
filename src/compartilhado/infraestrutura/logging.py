@@ -194,7 +194,7 @@ _MAX_ERRO_LEN = 200
 def redigir_pii_erro(erro: str) -> str:
     """Remove PII (CPF, CNPJ, e-mail, telefone) de strings de erro.
 
-    Usada no handler de ``ValueError`` (422): a mensagem de uma invariante pode
+    Usada no handler de ``ValorInvalidoError`` (422): a mensagem de uma invariante pode
     ecoar o valor recebido e vai para o cliente, fora do alcance do scrubber de
     log (``scrub_pii``), que so atua no pipeline do log.
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.compartilhado.dominio.aggregate_root import AggregateRoot
+from src.compartilhado.dominio.exceptions import ValorInvalidoError
 
 if TYPE_CHECKING:
     from src.compartilhado.dominio.dinheiro import Dinheiro
@@ -28,19 +29,19 @@ def _validar_codigo(rotulo: str, codigo: str) -> None:
             f"{rotulo} invalido: use maiusculas, digitos e hifens "
             f"(ate {TAMANHO_MAXIMO_CODIGO} caracteres)"
         )
-        raise ValueError(msg)
+        raise ValorInvalidoError(msg)
 
 
 def _validar_texto(rotulo: str, valor: str) -> None:
     if not valor.strip():
         msg = f"{rotulo} nao pode ser vazio"
-        raise ValueError(msg)
+        raise ValorInvalidoError(msg)
 
 
 def _validar_preco(preco: Dinheiro) -> None:
     if preco.valor <= 0:
         msg = f"Preco deve ser maior que zero (recebido: {preco.valor})"
-        raise ValueError(msg)
+        raise ValorInvalidoError(msg)
 
 
 @dataclass(eq=False, kw_only=True)

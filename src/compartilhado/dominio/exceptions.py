@@ -2,11 +2,21 @@
 
 Cada familia mapeia um status HTTP em ``interfaces/error_handler.py``; as
 subclasses dos contextos so trocam ``codigo`` e a mensagem padrao.
+``ValorInvalidoError`` e a invariante de valor (422 ``VALOR_INVALIDO``).
 """
 
 from __future__ import annotations
 
 from typing import ClassVar
+
+
+class ValorInvalidoError(ValueError):
+    """Invariante de value object ou de agregado violada pela entrada (422).
+
+    Classe propria, e nao ``ValueError`` puro, para a API devolver 422 so para
+    dado invalido do chamador: ``ValueError`` de biblioteca ou de adapter (ex.:
+    corpo que nao e JSON) e defeito do servidor e vira 500.
+    """
 
 
 class DomainException(Exception):

@@ -1,11 +1,11 @@
 """Envelope de erro da API: ``{"erro": {codigo, mensagem, id_requisicao}}``.
 
-Reaproveitado do p3 @ 08dcffe (``src/compartilhado/interfaces/error_handler.py``).
-Acrescimos do Billing: 410 (link expirado), 503 (dependencia externa fora), o
-handler de ``HTTPException`` (401/403 da autenticacao, 404/405 de roteamento) e
-o 422 de schema no mesmo envelope (com ``detalhes``): o p3 mantinha
-``{"detail": [...]}`` porque a UI lia esse formato; aqui os clientes sao os
-outros servicos e todo erro sai igual.
+Reaproveitado do p3 @ 08dcffe (``src/compartilhado/interfaces/error_handler.py``),
+com a convencao comum aos servicos da fase 4 (OS, Execucao e Billing): o 422
+de schema mantem o formato do p3 (``{"detail": [...], "id_requisicao"}``) e o
+codigo generico de nao encontrado e ``ENTIDADE_NAO_ENCONTRADA``. Acrescimos do
+Billing: 410 (recurso expirado), 503 (dependencia externa fora) e o handler de
+``HTTPException`` (401/403 da autenticacao, 404/405 de roteamento).
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from src.compartilhado.dominio.exceptions import (
     EntidadeNaoEncontradaError,
     RecursoExpiradoError,
     TransicaoStatusInvalidaError,
+    ValorInvalidoError,
 )
 from src.compartilhado.infraestrutura.logging import redigir_pii_erro
 
@@ -49,7 +50,8 @@ _STATUS_DEFAULT = 409
 _CODIGOS_HTTP: dict[int, str] = {
     401: "NAO_AUTENTICADO",
     403: "ACESSO_NEGADO",
-    404: "NAO_ENCONTRADO",
+    # Mesmo codigo do 404 de dominio: o cliente trata "nao encontrado" de um jeito so.
+    404: "ENTIDADE_NAO_ENCONTRADA",
     405: "METODO_NAO_PERMITIDO",
     503: "SERVICO_INDISPONIVEL",
 }
@@ -75,111 +77,122 @@ def _obter_request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "desconhecido")
 
 
-def _criar_envelope(
-    codigo: str,
-    mensagem: str,
-    request_id: str,
-    detalhes: list[dict[str, object]] | None = None,
-) -> dict[str, object]:
-    erro: dict[str, object] = {
-        "codigo": codigo,
-        "mensagem": mensagem,
-        "id_requisicao": request_id,
+def _criar_envelope(codigo: str, mensagem: str, request_id: str) -> dict[str, object]:
+    return {
+        "erro": {
+            "codigo": codigo,
+            "mensagem": mensagem,
+            "id_requisicao": request_id,
+        }
     }
-    if detalhes is not None:
-        erro["detalhes"] = detalhes
-    return {"erro": erro}
+
+
+def _mensagem_http(exc: StarletteHTTPException) -> str:
+    detalhe = str(exc.detail)
+    if detalhe == HTTPStatus(exc.status_code).phrase:
+        return _MENSAGENS_PADRAO.get(exc.status_code, detalhe)
+    return detalhe
+
+
+async def _domain_exception_handler(
+    request: Request, exc: DomainException
+) -> JSONResponse:
+    request_id = _obter_request_id(request)
+    status_code = _status_para(exc)
+    # So o codigo estavel vai para o log, nunca a mensagem (pode ter dado do
+    # request).
+    logger.warning(
+        "domain_exception_handled",
+        codigo=exc.codigo,
+        status=status_code,
+        request_id=request_id,
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=_criar_envelope(exc.codigo, exc.mensagem, request_id),
+    )
+
+
+async def _http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    request_id = _obter_request_id(request)
+    codigo = _CODIGOS_HTTP.get(exc.status_code, f"HTTP_{exc.status_code}")
+    logger.warning(
+        "http_exception_handled",
+        codigo=codigo,
+        status=exc.status_code,
+        request_id=request_id,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_criar_envelope(codigo, _mensagem_http(exc), request_id),
+        headers=exc.headers,
+    )
+
+
+async def _request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    # O detail default do FastAPI ecoa o ``input`` cru de cada campo invalido;
+    # cada item aqui carrega so type/loc/msg (a regra violada, nao o valor).
+    request_id = _obter_request_id(request)
+    detalhes = [
+        {"type": erro.get("type"), "loc": erro.get("loc"), "msg": erro.get("msg")}
+        for erro in exc.errors()
+    ]
+    logger.warning(
+        "request_validation_handled",
+        request_id=request_id,
+        erros=[(d["type"], d["loc"]) for d in detalhes],
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": detalhes, "id_requisicao": request_id},
+    )
+
+
+async def _valor_invalido_handler(
+    request: Request, exc: ValorInvalidoError
+) -> JSONResponse:
+    # Invariante de value object/agregado violada pela entrada: 422 com a
+    # mensagem do dominio, redigida de PII. O log leva so o request_id.
+    request_id = _obter_request_id(request)
+    logger.warning("invalid_value_handled", request_id=request_id)
+    return JSONResponse(
+        status_code=422,
+        content=_criar_envelope(
+            "VALOR_INVALIDO", redigir_pii_erro(str(exc)), request_id
+        ),
+    )
+
+
+async def _generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Rede de seguranca: o SecurityHeadersMiddleware ja converte o erro das
+    # rotas; aqui so chega o que escapar de um middleware mais externo.
+    return resposta_erro_interno(request, exc)
+
+
+def resposta_erro_interno(request: Request, exc: Exception) -> JSONResponse:
+    """500 no envelope; o traceback vai para o log, que passa pelo scrub de PII."""
+    request_id = _obter_request_id(request)
+    logger.error("internal_error", request_id=request_id, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content=_criar_envelope("ERRO_INTERNO", "Erro interno do servidor", request_id),
+    )
 
 
 def registrar_error_handlers(app: FastAPI) -> None:
-    """Registra os handlers que convertem excecoes no envelope de erro."""
+    """Mapeia excecoes para o envelope de erro.
 
-    @app.exception_handler(DomainException)
-    async def _domain_exception_handler(
-        request: Request, exc: DomainException
-    ) -> JSONResponse:
-        request_id = _obter_request_id(request)
-        status_code = _status_para(exc)
-        # So o codigo estavel vai para o log, nunca a mensagem (pode ter dado
-        # do request).
-        logger.warning(
-            "dominio_excecao_tratada",
-            codigo=exc.codigo,
-            status=status_code,
-            request_id=request_id,
-        )
-        return JSONResponse(
-            status_code=status_code,
-            content=_criar_envelope(exc.codigo, exc.mensagem, request_id),
-        )
-
-    @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(
-        request: Request, exc: StarletteHTTPException
-    ) -> JSONResponse:
-        request_id = _obter_request_id(request)
-        codigo = _CODIGOS_HTTP.get(exc.status_code, f"HTTP_{exc.status_code}")
-        mensagem = str(exc.detail)
-        if mensagem == HTTPStatus(exc.status_code).phrase:
-            mensagem = _MENSAGENS_PADRAO.get(exc.status_code, mensagem)
-        logger.warning(
-            "http_excecao_tratada",
-            codigo=codigo,
-            status=exc.status_code,
-            request_id=request_id,
-        )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=_criar_envelope(codigo, mensagem, request_id),
-            headers=exc.headers,
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def _request_validation_handler(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        # O detail default do FastAPI ecoa o ``input`` cru de cada campo
-        # invalido; cada item aqui carrega so type/loc/msg (a regra violada,
-        # nao o valor recebido).
-        request_id = _obter_request_id(request)
-        detalhes = [
-            {"type": erro.get("type"), "loc": erro.get("loc"), "msg": erro.get("msg")}
-            for erro in exc.errors()
-        ]
-        logger.warning(
-            "validacao_schema_tratada_422",
-            request_id=request_id,
-            erros=[(d["type"], d["loc"]) for d in detalhes],
-        )
-        return JSONResponse(
-            status_code=422,
-            content=_criar_envelope(
-                "REQUISICAO_INVALIDA", "Requisicao invalida", request_id, detalhes
-            ),
-        )
-
-    @app.exception_handler(ValueError)
-    async def _value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
-        # Invariante de value object/agregado violada: 422 com a mensagem do
-        # dominio, redigida de PII.
-        request_id = _obter_request_id(request)
-        logger.warning("value_error_tratado_422", request_id=request_id)
-        return JSONResponse(
-            status_code=422,
-            content=_criar_envelope(
-                "VALOR_INVALIDO", redigir_pii_erro(str(exc)), request_id
-            ),
-        )
-
-    @app.exception_handler(Exception)
-    async def _generic_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        request_id = _obter_request_id(request)
-        logger.exception("erro_interno", request_id=request_id)
-        return JSONResponse(
-            status_code=500,
-            content=_criar_envelope(
-                "ERRO_INTERNO", "Erro interno do servidor", request_id
-            ),
-        )
+    ``DomainException`` vira 404/409/410/503 pelo mapa; ``HTTPException``
+    (autenticacao, rota inexistente) mantem status e headers;
+    ``ValorInvalidoError`` vira 422 ``VALOR_INVALIDO``; o resto, inclusive
+    ``ValueError`` de biblioteca ou de adapter, vira 500 com traceback no log.
+    """
+    app.exception_handler(DomainException)(_domain_exception_handler)
+    app.exception_handler(StarletteHTTPException)(_http_exception_handler)
+    app.exception_handler(RequestValidationError)(_request_validation_handler)
+    app.exception_handler(ValorInvalidoError)(_valor_invalido_handler)
+    app.exception_handler(Exception)(_generic_exception_handler)

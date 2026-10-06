@@ -14,6 +14,7 @@ from src.compartilhado.dominio.events import IntegrationEvent
 from src.compartilhado.dominio.exceptions import (
     DomainException,
     EntidadeNaoEncontradaError,
+    ValorInvalidoError,
 )
 from src.compartilhado.dominio.relogio import agora_utc
 
@@ -30,16 +31,16 @@ class TestDinheiro:
         assert Dinheiro(10).valor == Decimal("10.00")  # type: ignore[arg-type]
 
     def test_valor_invalido_levanta_value_error(self) -> None:
-        with pytest.raises(ValueError, match="invalido"):
+        with pytest.raises(ValorInvalidoError, match="invalido"):
             Dinheiro("abc")  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("valor", ["Infinity", "NaN"])
     def test_valor_nao_finito_e_rejeitado(self, valor: str) -> None:
-        with pytest.raises(ValueError, match="finito"):
+        with pytest.raises(ValorInvalidoError, match="finito"):
             Dinheiro(Decimal(valor))
 
     def test_valor_negativo_e_rejeitado(self) -> None:
-        with pytest.raises(ValueError, match="negativo"):
+        with pytest.raises(ValorInvalidoError, match="negativo"):
             Dinheiro(Decimal("-0.01"))
 
     def test_zero_negativo_vira_zero(self) -> None:
@@ -47,7 +48,7 @@ class TestDinheiro:
 
     @pytest.mark.parametrize("moeda", ["brl", "BR", "BR1", "BRÁ"])
     def test_moeda_fora_do_iso_4217_e_rejeitada(self, moeda: str) -> None:
-        with pytest.raises(ValueError, match="maiusculas"):
+        with pytest.raises(ValorInvalidoError, match="maiusculas"):
             Dinheiro(Decimal("1"), moeda=moeda)
 
     def test_soma_e_multiplicacao_por_inteiro(self) -> None:
@@ -58,7 +59,7 @@ class TestDinheiro:
         assert 4 * Dinheiro(Decimal("45.00")) == Dinheiro(Decimal("180.00"))
 
     def test_soma_de_moedas_diferentes_e_rejeitada(self) -> None:
-        with pytest.raises(ValueError, match="Moedas diferentes"):
+        with pytest.raises(ValorInvalidoError, match="Moedas diferentes"):
             _ = Dinheiro(Decimal("1")) + Dinheiro(Decimal("1"), moeda="USD")
 
     def test_operandos_de_outro_tipo_devolvem_not_implemented(self) -> None:

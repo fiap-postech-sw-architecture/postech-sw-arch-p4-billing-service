@@ -8,7 +8,10 @@ from uuid import uuid4
 import pytest
 
 from src.compartilhado.dominio.dinheiro import Dinheiro
-from src.compartilhado.dominio.exceptions import TransicaoStatusInvalidaError
+from src.compartilhado.dominio.exceptions import (
+    TransicaoStatusInvalidaError,
+    ValorInvalidoError,
+)
 from src.orcamento.dominio.events import (
     LinhaOrcamentoGerado,
     OrcamentoAprovadoEvent,
@@ -38,12 +41,12 @@ class TestLinhaOrcamento:
 
     @pytest.mark.parametrize("quantidade", [0, -1, True])
     def test_quantidade_deve_ser_inteiro_positivo(self, quantidade: int) -> None:
-        with pytest.raises(ValueError, match="Quantidade"):
+        with pytest.raises(ValorInvalidoError, match="Quantidade"):
             linha(quantidade=quantidade)
 
     @pytest.mark.parametrize("campo", ["codigo", "descricao"])
     def test_codigo_e_descricao_obrigatorios(self, campo: str) -> None:
-        with pytest.raises(ValueError, match="codigo e descricao"):
+        with pytest.raises(ValorInvalidoError, match="codigo e descricao"):
             linha(**{campo: ""})  # type: ignore[arg-type]
 
     def test_e_imutavel(self) -> None:
@@ -111,7 +114,7 @@ class TestGeracao:
     def test_sem_linhas_ou_validade_so_como_lapide(
         self, linhas: tuple[LinhaOrcamento, ...], valido_ate: datetime | None
     ) -> None:
-        with pytest.raises(ValueError, match="lapide"):
+        with pytest.raises(ValorInvalidoError, match="lapide"):
             Orcamento(
                 _ordem_id=uuid4(),
                 _linhas=linhas,
@@ -127,19 +130,19 @@ class TestGeracao:
             quantidade=1,
             preco_unitario=Dinheiro(Decimal("1.00"), moeda="USD"),
         )
-        with pytest.raises(ValueError, match="mesma moeda"):
+        with pytest.raises(ValorInvalidoError, match="mesma moeda"):
             orcamento(linhas=[linha(), dolar])
 
     def test_datas_sem_timezone_sao_invalidas(self) -> None:
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ValorInvalidoError, match="timezone"):
             orcamento(criado_em=datetime(2026, 10, 6, 12, 0))
 
     def test_validade_deve_ser_posterior_a_criacao(self) -> None:
-        with pytest.raises(ValueError, match="posterior"):
+        with pytest.raises(ValorInvalidoError, match="posterior"):
             orcamento(validade=timedelta(0))
 
     def test_validade_em_segundo_cheio_como_o_exp_do_link(self) -> None:
-        with pytest.raises(ValueError, match="segundo cheio"):
+        with pytest.raises(ValorInvalidoError, match="segundo cheio"):
             Orcamento(
                 _ordem_id=uuid4(),
                 _linhas=tuple(linhas_padrao()),
@@ -157,7 +160,7 @@ class TestGeracao:
     def test_cada_data_exige_timezone(
         self, criado_em: datetime, valido_ate: datetime
     ) -> None:
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ValorInvalidoError, match="timezone"):
             Orcamento(
                 _ordem_id=uuid4(),
                 _linhas=tuple(linhas_padrao()),
@@ -186,7 +189,7 @@ class TestLapide:
         assert tumulo.cancelar(motivo="de novo") is False
 
     def test_lapide_exige_motivo(self) -> None:
-        with pytest.raises(ValueError, match="Motivo"):
+        with pytest.raises(ValorInvalidoError, match="Motivo"):
             Orcamento.lapide(
                 id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo=""
             )
@@ -269,14 +272,14 @@ class TestDecisao:
         self, canal: CanalDecisao, decidido_por: str | None, erro: str
     ) -> None:
         gerado = orcamento()
-        with pytest.raises(ValueError, match=f"{erro} decidido_por"):
+        with pytest.raises(ValorInvalidoError, match=f"{erro} decidido_por"):
             gerado.aprovar(
                 canal=canal, agora=DENTRO_DO_PRAZO, decidido_por=decidido_por
             )
         assert gerado.status is StatusOrcamento.PENDENTE
 
     def test_decisao_exige_timezone(self) -> None:
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ValorInvalidoError, match="timezone"):
             Decisao(CanalDecisao.LINK, datetime(2026, 10, 6, 13, 0))
 
     def test_recusar_registra_decisao_e_evento(self) -> None:
@@ -392,7 +395,7 @@ class TestCancelamento:
         assert gerado.coletar_eventos() == []
 
     def test_motivo_obrigatorio(self) -> None:
-        with pytest.raises(ValueError, match="Motivo"):
+        with pytest.raises(ValorInvalidoError, match="Motivo"):
             orcamento().cancelar(motivo=" ")
 
 

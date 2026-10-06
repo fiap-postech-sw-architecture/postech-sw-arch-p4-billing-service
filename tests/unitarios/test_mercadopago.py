@@ -479,14 +479,27 @@ class TestEstornar:
             with pytest.raises(GatewayPagamentoRecusouError, match=status):
                 gateway.estornar("1", chave_idempotencia="msg-6")
 
-    @pytest.mark.parametrize("corpo", ["", "[]", '{"id": 1}'])
     def test_estorno_sem_status_nao_e_dado_como_concluido(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        with respx.mock(base_url=API) as mp:
+            mp.post("/v1/payments/1/refunds").respond(201, json={"id": 1})
+            with pytest.raises(EstornoEmProcessamentoError):
+                gateway.estornar("1", chave_idempotencia="msg-7")
+
+    @pytest.mark.parametrize(
+        "corpo", ["", "[]", "<html>"], ids=["vazio", "lista", "html"]
+    )
+    def test_corpo_fora_do_contrato_repete_com_a_mesma_chave(
         self, gateway: MercadoPagoGateway, corpo: str
     ) -> None:
         with respx.mock(base_url=API) as mp:
-            mp.post("/v1/payments/1/refunds").respond(201, text=corpo)
-            with pytest.raises(EstornoEmProcessamentoError):
-                gateway.estornar("1", chave_idempotencia="msg-7")
+            rota = mp.post("/v1/payments/1/refunds").respond(201, text=corpo)
+            with pytest.raises(GatewayPagamentoIndisponivelError) as erro:
+                gateway.estornar("1", chave_idempotencia="msg-8")
+        assert type(erro.value) is GatewayPagamentoIndisponivelError
+        chaves = {c.request.headers["X-Idempotency-Key"] for c in rota.calls}
+        assert (rota.call_count, chaves) == (3, {"msg-8"})
 
     def test_erro_sem_corpo_json(self, gateway: MercadoPagoGateway) -> None:
         with respx.mock(base_url=API) as mp:
@@ -535,6 +548,137 @@ class TestCancelarCobranca:
     ) -> None:
         with pytest.raises(GatewayPagamentoRecusouError, match="invalida"):
             gateway.cancelar_cobranca("../preferences")
+
+
+class TestRespostaForaDoContrato:
+    """3xx ou 2xx com corpo fora do contrato: falha transitoria lida dentro da
+    chamada protegida (repete, conta no disjuntor) e nunca conta como sucesso."""
+
+    @pytest.mark.parametrize(
+        ("status", "opcoes"),
+        [
+            pytest.param(200, {"text": "<html>manutencao</html>"}, id="200-html"),
+            pytest.param(302, {"headers": {"Location": "https://x.teste"}}, id="302"),
+            pytest.param(200, {"json": {"id": 1}}, id="sem-status"),
+            pytest.param(200, {"json": {"status": "approved"}}, id="sem-id"),
+            pytest.param(200, {"json": []}, id="lista"),
+            pytest.param(
+                200,
+                {"json": pagamento_no_provedor(transaction_amount="abc")},
+                id="valor-invalido",
+            ),
+            pytest.param(
+                200,
+                {"json": pagamento_no_provedor(transaction_amount="1E+30")},
+                id="valor-fora-do-teto",
+            ),
+            pytest.param(
+                200, {"json": pagamento_no_provedor(currency_id="real")}, id="moeda"
+            ),
+        ],
+    )
+    def test_consulta_repete_e_fica_indisponivel(
+        self, gateway: MercadoPagoGateway, status: int, opcoes: dict[str, object]
+    ) -> None:
+        invalidas = contador("consultar_pagamento", "resposta_invalida")
+        sucessos = contador("consultar_pagamento", "sucesso")
+        with respx.mock(base_url=API) as mp:
+            rota = mp.get("/v1/payments/1").respond(status, **opcoes)
+            with pytest.raises(GatewayPagamentoIndisponivelError):
+                gateway.consultar_pagamento("1")
+        assert rota.call_count == 3
+        assert contador("consultar_pagamento", "resposta_invalida") == invalidas + 3
+        assert contador("consultar_pagamento", "sucesso") == sucessos
+
+    @pytest.mark.parametrize(
+        "corpo",
+        [
+            {"id": "pref-1"},
+            {"init_point": "https://x.teste"},
+            {"id": "", "init_point": 1},
+        ],
+        ids=["sem-init-point", "sem-id", "tipos-errados"],
+    )
+    def test_preferencia_criada_sem_os_campos_nao_repete(
+        self, gateway: MercadoPagoGateway, corpo: dict[str, object]
+    ) -> None:
+        antes = contador("criar_cobranca", "resposta_invalida")
+        with respx.mock(base_url=API) as mp:
+            rota = mp.post("/checkout/preferences").respond(201, json=corpo)
+            with pytest.raises(GatewayPagamentoIndisponivelError):
+                gateway.criar_cobranca(
+                    pagamento_id=uuid4(),
+                    itens=[ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))],
+                    expira_em=AGORA,
+                )
+        assert rota.call_count == 1
+        assert contador("criar_cobranca", "resposta_invalida") == antes + 1
+
+    @pytest.mark.parametrize(
+        "corpo",
+        [{"paging": {"total": 0}}, {"results": {"id": 1}}, {"results": [{"id": 1}]}],
+        ids=["sem-results", "results-objeto", "tentativa-sem-status"],
+    )
+    def test_busca_fora_do_contrato(
+        self, gateway: MercadoPagoGateway, corpo: dict[str, object]
+    ) -> None:
+        with respx.mock(base_url=API) as mp:
+            rota = mp.get("/v1/payments/search").respond(200, json=corpo)
+            with pytest.raises(GatewayPagamentoIndisponivelError):
+                gateway.buscar_por_referencia_externa("x")
+        assert rota.call_count == 3
+
+    def test_resposta_invalida_abre_o_disjuntor(self, esperas: Esperas) -> None:
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(
+                access_token=TOKEN, notification_url=NOTIFICACAO, tentativas=1
+            ),
+            breaker=CircuitBreaker(
+                "mp-resposta-invalida", falha=_FalhaTransitoriaError, limite_falhas=2
+            ),
+            dormir=esperas,
+        )
+        try:
+            with respx.mock(base_url=API) as mp:
+                rota = mp.get("/v1/payments/1").respond(200, text="<html>")
+                for _ in range(3):
+                    with pytest.raises(GatewayPagamentoIndisponivelError):
+                        gateway.consultar_pagamento("1")
+            assert rota.call_count == 2
+        finally:
+            gateway.fechar()
+
+    def test_recusa_4xx_nao_conta_no_disjuntor(self, esperas: Esperas) -> None:
+        breaker = CircuitBreaker(
+            "mp-recusa", falha=_FalhaTransitoriaError, limite_falhas=1
+        )
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO),
+            breaker=breaker,
+            dormir=esperas,
+        )
+        try:
+            with respx.mock(base_url=API) as mp:
+                mp.post("/v1/payments/1/refunds").mock(
+                    return_value=erro_mp(400, "invalid")
+                )
+                with pytest.raises(GatewayPagamentoRecusouError):
+                    gateway.estornar("1", chave_idempotencia="k")
+            assert not breaker.aberto
+        finally:
+            gateway.fechar()
+
+    def test_404_fora_da_consulta_e_recusa_contada_como_nao_encontrado(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        antes = contador("cancelar_cobranca", "nao_encontrado")
+        with respx.mock(base_url=API) as mp:
+            mp.put("/checkout/preferences/pref-1").mock(
+                return_value=erro_mp(404, "preference not found")
+            )
+            with pytest.raises(GatewayPagamentoRecusouError, match="not found"):
+                gateway.cancelar_cobranca("pref-1")
+        assert contador("cancelar_cobranca", "nao_encontrado") == antes + 1
 
 
 class TestCircuitBreaker:

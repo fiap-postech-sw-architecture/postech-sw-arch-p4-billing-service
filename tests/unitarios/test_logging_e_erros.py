@@ -17,6 +17,7 @@ from src.compartilhado.dominio.exceptions import (
     EntidadeNaoEncontradaError,
     RecursoExpiradoError,
     TransicaoStatusInvalidaError,
+    ValorInvalidoError,
 )
 from src.compartilhado.infraestrutura.logging import (
     configurar_logging,
@@ -141,7 +142,10 @@ def cliente() -> TestClient:
         "expirado": RecursoExpiradoError(),
         "indisponivel": DependenciaIndisponivelError(),
         "regra": DomainException("regra violada"),
-        "valor": ValueError("cpf 123.456.789-09 invalido"),
+        "valor": ValorInvalidoError("cpf 123.456.789-09 invalido"),
+        # ValueError de biblioteca (ex.: corpo que nao e JSON) e defeito do
+        # servidor: 500, nunca 422 com a mensagem interna.
+        "valor-de-biblioteca": ValueError("Expecting value: line 1 column 1"),
         "http": HTTPException(401, "sem token", headers={"WWW-Authenticate": "Bearer"}),
         "bug": RuntimeError("bug"),
     }
@@ -170,6 +174,7 @@ def cliente() -> TestClient:
         ("indisponivel", 503, "DEPENDENCIA_INDISPONIVEL"),
         ("regra", 409, "VIOLACAO_REGRA_NEGOCIO"),
         ("valor", 422, "VALOR_INVALIDO"),
+        ("valor-de-biblioteca", 500, "ERRO_INTERNO"),
         ("http", 401, "NAO_AUTENTICADO"),
         ("bug", 500, "ERRO_INTERNO"),
     ],
@@ -183,6 +188,17 @@ def test_envelope_de_erro(
     assert erro["codigo"] == codigo
     assert erro["id_requisicao"] == "req-123"
     assert "123.456.789" not in erro["mensagem"]
+    assert "Expecting value" not in erro["mensagem"]
+
+
+def test_500_sai_com_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:
+    resposta = cliente.get("/erro/bug", headers={"X-Request-ID": "req-500"})
+    assert resposta.status_code == 500
+    assert resposta.headers["X-Request-ID"] == "req-500"
+    assert resposta.headers["X-Content-Type-Options"] == "nosniff"
+    assert resposta.headers["Cache-Control"] == "no-store"
+    assert resposta.headers["Strict-Transport-Security"].startswith("max-age=")
+    assert resposta.json()["erro"]["id_requisicao"] == "req-500"
 
 
 def test_http_exception_preserva_headers(cliente: TestClient) -> None:
@@ -195,20 +211,30 @@ def test_rota_inexistente_tambem_usa_o_envelope_em_portugues(
 ) -> None:
     resposta = cliente.get("/nao/existe")
     assert resposta.status_code == 404
-    assert resposta.json()["erro"]["codigo"] == "NAO_ENCONTRADO"
+    assert resposta.json()["erro"]["codigo"] == "ENTIDADE_NAO_ENCONTRADA"
     assert resposta.json()["erro"]["mensagem"] == "Recurso nao encontrado"
     metodo = cliente.delete("/corpo")
     assert metodo.status_code == 405
     assert metodo.json()["erro"]["mensagem"] == "Metodo nao permitido"
 
 
-def test_422_de_schema_nao_ecoa_o_valor_recebido(cliente: TestClient) -> None:
-    resposta = cliente.post("/corpo", json={"numero": "123.456.789-09"})
+def test_422_de_schema_no_formato_do_p3_sem_ecoar_o_valor(cliente: TestClient) -> None:
+    resposta = cliente.post(
+        "/corpo", json={"numero": "123.456.789-09"}, headers={"X-Request-ID": "r-422"}
+    )
     assert resposta.status_code == 422
     assert "123.456.789-09" not in resposta.text
-    erro = resposta.json()["erro"]
-    assert erro["codigo"] == "REQUISICAO_INVALIDA"
-    assert erro["detalhes"][0]["loc"] == ["body", "numero"]
+    corpo = resposta.json()
+    assert set(corpo) == {"detail", "id_requisicao"}
+    assert corpo["id_requisicao"] == "r-422"
+    assert corpo["detail"] == [
+        {
+            "type": "int_parsing",
+            "loc": ["body", "numero"],
+            "msg": "Input should be a valid integer, unable to parse string as an "
+            "integer",
+        }
+    ]
 
 
 def test_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:
@@ -229,3 +255,21 @@ def test_metricas_por_template_de_rota(cliente: TestClient) -> None:
     assert 'rota="/erro/{nome}"' in texto
     assert 'rota="nao_roteada"' in texto
     assert "/erro/nao-encontrado" not in texto
+
+
+def test_rede_de_seguranca_sem_o_middleware_tambem_responde_o_envelope() -> None:
+    app = FastAPI()
+
+    @app.get("/bug")
+    def bug() -> None:
+        msg = "bug"
+        raise RuntimeError(msg)
+
+    registrar_error_handlers(app)
+    resposta = TestClient(app, raise_server_exceptions=False).get("/bug")
+    assert resposta.status_code == 500
+    assert resposta.json()["erro"] == {
+        "codigo": "ERRO_INTERNO",
+        "mensagem": "Erro interno do servidor",
+        "id_requisicao": "desconhecido",
+    }

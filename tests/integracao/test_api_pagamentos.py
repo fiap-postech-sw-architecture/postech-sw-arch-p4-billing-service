@@ -315,7 +315,7 @@ class TestModoMercadoPago:
         assert api_mp.get(f"/simulador/checkout/{pendente.id}").status_code == 404
         resposta = api_mp.post(f"/api/v1/simulador/pagamentos/{pendente.id}/aprovar")
         assert resposta.status_code == 404
-        assert resposta.json()["erro"]["codigo"] == "NAO_ENCONTRADO"
+        assert resposta.json()["erro"]["codigo"] == "ENTIDADE_NAO_ENCONTRADA"
         documento = banco["pagamentos"].find_one({"_id": pendente.id})
         assert documento is not None
         assert documento["status"] == "SOLICITADO"

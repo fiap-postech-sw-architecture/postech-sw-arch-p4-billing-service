@@ -78,7 +78,7 @@ Processos da imagem (`entrypoint.sh`): `api` (padrão; com `RUN_SEED_ON_STARTUP=
 | `GET /simulador/checkout/{pagamento_id}`, `POST /api/v1/simulador/pagamentos/{id}/aprovar\|recusar` | cliente (só `MP_MODE=simulado`) | checkout simulado |
 | `GET /api/v1/saude`, `GET /metrics` | todos | liveness/readiness e métricas Prometheus |
 
-Admin passa em todas as rotas internas. Todo erro sai no envelope `{"erro": {"codigo", "mensagem", "id_requisicao"}}`; o 422 de validação acrescenta `detalhes` (campo e regra, sem ecoar o valor recebido). `PUT` de preço é substituição completa (`ativo` obrigatório).
+Admin passa em todas as rotas internas. Todo erro sai no envelope `{"erro": {"codigo", "mensagem", "id_requisicao"}}`, inclusive o 500; o 422 de validação de schema segue o formato do p3, igual ao OS e à Execução: `{"detail": [{type, loc, msg}], "id_requisicao"}` (campo e regra, sem ecoar o valor recebido). Invariante de domínio violada responde 422 `VALOR_INVALIDO`; rota ou entidade inexistente, 404 `ENTIDADE_NAO_ENCONTRADA` (ou o código específico do contexto). `PUT` de preço é substituição completa (`ativo` obrigatório).
 
 ```bash
 TOKEN=...   # JWT de admin emitido pelo OS Service
