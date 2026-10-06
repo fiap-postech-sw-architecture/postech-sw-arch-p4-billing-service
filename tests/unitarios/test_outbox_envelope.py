@@ -91,10 +91,13 @@ def _violacoes(envelope: dict[str, Any]) -> list[str]:
     ]
 
 
-def _eventos_de_orcamento() -> list[IntegrationEvent]:
-    gerado = orcamento()
-    aprovado_pelo_atendente = orcamento()
-    aprovado_pelo_atendente.aprovar(
+def _ultimo(eventos: list[IntegrationEvent]) -> IntegrationEvent:
+    return eventos[-1]
+
+
+def _exemplos_de_orcamento() -> dict[str, IntegrationEvent]:
+    aprovado = orcamento()
+    aprovado.aprovar(
         canal=CanalDecisao.ATENDENTE, agora=AGORA, decidido_por=ATENDENTE_SUB
     )
     recusado = orcamento()
@@ -103,22 +106,21 @@ def _eventos_de_orcamento() -> list[IntegrationEvent]:
     expirado.expirar(agora=AGORA + timedelta(hours=73))
     cancelado = orcamento()
     cancelado.cancelar(motivo="OS cancelada")
-    falha = eventos_orcamento.GeracaoDeOrcamentoFalhouEvent(
-        ordem_id=uuid4(),
-        motivo="Itens inexistentes ou inativos na tabela de precos",
-        codigos_invalidos=("SRV-NAO-EXISTE", "PEC-VELA"),
-    )
-    return [
-        *gerado.coletar_eventos(),
-        *aprovado_pelo_atendente.coletar_eventos(),
-        *recusado.coletar_eventos(),
-        *expirado.coletar_eventos(),
-        *cancelado.coletar_eventos(),
-        falha,
-    ]
+    return {
+        "orcamento-gerado": _ultimo(orcamento().coletar_eventos()),
+        "aprovado-pelo-atendente": _ultimo(aprovado.coletar_eventos()),
+        "recusado-pelo-link": _ultimo(recusado.coletar_eventos()),
+        "orcamento-expirado": _ultimo(expirado.coletar_eventos()),
+        "orcamento-cancelado": _ultimo(cancelado.coletar_eventos()),
+        "geracao-falhou": eventos_orcamento.GeracaoDeOrcamentoFalhouEvent(
+            ordem_id=uuid4(),
+            motivo="Itens inexistentes ou inativos na tabela de precos",
+            codigos_invalidos=("SRV-NAO-EXISTE", "PEC-VELA"),
+        ),
+    }
 
 
-def _eventos_de_pagamento() -> list[IntegrationEvent]:
+def _exemplos_de_pagamento() -> dict[str, IntegrationEvent]:
     # Motivos vindos do provedor maiores que o maxLength do contrato (500).
     recusado = pagamento()
     recusado.aplicar_notificacao(
@@ -126,6 +128,8 @@ def _eventos_de_pagamento() -> list[IntegrationEvent]:
         agora=AGORA,
         max_recusas=1,
     )
+    confirmado = pagamento()
+    confirmar(confirmado)
     expirado = pagamento()
     expirado.expirar(agora=AGORA + timedelta(minutes=61))
     cancelado = pagamento()
@@ -139,34 +143,30 @@ def _eventos_de_pagamento() -> list[IntegrationEvent]:
     estorno_automatico = pagamento()
     estorno_automatico.expirar(agora=AGORA + timedelta(minutes=61))
     estorno_automatico.registrar_estorno_automatico("9", agora=AGORA)
-    return [
-        evento
-        for agregado in (
-            recusado,
-            expirado,
-            cancelado,
-            estornado,
-            falha_de_estorno,
-            estorno_automatico,
-        )
-        for evento in agregado.coletar_eventos()
-    ]
+    return {
+        "pagamento-solicitado": _ultimo(pagamento().coletar_eventos()),
+        "recusado-com-motivo-longo": _ultimo(recusado.coletar_eventos()),
+        "pagamento-confirmado": _ultimo(confirmado.coletar_eventos()),
+        "pagamento-expirado": _ultimo(expirado.coletar_eventos()),
+        "pagamento-cancelado": _ultimo(cancelado.coletar_eventos()),
+        "estornado-na-compensacao": _ultimo(estornado.coletar_eventos()),
+        "falha-de-estorno-com-motivo-longo": _ultimo(
+            falha_de_estorno.coletar_eventos()
+        ),
+        "estorno-automatico": _ultimo(estorno_automatico.coletar_eventos()),
+    }
 
 
-EVENTOS = [*_eventos_de_orcamento(), *_eventos_de_pagamento()]
+EXEMPLOS = {**_exemplos_de_orcamento(), **_exemplos_de_pagamento()}
 
 
 def test_os_exemplos_cobrem_todo_o_catalogo() -> None:
-    assert {evento.tipo for evento in EVENTOS} == CATALOGO_DO_BILLING
+    assert {evento.tipo for evento in EXEMPLOS.values()} == CATALOGO_DO_BILLING
 
 
-@pytest.mark.parametrize(
-    "evento",
-    EVENTOS,
-    ids=[f"{i:02d}-{evento.tipo}" for i, evento in enumerate(EVENTOS)],
-)
-def test_cada_evento_valida_no_contrato_da_plataforma(evento: IntegrationEvent) -> None:
-    envelope = para_envelope(evento, mensagem_id=uuid4())
+@pytest.mark.parametrize("exemplo", list(EXEMPLOS))
+def test_cada_evento_valida_no_contrato_da_plataforma(exemplo: str) -> None:
+    envelope = para_envelope(EXEMPLOS[exemplo], mensagem_id=uuid4())
     assert _violacoes(envelope) == []
 
 

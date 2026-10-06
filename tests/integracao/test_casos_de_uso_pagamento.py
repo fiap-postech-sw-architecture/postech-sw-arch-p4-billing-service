@@ -65,10 +65,9 @@ def metricas() -> MetricasEspia:
     return MetricasEspia()
 
 
-def salvar_orcamento(banco: Banco, relogio: RelogioFixo, *, aprovar: bool) -> Orcamento:
+def salvar_aprovado(banco: Banco, relogio: RelogioFixo) -> Orcamento:
     o = orcamento(criado_em=relogio.agora)
-    if aprovar:
-        o.aprovar(canal=CanalDecisao.LINK, agora=relogio.agora)
+    o.aprovar(canal=CanalDecisao.LINK, agora=relogio.agora)
     uow = MongoUnitOfWork(banco)
     uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(o))
     return o
@@ -163,7 +162,7 @@ def consultar(banco: Banco, pagamento_id: UUID) -> PagamentoDTO:
 def solicitado(
     banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
 ) -> PagamentoDTO:
-    o = salvar_orcamento(banco, relogio, aprovar=True)
+    o = salvar_aprovado(banco, relogio)
     return solicitar(banco, gateway, relogio).executar(
         ordem_id=o.ordem_id, orcamento_id=o.id
     )
@@ -207,7 +206,7 @@ class TestSolicitarPagamento:
     def test_cria_cobranca_e_grava_pagamento_solicitado(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
 
         dto = solicitar(banco, gateway, relogio).executar(
             ordem_id=o.ordem_id, orcamento_id=o.id
@@ -239,7 +238,7 @@ class TestSolicitarPagamento:
     def test_solicitar_de_novo_republica_sem_nova_cobranca(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
         caso = solicitar(banco, gateway, relogio)
 
         primeiro = caso.executar(ordem_id=o.ordem_id, orcamento_id=o.id)
@@ -255,7 +254,7 @@ class TestSolicitarPagamento:
     def test_solicitacao_depois_da_lapide_e_descartada(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
         estornar(banco, gateway, relogio).executar(
             ordem_id=o.ordem_id, motivo="cancelamento"
         )
@@ -272,7 +271,7 @@ class TestSolicitarPagamento:
     def test_lapide_gravada_durante_a_solicitacao_descarta_a_cobranca(
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
 
         class CompensacaoNoMeio(GatewayRoteirizado):
             def criar_cobranca(self, **dados: Any) -> Any:
@@ -292,20 +291,40 @@ class TestSolicitarPagamento:
         assert eventos_do_outbox(banco, "PagamentoSolicitado") == []
         assert banco["pagamentos"].count_documents({}) == 1
 
-    def test_orcamento_nao_aprovado(
-        self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
+    @pytest.mark.parametrize(
+        "estado",
+        ["PENDENTE", "RECUSADO", "EXPIRADO", "CANCELADO", "CANCELADO_APROVADO"],
+    )
+    def test_so_orcamento_aprovado_gera_cobranca(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        estado: str,
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=False)
+        o = orcamento(criado_em=relogio.agora)
+        if estado == "RECUSADO":
+            o.recusar(canal=CanalDecisao.LINK, agora=relogio.agora)
+        elif estado == "EXPIRADO":
+            o.expirar(agora=relogio.agora + timedelta(hours=73))
+        elif estado.startswith("CANCELADO"):
+            if estado == "CANCELADO_APROVADO":
+                o.aprovar(canal=CanalDecisao.LINK, agora=relogio.agora)
+            o.cancelar(motivo="OS cancelada")
+        uow = MongoUnitOfWork(banco)
+        uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(o))
+
         with pytest.raises(OrcamentoNaoAprovadoError):
             solicitar(banco, gateway, relogio).executar(
                 ordem_id=o.ordem_id, orcamento_id=o.id
             )
         assert gateway.cobrancas == []
+        assert banco["pagamentos"].count_documents({}) == 0
 
     def test_orcamento_inexistente_ou_de_outra_ordem(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
         caso = solicitar(banco, gateway, relogio)
         with pytest.raises(PagamentoNaoEncontradoError, match="Orcamento"):
             caso.executar(ordem_id=uuid4(), orcamento_id=o.id)
@@ -315,7 +334,7 @@ class TestSolicitarPagamento:
     def test_provedor_fora_nao_grava_nada(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
         gateway.erro_na_cobranca = GatewayPagamentoIndisponivelError()
         with pytest.raises(GatewayPagamentoIndisponivelError):
             solicitar(banco, gateway, relogio).executar(
@@ -1034,7 +1053,7 @@ class TestEstornarPagamento:
     def test_solicitacao_gravada_durante_a_lapide_e_compensada(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
-        o = salvar_orcamento(banco, relogio, aprovar=True)
+        o = salvar_aprovado(banco, relogio)
 
         class SolicitacaoNoMeio:
             """1a leitura pela ordem nao ve nada; a solicitacao grava logo depois."""

@@ -439,6 +439,7 @@ class TestDecisao:
 
     def test_decidir_no_limite_do_prazo_ainda_vale(self) -> None:
         gerado = orcamento()
+        assert gerado.valido_ate is not None
         gerado.aprovar(canal=CanalDecisao.LINK, agora=gerado.valido_ate)
         assert gerado.status is StatusOrcamento.APROVADO
 
@@ -472,6 +473,7 @@ class TestDecisao:
 class TestExpiracao:
     def test_vencido_so_quando_pendente_e_fora_do_prazo(self) -> None:
         gerado = orcamento()
+        assert gerado.valido_ate is not None
         assert not gerado.vencido(gerado.valido_ate)
         assert gerado.vencido(DEPOIS_DO_PRAZO)
         gerado.aprovar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
@@ -492,7 +494,7 @@ class TestExpiracao:
 
 
 class TestCancelamento:
-    @pytest.mark.parametrize("decidir", [False, True])
+    @pytest.mark.parametrize("decidir", [False, True], ids=["pendente", "aprovado"])
     def test_cancela_pendente_ou_aprovado(self, decidir: bool) -> None:
         gerado = orcamento()
         if decidir:
@@ -540,3 +542,101 @@ class TestCancelamento:
 
 def test_tipos_de_item_seguem_o_catalogo() -> None:
     assert [t.value for t in TipoItem] == ["servico", "peca"]
+
+
+def _no_estado(estado: StatusOrcamento) -> Orcamento:
+    gerado = orcamento()
+    if estado is StatusOrcamento.APROVADO:
+        gerado.aprovar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
+    elif estado is StatusOrcamento.RECUSADO:
+        gerado.recusar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
+    elif estado is StatusOrcamento.EXPIRADO:
+        gerado.expirar(agora=DEPOIS_DO_PRAZO)
+    elif estado is StatusOrcamento.CANCELADO:
+        gerado.cancelar(motivo="OS cancelada")
+    gerado.limpar_eventos()
+    return gerado
+
+
+def _comando(gerado: Orcamento, comando: str) -> bool | None:
+    """Executa o comando; so ``cancelar`` diz se mudou alguma coisa."""
+    if comando == "aprovar":
+        gerado.aprovar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
+    elif comando == "recusar":
+        gerado.recusar(canal=CanalDecisao.LINK, agora=DENTRO_DO_PRAZO)
+    elif comando == "expirar":
+        gerado.expirar(agora=DEPOIS_DO_PRAZO)
+    else:
+        return gerado.cancelar(motivo="OS cancelada")
+    return None
+
+
+P, A, R, E, C = (
+    StatusOrcamento.PENDENTE,
+    StatusOrcamento.APROVADO,
+    StatusOrcamento.RECUSADO,
+    StatusOrcamento.EXPIRADO,
+    StatusOrcamento.CANCELADO,
+)
+_TRANSICAO = TransicaoStatusInvalidaError
+_VENCIDO = OrcamentoVencidoError
+
+# (origem, comando) -> destino (com o evento do destino), excecao, ou None
+# (cancelar o que ja esta encerrado: nada muda e nada sai).
+MATRIZ_DO_ORCAMENTO: dict[tuple[StatusOrcamento, str], object] = {
+    (P, "aprovar"): A,
+    (P, "recusar"): R,
+    (P, "expirar"): E,
+    (P, "cancelar"): C,
+    (A, "aprovar"): _TRANSICAO,
+    (A, "recusar"): _TRANSICAO,
+    (A, "expirar"): _TRANSICAO,
+    (A, "cancelar"): C,
+    (R, "aprovar"): _TRANSICAO,
+    (R, "recusar"): _TRANSICAO,
+    (R, "expirar"): _TRANSICAO,
+    (R, "cancelar"): None,
+    (E, "aprovar"): _VENCIDO,
+    (E, "recusar"): _VENCIDO,
+    (E, "expirar"): _TRANSICAO,
+    (E, "cancelar"): None,
+    (C, "aprovar"): _TRANSICAO,
+    (C, "recusar"): _TRANSICAO,
+    (C, "expirar"): _TRANSICAO,
+    (C, "cancelar"): None,
+}
+_EVENTO_DO_DESTINO = {
+    A: OrcamentoAprovadoEvent,
+    R: OrcamentoRecusadoEvent,
+    E: OrcamentoExpiradoEvent,
+    C: OrcamentoCanceladoEvent,
+}
+
+
+@pytest.mark.parametrize(
+    ("origem", "comando"),
+    list(MATRIZ_DO_ORCAMENTO),
+    ids=[
+        f"{origem.value.lower()}-{comando}" for origem, comando in MATRIZ_DO_ORCAMENTO
+    ],
+)
+def test_matriz_de_transicoes_do_orcamento(
+    origem: StatusOrcamento, comando: str
+) -> None:
+    gerado = _no_estado(origem)
+    esperado = MATRIZ_DO_ORCAMENTO[(origem, comando)]
+    if isinstance(esperado, type):
+        with pytest.raises(esperado):
+            _comando(gerado, comando)
+        assert gerado.status is origem
+        assert gerado.coletar_eventos() == []
+    elif esperado is None:
+        assert _comando(gerado, comando) is False
+        assert gerado.status is origem
+        assert gerado.coletar_eventos() == []
+    else:
+        assert isinstance(esperado, StatusOrcamento)
+        _comando(gerado, comando)
+        assert gerado.status is esperado
+        [evento] = gerado.coletar_eventos()
+        assert isinstance(evento, _EVENTO_DO_DESTINO[esperado])

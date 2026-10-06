@@ -119,7 +119,7 @@ class TestGatewaySimulado:
         self, simulado: GatewayPagamentoSimulado
     ) -> None:
         # O checkout simulado so aceita pagamento SOLICITADO (status gravado).
-        assert simulado.cancelar_cobranca("sim-pref-qualquer") is None
+        simulado.cancelar_cobranca("sim-pref-qualquer")  # nao falha nem muda nada
 
     def test_estorno_de_recusado_e_recusado(
         self, simulado: GatewayPagamentoSimulado

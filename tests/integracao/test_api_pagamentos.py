@@ -18,6 +18,8 @@ from src.main import criar_app
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.aplicacao.use_cases import SolicitarPagamento
+from src.pagamento.dominio.cobranca import SituacaoNoProvedor
+from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from tests.factories import dinheiro, orcamento, pagamento
@@ -102,6 +104,7 @@ class TestConsulta:
             0,
         )
         assert corpo["checkout_url"] == dto.checkout_url
+        assert dto.checkout_url is not None
         assert dto.checkout_url.startswith(
             f"{URL_PUBLICA}/simulador/checkout/{dto.id}?token="
         )
@@ -113,6 +116,21 @@ class TestConsulta:
         caminho = f"/api/v1/pagamentos/{uuid4()}"
         assert api.get(caminho, headers=cabecalhos("admin")).status_code == 404
         assert api.get(caminho, headers=cabecalhos("mecanico")).status_code == 403
+
+
+@pytest.fixture
+def consultas(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Referencias consultadas no provedor durante o teste."""
+    gateway = app.state.gateway_pagamento
+    original = gateway.consultar_pagamento
+    feitas: list[str] = []
+
+    def espiar(referencia: str) -> object:
+        feitas.append(referencia)
+        return original(referencia)
+
+    monkeypatch.setattr(gateway, "consultar_pagamento", espiar)
+    return feitas
 
 
 class TestWebhook:
@@ -136,8 +154,11 @@ class TestWebhook:
         [envelope] = eventos_do_outbox(app.state.banco, "PagamentoConfirmado")
         assert envelope["dados"]["pagamento_id"] == str(dto.id)
 
+    @pytest.mark.parametrize(
+        "com_data_no_corpo", [True, False], ids=["data", "sem-data"]
+    )
     def test_sem_data_id_na_query_responde_200_sem_processar(
-        self, api: TestClient, app: FastAPI
+        self, api: TestClient, app: FastAPI, com_data_no_corpo: bool
     ) -> None:
         # O id do corpo nao e assinado (a x-signature cobre o data.id da query):
         # nada e consultado, mesmo com a assinatura certa para o id do corpo.
@@ -145,18 +166,95 @@ class TestWebhook:
         referencia = app.state.gateway_pagamento.registrar_resultado(
             pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=False
         )
-        resposta = api.post(
-            WEBHOOK, json=notificacao(referencia), headers=assinatura(referencia)
-        )
+        corpo = notificacao(referencia)
+        if not com_data_no_corpo:
+            del corpo["data"]
+        resposta = api.post(WEBHOOK, json=corpo, headers=assinatura(referencia))
         assert resposta.status_code == 200
         assert resposta.json() == {"processado": False}
         documento = app.state.banco["pagamentos"].find_one({"_id": dto.id})
         assert documento is not None
         assert documento["recusas"] == 0
 
+    def test_id_consultado_e_o_da_query_e_nunca_o_do_corpo(
+        self, api: TestClient, app: FastAPI, consultas: list[str]
+    ) -> None:
+        resposta = api.post(
+            WEBHOOK,
+            params={"data.id": "111", "type": "payment"},
+            json=notificacao("222"),
+            headers=assinatura("111"),
+        )
+        assert resposta.status_code == 200
+        assert consultas == ["111"]
+
+    def test_outro_tipo_nem_consulta_o_provedor(
+        self, api: TestClient, consultas: list[str]
+    ) -> None:
+        resposta = api.post(
+            WEBHOOK,
+            params={"data.id": "42", "type": "merchant_order"},
+            json={**notificacao("42"), "type": "merchant_order"},
+            headers=assinatura("42"),
+        )
+        assert resposta.json() == {"processado": False}
+        assert consultas == []
+
+    def test_mesma_notificacao_repetida_confirma_uma_vez(
+        self, api: TestClient, app: FastAPI
+    ) -> None:
+        dto = solicitado(app)
+        referencia = app.state.gateway_pagamento.registrar_resultado(
+            pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=True
+        )
+        for _ in range(2):
+            resposta = api.post(
+                WEBHOOK,
+                params={"data.id": referencia, "type": "payment"},
+                json=notificacao(referencia),
+                headers=assinatura(referencia),
+            )
+            assert resposta.json() == {"processado": True}
+        assert len(eventos_do_outbox(app.state.banco, "PagamentoConfirmado")) == 1
+
+    def test_status_vem_da_consulta_e_nao_do_corpo(
+        self, api: TestClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dto = solicitado(app)
+        pendente_no_provedor = SituacaoNoProvedor(
+            referencia="777",
+            referencia_externa=str(dto.id),
+            status=StatusNoProvedor.EM_ANDAMENTO,
+            status_provedor="pending",
+            detalhe=None,
+            valor=dinheiro("335.00"),
+        )
+        monkeypatch.setattr(
+            app.state.gateway_pagamento,
+            "consultar_pagamento",
+            lambda _referencia: pendente_no_provedor,
+        )
+        corpo = {
+            **notificacao("777"),
+            "action": "payment.updated",
+            "status": "approved",
+        }
+        resposta = api.post(
+            WEBHOOK,
+            params={"data.id": "777", "type": "payment"},
+            json=corpo,
+            headers=assinatura("777"),
+        )
+        assert resposta.json() == {"processado": True}
+        documento = app.state.banco["pagamentos"].find_one({"_id": dto.id})
+        assert documento is not None
+        assert documento["status"] == "SOLICITADO"
+        assert eventos_do_outbox(app.state.banco, "PagamentoConfirmado") == []
+
     @pytest.mark.parametrize(
         "cabecalhos_do_mp",
         [{}, {"x-signature": "ts=1,v1=00", "x-request-id": "req-mp-1"}],
+        ids=["sem-assinatura", "assinatura-errada"],
     )
     def test_assinatura_ausente_ou_invalida_da_401(
         self, api: TestClient, app: FastAPI, cabecalhos_do_mp: dict[str, str]

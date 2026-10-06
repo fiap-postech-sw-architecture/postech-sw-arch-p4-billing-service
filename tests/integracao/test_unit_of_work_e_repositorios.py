@@ -5,11 +5,13 @@ from __future__ import annotations
 import threading
 from datetime import timedelta
 from decimal import Decimal
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
 from bson.decimal128 import Decimal128
+from pymongo import MongoClient, monitoring
 
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
@@ -47,7 +49,55 @@ if TYPE_CHECKING:
     Banco = Database[dict[str, Any]]
 
 
+class EscritasEspiadas(monitoring.CommandListener):
+    """Guarda colecao, sessao e transacao de cada insert/update enviado."""
+
+    def __init__(self) -> None:
+        self.escritas: list[tuple[str, Any, Any, Any]] = []
+
+    def started(self, event: monitoring.CommandStartedEvent) -> None:
+        if event.command_name in {"insert", "update"}:
+            comando = event.command
+            self.escritas.append(
+                (
+                    comando[event.command_name],
+                    comando.get("lsid"),
+                    comando.get("txnNumber"),
+                    comando.get("autocommit"),
+                )
+            )
+
+    def succeeded(self, event: monitoring.CommandSucceededEvent) -> None:
+        return None
+
+    def failed(self, event: monitoring.CommandFailedEvent) -> None:
+        return None
+
+
 class TestUnidadeDeTrabalho:
+    def test_outbox_vai_na_mesma_transacao_do_estado(
+        self, banco: Banco, mongo_uri: str
+    ) -> None:
+        espia = EscritasEspiadas()
+        cliente: MongoClient[dict[str, Any]] = MongoClient(
+            mongo_uri,
+            uuidRepresentation="standard",
+            tz_aware=True,
+            event_listeners=[espia],
+        )
+        try:
+            uow = MongoUnitOfWork(cliente[banco.name])
+            uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
+        finally:
+            cliente.close()
+
+        [estado, outbox] = espia.escritas
+        assert (estado[0], outbox[0]) == ("orcamentos", "outbox")
+        # Mesma sessao, mesmo numero de transacao, nenhum autocommit.
+        assert estado[1:] == outbox[1:]
+        assert outbox[2] is not None
+        assert outbox[3] is False
+
     def test_estado_e_evento_gravados_na_mesma_transacao(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)
         repo = MongoOrcamentoRepository(uow)
@@ -269,7 +319,7 @@ class TestRepositorioDeOrcamento:
         decidido.aprovar(canal=CanalDecisao.LINK, agora=AGORA)
         vigente = orcamento(validade=timedelta(hours=72))
         for o in (tarde, cedo, decidido, vigente):
-            uow.executar(lambda o=o: repo.salvar(o))
+            uow.executar(partial(repo.salvar, o))
 
         agora = AGORA + timedelta(hours=3)
         assert repo.listar_vencidos(agora, 10) == [cedo.id, tarde.id]
@@ -378,7 +428,7 @@ class TestRepositorioDePagamento:
             tumulo = Pagamento.lapide(
                 id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="x"
             )
-            uow.executar(lambda tumulo=tumulo: repo.salvar(tumulo))
+            uow.executar(partial(repo.salvar, tumulo))
         assert banco["pagamentos"].count_documents({}) == 2
 
     def test_a_mesma_tentativa_nao_confirma_dois_pagamentos(self, banco: Banco) -> None:
@@ -398,7 +448,7 @@ class TestRepositorioDePagamento:
         pago = pagamento()
         confirmar(pago)
         for p in (vencido, pago):
-            uow.executar(lambda p=p: repo.salvar(p))
+            uow.executar(partial(repo.salvar, p))
         assert repo.listar_vencidos(AGORA + timedelta(hours=2), 10) == [vencido.id]
 
 
@@ -410,7 +460,7 @@ class TestRepositorioDePrecos:
             preco = PrecoServico.cadastrar(
                 codigo=codigo, nome=codigo, descricao="d", preco=dinheiro("10.00")
             )
-            uow.executar(lambda preco=preco: repo.salvar(preco))
+            uow.executar(partial(repo.salvar, preco))
 
         assert [p.codigo for p in repo.listar(offset=1, limit=2)] == ["SRV-B", "SRV-C"]
         assert repo.contar() == 3

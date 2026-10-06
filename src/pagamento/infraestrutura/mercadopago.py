@@ -104,6 +104,9 @@ _CORPO_FORA_DO_CONTRATO = (
     ArithmeticError,
 )
 _BACKOFF_BASE_SEGUNDOS = 0.2
+# Disjuntor padrao: 5 falhas seguidas abrem o circuito por 30 s (ADR-038).
+FALHAS_PARA_ABRIR: Final = 5
+SEGUNDOS_ABERTO: Final = 30.0
 _JITTER_MAXIMO_SEGUNDOS = 0.1
 _aleatorio = secrets.SystemRandom()
 
@@ -119,13 +122,15 @@ class ConfiguracaoMercadoPago:
     tentativas: int = 3
 
 
-class _FalhaTransitoriaError(Exception):
-    """Timeout, erro de conexao, 429 ou 5xx: vale repetir e conta no disjuntor."""
+class FalhaTransitoriaError(Exception):
+    """Timeout, erro de conexao, 429, 5xx ou resposta fora do contrato: vale
+    repetir e conta no disjuntor (e o ``falha`` de um ``CircuitBreaker``
+    injetado no gateway)."""
 
     resultado = "falha_transitoria"
 
 
-class _RespostaInvalidaError(_FalhaTransitoriaError):
+class _RespostaInvalidaError(FalhaTransitoriaError):
     """2xx com corpo fora do contrato ou 3xx: tratada como falha transitoria."""
 
     resultado = "resposta_invalida"
@@ -164,7 +169,10 @@ class MercadoPagoGateway:
     ) -> None:
         self._config = config
         self._breaker = breaker or CircuitBreaker(
-            "mercadopago", falha=_FalhaTransitoriaError
+            "mercadopago",
+            falha=FalhaTransitoriaError,
+            limite_falhas=FALHAS_PARA_ABRIR,
+            segundos_aberto=SEGUNDOS_ABERTO,
         )
         self._dormir = dormir
         self._relogio = relogio
@@ -193,7 +201,7 @@ class MercadoPagoGateway:
                     "title": item.descricao,
                     "quantity": item.quantidade,
                     "currency_id": item.preco_unitario.moeda,
-                    "unit_price": _numero_json(item.preco_unitario.valor),
+                    "unit_price": numero_json(item.preco_unitario.valor),
                 }
                 for item in itens
             ],
@@ -310,7 +318,7 @@ class MercadoPagoGateway:
             except CircuitoAbertoError:
                 MERCADOPAGO_REQUISICOES.labels(operacao, "circuito_aberto").inc()
                 raise GatewayPagamentoIndisponivelError from None
-            except _FalhaTransitoriaError as exc:
+            except FalhaTransitoriaError as exc:
                 MERCADOPAGO_REQUISICOES.labels(operacao, exc.resultado).inc()
                 if tentativa >= tentativas:
                     raise GatewayPagamentoIndisponivelError from None
@@ -339,10 +347,10 @@ class MercadoPagoGateway:
         try:
             resposta = self._http.request(metodo, caminho, **opcoes)
         except httpx.TransportError as exc:
-            raise _FalhaTransitoriaError(type(exc).__name__) from exc
+            raise FalhaTransitoriaError(type(exc).__name__) from exc
         status = resposta.status_code
         if status == _MUITAS_REQUISICOES or status >= _ERRO_DE_SERVIDOR:
-            raise _FalhaTransitoriaError(f"HTTP {status}")
+            raise FalhaTransitoriaError(f"HTTP {status}")
         if status >= _ERRO_DE_CLIENTE:
             return _Recusa(status, _mensagem_de_erro(resposta))
         if status >= _REDIRECIONAMENTO:
@@ -427,7 +435,7 @@ def _data_mp(instante: datetime) -> str:
     return instante.astimezone(UTC).isoformat(timespec="milliseconds")
 
 
-def _numero_json(valor: Decimal) -> float:
+def numero_json(valor: Decimal) -> float:
     """``unit_price`` do Checkout Pro e numero JSON.
 
     Dinheiro tem 2 casas e no maximo 10 digitos inteiros (12 significativos,

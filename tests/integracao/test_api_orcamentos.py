@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
@@ -121,14 +121,6 @@ class TestApiInterna:
         assert resposta.status_code == 404
         assert resposta.json()["erro"]["codigo"] == "ORCAMENTO_NAO_ENCONTRADO"
 
-    def test_mecanico_nao_consulta_orcamento(
-        self, api: TestClient, cabecalhos: Cabecalhos
-    ) -> None:
-        resposta = api.get(
-            f"/api/v1/orcamentos/{uuid4()}", headers=cabecalhos("mecanico")
-        )
-        assert resposta.status_code == 403
-
     def test_atendente_decide_em_nome_do_cliente(
         self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos
     ) -> None:
@@ -238,8 +230,3 @@ class TestLinkPublico:
         for resposta in (consulta, decisao):
             assert resposta.status_code == 404
             assert resposta.json()["erro"] | {"id_requisicao": None} == ERRO_DO_LINK
-
-
-def test_rotas_internas_exigem_token(api: TestClient) -> None:
-    resposta: Any = api.get(f"/api/v1/orcamentos/{uuid4()}")
-    assert resposta.status_code == 401

@@ -19,6 +19,7 @@ from src.pagamento.dominio.cobranca import (
     SituacaoNoProvedor,
 )
 from src.pagamento.dominio.estados import (
+    TRANSICOES,
     MotivoEstorno,
     PlanoDeCompensacao,
     ResultadoNotificacao,
@@ -699,3 +700,106 @@ class TestHistorico:
         }
         with pytest.raises(ValorInvalidoError, match=r"timezone|vazio"):
             NotificacaoRecebida(**(base | dados))  # type: ignore[arg-type]
+
+
+S, CF, R, E, CA, ES = (
+    StatusPagamento.SOLICITADO,
+    StatusPagamento.CONFIRMADO,
+    StatusPagamento.RECUSADO,
+    StatusPagamento.EXPIRADO,
+    StatusPagamento.CANCELADO,
+    StatusPagamento.ESTORNADO,
+)
+
+
+def test_tabela_de_transicoes_da_rfc() -> None:
+    """RFC-004, secao 7.1: SOLICITADO decide; so ESTORNADO sai do resto."""
+    assert {origem: set(destinos) for origem, destinos in TRANSICOES.items()} == {
+        S: {CF, R, E, CA},
+        CF: {ES},
+        R: {ES},
+        E: {ES},
+        CA: {ES},
+    }
+
+
+def _pagamento_no_estado(estado: StatusPagamento) -> Pagamento:
+    p = solicitado()
+    if estado in {CF, ES}:
+        confirmar(p)
+    if estado is R:
+        aplicar(p, StatusNoProvedor.RECUSADO, max_recusas=1)
+    elif estado is E:
+        p.expirar(agora=DEPOIS_DO_PRAZO)
+    elif estado in {CA, ES}:
+        p.concluir_compensacao(agora=DENTRO_DO_PRAZO, motivo="OS cancelada")
+    p.limpar_eventos()
+    return p
+
+
+def _executar(p: Pagamento, comando: str) -> None:
+    if comando == "expirar":
+        p.expirar(agora=DEPOIS_DO_PRAZO)
+    elif comando == "compensar":
+        p.concluir_compensacao(agora=DENTRO_DO_PRAZO, motivo="OS cancelada")
+    elif comando == "falha_de_estorno":
+        p.registrar_falha_de_estorno("recusado pelo provedor")
+    else:
+        status = (
+            StatusNoProvedor.RECUSADO
+            if comando == "recusa"
+            else StatusNoProvedor.APROVADO
+        )
+        # Tentativa nova (referencia 9), pelo valor exato da cobranca.
+        aplicar(p, status, referencia="9", max_recusas=1)
+
+
+_ILEGAL = TransicaoStatusInvalidaError
+# (origem, comando) -> (status final, eventos) ou a excecao (nada muda).
+MATRIZ_DO_PAGAMENTO: dict[tuple[StatusPagamento, str], object] = {
+    (S, "expirar"): (E, [PagamentoExpiradoEvent]),
+    (S, "compensar"): (CA, [PagamentoCanceladoEvent]),
+    (S, "falha_de_estorno"): _ILEGAL,
+    (S, "recusa"): (R, [PagamentoRecusadoEvent]),
+    (S, "aprovacao"): (CF, [PagamentoConfirmadoEvent]),
+    (CF, "expirar"): _ILEGAL,
+    (CF, "compensar"): (ES, [PagamentoEstornadoEvent]),
+    (CF, "falha_de_estorno"): (CF, [EstornoDePagamentoFalhouEvent]),
+    (CF, "recusa"): (CF, []),
+    (CF, "aprovacao"): (CF, []),  # segunda tentativa paga: estorno automatico
+    **{
+        (origem, comando): _ILEGAL
+        for origem in (R, E, CA, ES)
+        for comando in ("expirar", "compensar", "falha_de_estorno")
+    },
+    **{
+        (origem, comando): (origem, [])
+        for origem in (R, E, CA, ES)
+        for comando in ("recusa", "aprovacao")
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("origem", "comando"),
+    list(MATRIZ_DO_PAGAMENTO),
+    ids=[
+        f"{origem.value.lower()}-{comando}" for origem, comando in MATRIZ_DO_PAGAMENTO
+    ],
+)
+def test_matriz_de_transicoes_do_pagamento(
+    origem: StatusPagamento, comando: str
+) -> None:
+    p = _pagamento_no_estado(origem)
+    esperado = MATRIZ_DO_PAGAMENTO[(origem, comando)]
+    if isinstance(esperado, type):
+        with pytest.raises(esperado):
+            _executar(p, comando)
+        assert p.status is origem
+        assert p.coletar_eventos() == []
+        return
+    assert isinstance(esperado, tuple)
+    destino, eventos = esperado
+    _executar(p, comando)
+    assert p.status is destino
+    assert [type(evento) for evento in p.coletar_eventos()] == eventos

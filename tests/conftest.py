@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -15,16 +13,6 @@ from jwt.algorithms import RSAAlgorithm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-# Colima (macOS): o testcontainers usa o SDK do Docker, que le DOCKER_HOST e
-# nao os contexts do CLI; o Ryuk precisa do socket visto de dentro da VM.
-# Inocuo no CI (Linux com /var/run/docker.sock) e com Docker Desktop.
-_SOCKET_COLIMA = Path.home() / ".colima" / "default" / "docker.sock"
-if "DOCKER_HOST" not in os.environ and _SOCKET_COLIMA.exists():
-    os.environ["DOCKER_HOST"] = f"unix://{_SOCKET_COLIMA}"
-    os.environ.setdefault(
-        "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock"
-    )
 
 KID_TESTE = "chave-de-teste"
 # O OS emite o id do usuario (UUID) no sub.

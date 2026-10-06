@@ -64,7 +64,11 @@ class TestDinheiro:
     def test_zero_negativo_vira_zero(self) -> None:
         assert str(Dinheiro(Decimal("-0.001")).valor) == "0.00"
 
-    @pytest.mark.parametrize("moeda", ["brl", "BR", "BR1", "BRÁ"])
+    @pytest.mark.parametrize(
+        "moeda",
+        ["brl", "BR", "BR1", "BRÁ"],
+        ids=["minusculas", "duas-letras", "com-digito", "com-acento"],
+    )
     def test_moeda_fora_do_iso_4217_e_rejeitada(self, moeda: str) -> None:
         with pytest.raises(ValorInvalidoError, match="maiusculas"):
             Dinheiro(Decimal("1"), moeda=moeda)
@@ -83,7 +87,7 @@ class TestDinheiro:
     def test_operandos_de_outro_tipo_devolvem_not_implemented(self) -> None:
         d = Dinheiro(Decimal("1"))
         assert d.__add__(1) is NotImplemented  # type: ignore[operator]
-        assert d.__mul__(1.5) is NotImplemented  # type: ignore[arg-type]
+        assert d.__mul__(1.5) is NotImplemented  # type: ignore[operator]
 
     def test_e_imutavel_e_comparado_por_valor(self) -> None:
         d = Dinheiro(Decimal("1"))
@@ -111,9 +115,14 @@ class TestEntidadeEAgregado:
         class AlgoAconteceuEvent(IntegrationEvent):
             pass
 
-        agregado = AggregateRoot()
+        @dataclass(eq=False, kw_only=True)
+        class Agregado(AggregateRoot):
+            def acontecer(self, evento: IntegrationEvent) -> None:
+                self._registrar_evento(evento)
+
+        agregado = Agregado()
         evento = AlgoAconteceuEvent(ordem_id=uuid4())
-        agregado._registrar_evento(evento)
+        agregado.acontecer(evento)
         coletados = agregado.coletar_eventos()
         coletados.clear()  # copia: nao mexe no agregado
         assert agregado.coletar_eventos() == [evento]

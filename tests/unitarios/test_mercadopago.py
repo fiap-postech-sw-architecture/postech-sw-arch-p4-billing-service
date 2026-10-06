@@ -15,8 +15,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from collections.abc import Iterator
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -33,10 +35,12 @@ from src.pagamento.aplicacao.ports import (
 )
 from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.mercadopago import (
+    FALHAS_PARA_ABRIR,
+    SEGUNDOS_ABERTO,
     ConfiguracaoMercadoPago,
+    FalhaTransitoriaError,
     MercadoPagoGateway,
-    _FalhaTransitoriaError,
-    _numero_json,
+    numero_json,
 )
 from src.pagamento.interfaces.assinatura_webhook import assinatura_webhook_valida
 from tests.factories import AGORA, dinheiro
@@ -132,10 +136,10 @@ def esperas() -> Esperas:
 
 
 @pytest.fixture
-def gateway(esperas: Esperas) -> MercadoPagoGateway:
+def gateway(esperas: Esperas) -> Iterator[MercadoPagoGateway]:
     gateway = MercadoPagoGateway(
         ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO),
-        breaker=CircuitBreaker("mercadopago-teste", falha=_FalhaTransitoriaError),
+        breaker=CircuitBreaker("mercadopago-teste", falha=FalhaTransitoriaError),
         dormir=esperas,
     )
     yield gateway
@@ -249,7 +253,9 @@ class TestConsultarPagamento:
         assert situacao.valor == dinheiro("335.00")
         assert contador("consultar_pagamento", "sucesso") == antes + 1
 
-    @pytest.mark.parametrize("valor", [335.0, "335.00", 335])
+    @pytest.mark.parametrize(
+        "valor", [335.0, "335.00", 335], ids=["numero", "texto", "inteiro"]
+    )
     def test_valor_numero_ou_string_vira_decimal_exato(
         self, gateway: MercadoPagoGateway, valor: object
     ) -> None:
@@ -520,7 +526,7 @@ class TestCancelarCobranca:
     def test_expira_a_preferencia_agora(self, esperas: Esperas) -> None:
         gateway = MercadoPagoGateway(
             ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO),
-            breaker=CircuitBreaker("mp-cancelar", falha=_FalhaTransitoriaError),
+            breaker=CircuitBreaker("mp-cancelar", falha=FalhaTransitoriaError),
             dormir=esperas,
             relogio=lambda: AGORA,
         )
@@ -578,7 +584,7 @@ class TestRespostaForaDoContrato:
         ],
     )
     def test_consulta_repete_e_fica_indisponivel(
-        self, gateway: MercadoPagoGateway, status: int, opcoes: dict[str, object]
+        self, gateway: MercadoPagoGateway, status: int, opcoes: dict[str, Any]
     ) -> None:
         invalidas = contador("consultar_pagamento", "resposta_invalida")
         sucessos = contador("consultar_pagamento", "sucesso")
@@ -634,7 +640,7 @@ class TestRespostaForaDoContrato:
                 access_token=TOKEN, notification_url=NOTIFICACAO, tentativas=1
             ),
             breaker=CircuitBreaker(
-                "mp-resposta-invalida", falha=_FalhaTransitoriaError, limite_falhas=2
+                "mp-resposta-invalida", falha=FalhaTransitoriaError, limite_falhas=2
             ),
             dormir=esperas,
         )
@@ -650,7 +656,7 @@ class TestRespostaForaDoContrato:
 
     def test_recusa_4xx_nao_conta_no_disjuntor(self, esperas: Esperas) -> None:
         breaker = CircuitBreaker(
-            "mp-recusa", falha=_FalhaTransitoriaError, limite_falhas=1
+            "mp-recusa", falha=FalhaTransitoriaError, limite_falhas=1
         )
         gateway = MercadoPagoGateway(
             ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO),
@@ -690,7 +696,7 @@ class TestCircuitBreaker:
                 access_token=TOKEN, notification_url=NOTIFICACAO, tentativas=1
             ),
             breaker=CircuitBreaker(
-                "mercadopago-cb", falha=_FalhaTransitoriaError, limite_falhas=2
+                "mercadopago-cb", falha=FalhaTransitoriaError, limite_falhas=2
             ),
             dormir=esperas,
         )
@@ -711,18 +717,88 @@ class TestCircuitBreaker:
     def test_configuracao_nao_expoe_o_token_no_repr(self) -> None:
         assert TOKEN not in repr(ConfiguracaoMercadoPago(TOKEN, NOTIFICACAO))
 
-    def test_gateway_sem_breaker_injetado_cria_o_proprio(self) -> None:
+    def test_disjuntor_padrao_abre_na_quinta_falha_seguida(
+        self, esperas: Esperas
+    ) -> None:
+        assert (FALHAS_PARA_ABRIR, SEGUNDOS_ABERTO) == (5, 30.0)
         gateway = MercadoPagoGateway(
-            ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO)
+            ConfiguracaoMercadoPago(
+                access_token=TOKEN, notification_url=NOTIFICACAO, tentativas=1
+            ),
+            dormir=esperas,
         )
-        gateway.fechar()
-        assert gateway.provedor == "mercadopago"
+        try:
+            with respx.mock(base_url=API) as mp:
+                rota = mp.get("/v1/payments/1").respond(503)
+                for _ in range(FALHAS_PARA_ABRIR + 1):
+                    with pytest.raises(GatewayPagamentoIndisponivelError):
+                        gateway.consultar_pagamento("1")
+            assert rota.call_count == FALHAS_PARA_ABRIR
+        finally:
+            gateway.fechar()
+
+    @pytest.mark.parametrize("operacao", ["criar_cobranca", "estornar"])
+    def test_disjuntor_vale_tambem_para_os_post(
+        self, esperas: Esperas, operacao: str
+    ) -> None:
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(
+                access_token=TOKEN, notification_url=NOTIFICACAO, tentativas=1
+            ),
+            breaker=CircuitBreaker(
+                f"mp-post-{operacao}", falha=FalhaTransitoriaError, limite_falhas=2
+            ),
+            dormir=esperas,
+        )
+        caminho = (
+            "/checkout/preferences"
+            if operacao == "criar_cobranca"
+            else "/v1/payments/1/refunds"
+        )
+
+        def chamar() -> None:
+            if operacao == "criar_cobranca":
+                gateway.criar_cobranca(
+                    pagamento_id=uuid4(),
+                    itens=[ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))],
+                    expira_em=AGORA,
+                )
+            else:
+                gateway.estornar("1", chave_idempotencia="k")
+
+        try:
+            with respx.mock(base_url=API) as mp:
+                rota = mp.post(caminho).respond(502)
+                for _ in range(3):
+                    with pytest.raises(GatewayPagamentoIndisponivelError):
+                        chamar()
+            assert rota.call_count == 2  # a terceira nem sai daqui
+        finally:
+            gateway.fechar()
+
+    def test_timeout_do_cliente_vem_da_configuracao(self) -> None:
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(
+                access_token=TOKEN, notification_url=NOTIFICACAO, timeout_segundos=2.5
+            )
+        )
+        try:
+            with respx.mock(base_url=API) as mp:
+                rota = mp.get("/v1/payments/1").respond(
+                    200, json=pagamento_no_provedor()
+                )
+                gateway.consultar_pagamento("1")
+            assert rota.calls.last.request.extensions["timeout"] == dict.fromkeys(
+                ("connect", "read", "write", "pool"), 2.5
+            )
+        finally:
+            gateway.fechar()
 
 
 def test_numero_json_recusa_valor_sem_representacao_exata() -> None:
-    assert repr(_numero_json(Decimal("120.35"))) == "120.35"
+    assert repr(numero_json(Decimal("120.35"))) == "120.35"
     with pytest.raises(ValueError, match="exata"):
-        _numero_json(Decimal("12345678901234567.89"))
+        numero_json(Decimal("12345678901234567.89"))
 
 
 class TestAssinaturaDoWebhook:
@@ -734,9 +810,9 @@ class TestAssinaturaDoWebhook:
         ).hexdigest()
 
     def test_manifesto_completo_da_documentacao(self) -> None:
-        v1 = self.assinar(
-            "id:123456;request-id:bb56a2f1-6aae-46ac-982e;ts:1742505638683;"
-        )
+        # Digest conferido fora do codigo (openssl dgst -sha256 -hmac) para o
+        # manifesto "id:123456;request-id:bb56a2f1-6aae-46ac-982e;ts:1742505638683;".
+        v1 = "a8d555d2fd37ff9d161cedbdc6d6fca83c39390f62befb4d8f771b070eaaa6ac"
         assert assinatura_webhook_valida(
             segredo=self.SEGREDO,
             x_signature=f"ts=1742505638683,v1={v1}",
@@ -779,6 +855,15 @@ class TestAssinaturaDoWebhook:
             ("ts=1,v1=00", "123"),
             ("lixo", "123"),
             ("ts=1,v1=çãõ", "123"),
+        ],
+        ids=[
+            "sem-cabecalho",
+            "vazio",
+            "sem-ts",
+            "sem-v1",
+            "v1-errado",
+            "lixo",
+            "nao-ascii",
         ],
     )
     def test_assinatura_ausente_ou_errada(

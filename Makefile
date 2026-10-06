@@ -1,6 +1,6 @@
 # Alvos espelham o CI. Ferramentas vem do grupo dev do uv (`uv sync`).
 # Os testes de integracao sobem o MongoDB por testcontainers: precisam de Docker
-# (no macOS com colima, tests/conftest.py aponta o DOCKER_HOST sozinho).
+# (no macOS com colima, tests/integracao/conftest.py aponta o DOCKER_HOST).
 PY := uv run
 GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
@@ -23,8 +23,9 @@ format:
 	$(PY) ruff format .
 	$(PY) ruff check --fix .
 
+# Codigo e testes no modo strict: teste mal tipado esconde erro de contrato.
 typecheck:
-	$(PY) mypy src
+	$(PY) mypy src tests
 
 security:
 	$(PY) bandit -r src -q

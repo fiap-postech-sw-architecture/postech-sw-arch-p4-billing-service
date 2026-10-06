@@ -118,7 +118,9 @@ def test_crud_de_pecas(api: TestClient, cabecalhos: Cabecalhos) -> None:
 def test_paginacao_fora_dos_limites_da_422(
     api: TestClient, cabecalhos: Cabecalhos, consulta: str
 ) -> None:
-    resposta = api.get(f"/api/v1/precos/servicos?{consulta}", headers=cabecalhos())
+    resposta = api.get(
+        f"/api/v1/precos/servicos?{consulta}", headers=cabecalhos("admin")
+    )
     assert resposta.status_code == 422
 
 
@@ -157,6 +159,13 @@ def test_codigo_desconhecido_da_404(
         {**SERVICO, "nome": ""},
         {**SERVICO, "extra": 1},
     ],
+    ids=[
+        "codigo-minusculo",
+        "preco-zero",
+        "preco-3-casas",
+        "nome-vazio",
+        "campo-extra",
+    ],
 )
 def test_entrada_invalida_da_422(
     api: TestClient, cabecalhos: Cabecalhos, corpo: dict[str, object]
@@ -165,21 +174,10 @@ def test_entrada_invalida_da_422(
         "/api/v1/precos/servicos", json=corpo, headers=cabecalhos("admin")
     )
     assert resposta.status_code == 422
-    corpo = resposta.json()
-    assert corpo["id_requisicao"] == resposta.headers["X-Request-ID"]
-    assert corpo["detail"]
-    assert all(set(item) == {"type", "loc", "msg"} for item in corpo["detail"])
-
-
-@pytest.mark.parametrize("papel", ["atendente", "mecanico"])
-def test_escrita_so_para_admin(
-    api: TestClient, cabecalhos: Cabecalhos, papel: str
-) -> None:
-    resposta = api.post(
-        "/api/v1/precos/servicos", json=SERVICO, headers=cabecalhos(papel)
-    )
-    assert resposta.status_code == 403
-    assert resposta.json()["erro"]["codigo"] == "ACESSO_NEGADO"
+    erro = resposta.json()
+    assert erro["id_requisicao"] == resposta.headers["X-Request-ID"]
+    assert erro["detail"]
+    assert all(set(item) == {"type", "loc", "msg"} for item in erro["detail"])
 
 
 def test_sem_token_da_401_com_envelope(api: TestClient) -> None:

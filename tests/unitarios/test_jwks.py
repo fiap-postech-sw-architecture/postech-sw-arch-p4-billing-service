@@ -149,9 +149,10 @@ class TestClaims:
         self, validador: ValidadorDeTokenJWKS, algoritmo: str
     ) -> None:
         claims = {"sub": "x", "papel": "admin", "iss": EMISSOR, "aud": AUDIENCIA}
+        # "none" ignora a chave; HS256 assina com um segredo qualquer.
         token = jwt.encode(
             {**claims, "exp": int(time.time()) + 60, "type": "access"},
-            secrets.token_hex(32) if algoritmo == "HS256" else None,
+            secrets.token_hex(32) if algoritmo == "HS256" else "",
             algorithm=algoritmo,
             headers={"kid": KID_TESTE},
         )

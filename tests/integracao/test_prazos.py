@@ -6,6 +6,7 @@ import logging
 import signal
 import threading
 from datetime import timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -49,7 +50,7 @@ def salvar(banco: Banco, *pagamentos: Pagamento) -> None:
     uow = MongoUnitOfWork(banco)
     repo = MongoPagamentoRepository(uow)
     for p in pagamentos:
-        uow.executar(lambda p=p: repo.salvar(p))
+        uow.executar(partial(repo.salvar, p))
 
 
 def status(banco: Banco, p: Pagamento) -> str:

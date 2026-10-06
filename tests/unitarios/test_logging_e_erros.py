@@ -100,7 +100,11 @@ class TestLogging:
         evento = scrub_pii(None, "info", {"event": "x", chave: "valor-secreto"})
         assert evento[chave] == "***"
 
-    @pytest.mark.parametrize("chave", ["motivo", "referencia", "telefone_ok", 7])
+    @pytest.mark.parametrize(
+        "chave",
+        ["motivo", "referencia", "telefone_ok", 7],
+        ids=["motivo", "referencia", "telefone_ok", "chave-numerica"],
+    )
     def test_chave_comum_nao_e_mascarada(self, chave: str | int) -> None:
         evento = scrub_pii(None, "info", {"event": "x", "dados": {chave: "valor"}})
         assert evento["dados"] == {chave: "valor"}
@@ -275,8 +279,22 @@ def test_422_de_schema_no_formato_do_p3_sem_ecoar_o_valor(cliente: TestClient) -
 
 def test_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:
     resposta = cliente.post("/corpo", json={"numero": 1})
-    assert resposta.headers["X-Content-Type-Options"] == "nosniff"
-    assert resposta.headers["Content-Security-Policy"] == "default-src 'none'"
+    assert {
+        nome: resposta.headers[nome]
+        for nome in (
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+            "Strict-Transport-Security",
+            "Cache-Control",
+            "Content-Security-Policy",
+        )
+    } == {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'none'",
+    }
     assert resposta.headers["X-Request-ID"]
     invalido = cliente.post(
         "/corpo", json={"numero": 1}, headers={"X-Request-ID": "x" * 200}

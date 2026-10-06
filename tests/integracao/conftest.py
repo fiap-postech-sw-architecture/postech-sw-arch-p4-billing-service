@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -38,18 +38,19 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integracao)
 
 
-def _iniciar_replica_set(uri: str) -> None:
-    with MongoClient(uri) as cliente:
-        cliente.admin.command(
-            "replSetInitiate",
-            {"_id": "rs0", "members": [{"_id": 0, "host": "localhost:27017"}]},
-        )
-        prazo = time.monotonic() + 30
-        while not cliente.admin.command("hello").get("isWritablePrimary"):
-            if time.monotonic() > prazo:
-                msg = "replica set nao elegeu primario em 30s"
-                raise RuntimeError(msg)
-            time.sleep(0.1)
+# Colima (macOS): o testcontainers usa o SDK do Docker, que le DOCKER_HOST e
+# nao os contexts do CLI; o Ryuk precisa do socket visto de dentro da VM.
+# Inocuo no CI (Linux com /var/run/docker.sock) e com Docker Desktop.
+_SOCKET_COLIMA = Path.home() / ".colima" / "default" / "docker.sock"
+
+
+def _docker_do_colima(ambiente: pytest.MonkeyPatch) -> None:
+    if not _SOCKET_COLIMA.exists():
+        return
+    if "DOCKER_HOST" not in os.environ:
+        ambiente.setenv("DOCKER_HOST", f"unix://{_SOCKET_COLIMA}")
+    if "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE" not in os.environ:
+        ambiente.setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
 
 
 @pytest.fixture(scope="session")
@@ -61,20 +62,30 @@ def mongo_uri() -> Iterator[str]:
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
-    container = (
-        DockerContainer(IMAGEM_MONGO)
-        .with_command(["--replSet", "rs0", "--bind_ip_all"])
-        .with_exposed_ports(27017)
-        .waiting_for(
-            LogMessageWaitStrategy(re.compile(r"waiting for connections", re.I))
+    with pytest.MonkeyPatch.context() as ambiente:
+        _docker_do_colima(ambiente)
+        container = (
+            DockerContainer(IMAGEM_MONGO)
+            .with_command(["--replSet", "rs0", "--bind_ip_all"])
+            .with_exposed_ports(27017)
+            .waiting_for(
+                LogMessageWaitStrategy(re.compile(r"waiting for connections", re.I))
+            )
         )
-    )
-    with container:
-        host = container.get_container_host_ip()
-        porta = container.get_exposed_port(27017)
-        uri = f"mongodb://{host}:{porta}/?directConnection=true"
-        _iniciar_replica_set(uri)
-        yield uri
+        with container:
+            host = container.get_container_host_ip()
+            porta = container.get_exposed_port(27017)
+            uri = f"mongodb://{host}:{porta}/?directConnection=true"
+            with criar_cliente(uri) as cliente:
+                cliente.admin.command(
+                    "replSetInitiate",
+                    {"_id": "rs0", "members": [{"_id": 0, "host": "localhost:27017"}]},
+                )
+            # O no se elege primario sozinho: espera a linha do log, sem sondar.
+            LogMessageWaitStrategy("Transition to primary complete").wait_until_ready(
+                container
+            )
+            yield uri
 
 
 @pytest.fixture(scope="session")

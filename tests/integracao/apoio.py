@@ -31,13 +31,15 @@ SEGREDO_LINK = "segredo-do-link-de-teste-32-bytes!!"
 LINK = LinkDeDecisao(segredo=SEGREDO_LINK, url_base=f"{URL_PUBLICA}{PREFIXO_DO_LINK}")
 
 
-def token_do_link(orcamento_id: UUID, valido_ate: datetime) -> str:
+def token_do_link(orcamento_id: UUID, valido_ate: datetime | None) -> str:
     """Token do link de decisao que o ``OrcamentoGerado`` leva."""
+    assert valido_ate is not None, "a lapide nao tem link"
     return LINK.gerar(orcamento_id, valido_ate).rsplit("/", 1)[1]
 
 
-def token_do_checkout(checkout_url: str) -> str:
+def token_do_checkout(checkout_url: str | None) -> str:
     """O ``?token=`` que o simulador pos no ``checkout_url``."""
+    assert checkout_url is not None, "a lapide nao tem checkout"
     [token] = parse_qs(urlsplit(checkout_url).query)["token"]
     return token
 

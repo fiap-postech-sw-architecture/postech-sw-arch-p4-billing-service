@@ -7,6 +7,7 @@ o trabalho, e a releitura decide o resultado (contramedida *reread value*).
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -35,7 +36,9 @@ from src.pagamento.aplicacao.use_cases import (
     ExpirarPagamentosVencidos,
     ProcessarNotificacaoPagamento,
     SolicitarPagamento,
+    chave_de_estorno_automatico,
 )
+from src.pagamento.dominio.estados import StatusPagamento
 from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
@@ -121,7 +124,11 @@ def em_paralelo(*tarefas: Callable[[], object]) -> list[object]:
     return resultados
 
 
-@pytest.mark.parametrize("vencedor", ["decisao", "expiracao", None])
+@pytest.mark.parametrize(
+    "vencedor",
+    ["decisao", "expiracao", None],
+    ids=["decisao-primeiro", "expiracao-primeiro", "ordem-livre"],
+)
 def test_corrida_entre_decisao_e_expiracao_tem_um_so_vencedor(
     banco: Banco, vencedor: str | None
 ) -> None:
@@ -136,6 +143,7 @@ def test_corrida_entre_decisao_e_expiracao_tem_um_so_vencedor(
     uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(gerado))
     barreira = threading.Barrier(2)
     comitou = {"decisao": threading.Event(), "expiracao": threading.Event()}
+    assert gerado.valido_ate is not None
     no_limite = RelogioFixo(gerado.valido_ate)
     depois_do_limite = RelogioFixo(gerado.valido_ate + timedelta(milliseconds=1))
 
@@ -326,8 +334,82 @@ def test_solicitacao_sem_o_pagamento_na_releitura_propaga_o_erro(
     assert banco["pagamentos"].count_documents({}) == 1
 
 
+@pytest.mark.parametrize("vencedor", ["webhook", "expiracao"])
+def test_corrida_entre_webhook_e_expiracao_tem_um_so_vencedor(
+    banco: Banco, vencedor: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Aprovacao no provedor x job de expiracao, as duas lendo SOLICITADO.
+
+    Webhook primeiro: CONFIRMADO e o job desiste. Expiracao primeiro: o
+    webhook rele EXPIRADO, estorna a tentativa paga (estorno automatico) e o
+    pagamento termina ESTORNADO. Nunca erro em log.
+    """
+    pendente = pagamento(criado_em=AGORA)
+    uow = MongoUnitOfWork(banco)
+    uow.executar(lambda: MongoPagamentoRepository(uow).salvar(pendente))
+    gateway = GatewayRoteirizado()
+    assert pendente.cobranca is not None
+    referencia = gateway.registrar_resultado(
+        pagamento_id=pendente.id, valor=pendente.cobranca.valor, aprovado=True
+    )
+    barreira = threading.Barrier(2)
+    comitou = {"webhook": threading.Event(), "expiracao": threading.Event()}
+    depois_do_prazo = RelogioFixo(AGORA + timedelta(minutes=61))
+
+    def espera(lado: str) -> threading.Event | None:
+        return None if vencedor == lado else comitou[vencedor]
+
+    def webhook() -> object:
+        uow = MongoUnitOfWork(banco)
+        repo = ComBarreira(
+            MongoPagamentoRepository(uow), "obter_por_id", barreira, espera("webhook")
+        )
+        try:
+            return ProcessarNotificacaoPagamento(
+                uow, repo, gateway, MetricasEspia(), 3, depois_do_prazo
+            ).executar(referencia)
+        finally:
+            comitou["webhook"].set()
+
+    def expirar() -> object:
+        uow = MongoUnitOfWork(banco)
+        repo = ComBarreira(
+            MongoPagamentoRepository(uow),
+            "obter_por_id",
+            barreira,
+            espera("expiracao"),
+        )
+        try:
+            return ExpirarPagamentosVencidos(uow, repo, depois_do_prazo).executar()
+        finally:
+            comitou["expiracao"].set()
+
+    with caplog.at_level(logging.ERROR):
+        notificado, expirados = em_paralelo(webhook, expirar)
+
+    assert not isinstance(notificado, Exception), notificado
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    final = MongoPagamentoRepository(MongoUnitOfWork(banco)).obter_por_id(pendente.id)
+    assert final is not None
+    tipos = [e["tipo"] for e in eventos_do_outbox(banco)]
+    if vencedor == "webhook":
+        assert (final.status, expirados) == (StatusPagamento.CONFIRMADO, 0)
+        assert tipos == ["PagamentoSolicitado", "PagamentoConfirmado"]
+        assert gateway.estornos == []
+    else:
+        assert (final.status, expirados) == (StatusPagamento.ESTORNADO, 1)
+        assert tipos == [
+            "PagamentoSolicitado",
+            "PagamentoExpirado",
+            "PagamentoEstornado",
+        ]
+        assert gateway.estornos == [
+            (referencia, chave_de_estorno_automatico(pendente.id, referencia))
+        ]
+
+
 def test_pagamento_confirmado_entre_a_listagem_e_a_expiracao_nao_expira(
-    banco: Banco,
+    banco: Banco, caplog: pytest.LogCaptureFixture
 ) -> None:
     pendente = pagamento(criado_em=AGORA)
     uow = MongoUnitOfWork(banco)
@@ -356,9 +438,49 @@ def test_pagamento_confirmado_entre_a_listagem_e_a_expiracao_nao_expira(
         uow, ConfirmaDepoisDeListar(), RelogioFixo(AGORA + timedelta(hours=2))
     )
 
-    assert expirar.executar() == 0
+    with caplog.at_level(logging.ERROR):
+        assert expirar.executar() == 0
+    # Desistir porque outra escrita venceu e o caminho normal, nao falha.
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
     tipos = [e["tipo"] for e in eventos_do_outbox(banco)]
     assert tipos == ["PagamentoSolicitado", "PagamentoConfirmado"]
+
+
+def test_orcamento_decidido_entre_a_listagem_e_a_expiracao_nao_expira(
+    banco: Banco, caplog: pytest.LogCaptureFixture
+) -> None:
+    gerado = orcamento(criado_em=AGORA)
+    uow = MongoUnitOfWork(banco)
+    repo = MongoOrcamentoRepository(uow)
+    uow.executar(lambda: repo.salvar(gerado))
+
+    class AprovaDepoisDeListar:
+        def __getattr__(self, nome: str) -> Any:
+            return getattr(repo, nome)
+
+        def listar_vencidos(self, agora: Any, limite: int) -> list[Any]:
+            vencidos = repo.listar_vencidos(agora, limite)
+            outro = MongoUnitOfWork(banco)
+            outro_repo = MongoOrcamentoRepository(outro)
+
+            def aprovar() -> None:
+                atual = outro_repo.obter_por_id(gerado.id)
+                assert atual is not None
+                atual.aprovar(canal=CanalDecisao.LINK, agora=AGORA)
+                outro_repo.salvar(atual)
+
+            outro.executar(aprovar)
+            return vencidos
+
+    expirar = ExpirarOrcamentosVencidos(
+        uow, AprovaDepoisDeListar(), RelogioFixo(AGORA + timedelta(hours=73))
+    )
+
+    with caplog.at_level(logging.ERROR):
+        assert expirar.executar() == 0
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    tipos = [e["tipo"] for e in eventos_do_outbox(banco)]
+    assert tipos == ["OrcamentoGerado", "OrcamentoAprovado"]
 
 
 def test_estorno_concluido_por_outro_consumidor_nao_gera_segundo_evento(
