@@ -54,6 +54,8 @@ As compensações acham o recurso pelo `ordem_id` (os ids são opcionais). **Lá
 
 Fatos que não vêm de comando: `OrcamentoAprovado`/`OrcamentoRecusado` (pelo link ou pelo atendente, com `decidido_por` = `sub` do atendente), `OrcamentoExpirado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado` e o `PagamentoEstornado` do estorno automático.
 
+O `PagamentoEstornado` com `motivo=pagamento_apos_encerramento` (aprovação tardia, de valor ou moeda diferentes, ou segunda tentativa paga do mesmo checkout) não responde a comando algum e pode sair com o pagamento em qualquer estado: `RECUSADO`, `EXPIRADO` e `CANCELADO` passam a `ESTORNADO`, enquanto `SOLICITADO`, `CONFIRMADO` e `ESTORNADO` ficam como estão. Quem filtra é o OS Service: a saga o ignora fora da compensação, olhando o `motivo` (ADR-040, passo 7); o Billing só garante o `motivo` no evento.
+
 ## Como rodar
 
 Requisitos: Python 3.14 com [uv](https://docs.astral.sh/uv/) e Docker.
