@@ -30,7 +30,7 @@ SEGREDO_LINK_DEMO = "demo-link-orcamento-pytstop-nao-usar-em-producao"
 
 _PADROES_DE_DESENVOLVIMENTO = {
     "MONGODB_URI": "mongodb://localhost:27017/?directConnection=true",
-    "JWKS_URL": "http://localhost:8001/.well-known/jwks.json",
+    "JWKS_URL": "http://localhost:8000/.well-known/jwks.json",
     "BILLING_PUBLIC_URL": "http://localhost:8002",
     "ORCAMENTO_LINK_SECRET": SEGREDO_LINK_DEMO,
 }

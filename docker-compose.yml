@@ -20,9 +20,10 @@ x-ambiente: &ambiente
   MONGODB_URI: mongodb://mongo:27017/?replicaSet=rs0
   MONGODB_DB: billing
   BILLING_PUBLIC_URL: ${BILLING_PUBLIC_URL:-http://localhost:8002}
-  # JWKS do OS Service rodando no host (porta 8001); sem ele as rotas internas
-  # respondem 503 e as publicas (link do cliente, webhook, simulador) seguem.
-  JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8001/.well-known/jwks.json}
+  # JWKS do OS Service rodando no host (porta 8000, a do compose dele); sem
+  # ele as rotas internas respondem 503 e as publicas (link do cliente,
+  # webhook, simulador) seguem.
+  JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8000/.well-known/jwks.json}
   # Valor de demonstracao (recusado fora de development/test).
   ORCAMENTO_LINK_SECRET: ${ORCAMENTO_LINK_SECRET:-demo-link-orcamento-pytstop-nao-usar-em-producao}
   ORCAMENTO_VALIDADE_HORAS: ${ORCAMENTO_VALIDADE_HORAS:-72}

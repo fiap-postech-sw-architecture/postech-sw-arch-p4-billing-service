@@ -11,10 +11,10 @@ from fastapi import FastAPI
 
 from src.banco import preparar_banco
 from src.compartilhado.dominio.relogio import agora_utc
+from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
-from src.compartilhado.interfaces.autenticacao import VerificadorDeToken
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
 from src.compartilhado.interfaces.router_saude import router as router_saude
@@ -118,10 +118,8 @@ def criar_app(
     app.state.link_decisao = LinkDeDecisao(
         segredo=config.link_segredo, url_base=f"{config.url_publica}{PREFIXO_DO_LINK}"
     )
-    app.state.verificador_de_token = VerificadorDeToken(
-        jwks_url=config.jwks_url,
-        emissor=config.jwt_emissor,
-        audiencia=config.jwt_audiencia,
+    app.state.validador_de_token = ValidadorDeTokenJWKS(
+        config.jwks_url, emissor=config.jwt_emissor, audiencia=config.jwt_audiencia
     )
 
     app.include_router(router_saude)

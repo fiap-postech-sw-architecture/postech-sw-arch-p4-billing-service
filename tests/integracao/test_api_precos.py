@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import threading
+import time
+from typing import TYPE_CHECKING, Any
 
+import jwt
 import pytest
+from fastapi.testclient import TestClient
+
+from src.main import criar_app
+from tests.integracao.apoio import configuracao
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from fastapi.testclient import TestClient
 
     Cabecalhos = Callable[[str], dict[str, str]]
 
@@ -173,7 +178,7 @@ def test_sem_token_da_401_com_envelope(api: TestClient) -> None:
     assert resposta.headers["WWW-Authenticate"] == "Bearer"
     assert resposta.json()["erro"] == {
         "codigo": "NAO_AUTENTICADO",
-        "mensagem": "Token de autenticacao nao fornecido",
+        "mensagem": "Credencial ausente, invalida ou expirada",
         "id_requisicao": resposta.headers["X-Request-ID"],
     }
 
@@ -219,3 +224,45 @@ def test_validacao_nao_e_para_atendente(
         "/api/v1/precos/validacao", json={}, headers=cabecalhos("atendente")
     )
     assert resposta.status_code == 403
+
+
+def test_jwks_pendurado_nao_atrasa_rota_publica_nem_prende_requests(
+    banco: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    emitir_token: Callable[..., str],
+) -> None:
+    """OS aceita a conexao e nao responde: a busca do JWKS fica pendurada."""
+    liberar = threading.Event()
+    pendurou = threading.Event()
+
+    def pendurar(_cliente: object) -> None:
+        pendurou.set()
+        liberar.wait(timeout=30)
+        msg = "timed out"
+        raise jwt.PyJWKClientConnectionError(msg)
+
+    monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", pendurar)
+    autorizado = {"Authorization": f"Bearer {emitir_token('admin')}"}
+    with TestClient(criar_app(configuracao(), banco=banco)) as cliente:
+        primeira = threading.Thread(
+            target=cliente.get,
+            args=("/api/v1/precos/servicos",),
+            kwargs={"headers": autorizado},
+        )
+        primeira.start()
+        try:
+            assert pendurou.wait(timeout=5)
+            inicio = time.monotonic()
+            publica = cliente.get("/api/v1/publico/orcamentos/nao-e-token")
+            assert publica.status_code == 404
+            assert time.monotonic() - inicio < 1
+            # Sem chave em cache: espera no maximo o timeout da busca (2 s), nao
+            # a busca pendurada, e responde 503 com Retry-After.
+            inicio = time.monotonic()
+            interna = cliente.get("/api/v1/precos/servicos", headers=autorizado)
+            assert interna.status_code == 503
+            assert "Retry-After" in interna.headers
+            assert time.monotonic() - inicio < 3
+        finally:
+            liberar.set()
+            primeira.join(timeout=10)

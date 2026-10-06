@@ -84,6 +84,28 @@ def test_meio_aberto_fecha_com_sucesso(
     assert gauge("teste-cb") == 0
 
 
+def test_meio_aberto_deixa_passar_uma_prova_so(
+    breaker: CircuitBreaker, relogio: Relogio
+) -> None:
+    for _ in range(3):
+        with pytest.raises(FalhaDeRedeError):
+            breaker.chamar(falhar)
+    assert breaker.barrado()
+    assert breaker.segundos_para_nova_tentativa() == 30
+    relogio.agora += 30
+    assert not breaker.barrado()
+
+    assert breaker.permitir()  # a prova
+    assert not breaker.permitir()  # as concorrentes seguem barradas
+    assert gauge("teste-cb") == 1  # so zera ao fechar
+    # Prova sem resultado: outra sai no proximo prazo.
+    relogio.agora += 30
+    assert breaker.permitir()
+    breaker.registrar_sucesso()
+    assert (breaker.aberto, breaker.segundos_para_nova_tentativa()) == (False, 0)
+    assert gauge("teste-cb") == 0
+
+
 def test_meio_aberto_reabre_na_primeira_falha(
     breaker: CircuitBreaker, relogio: Relogio
 ) -> None:
