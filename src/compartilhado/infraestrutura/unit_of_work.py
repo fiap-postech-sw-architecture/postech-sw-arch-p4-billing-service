@@ -282,10 +282,10 @@ class UnidadeDaMensagem(MongoUnitOfWork):
             msg = "Trabalho falhou depois de outro gravado na mesma mensagem"
             raise RuntimeError(msg)
         self._descartar_registros()
-        sessao = self._da_mensagem
-        if sessao.in_transaction:
-            sessao.abort_transaction()
-        sessao.start_transaction(_LEITURA, _ESCRITA, ReadPreference.PRIMARY)
+        # O with_transaction abriu a transacao antes do handler, e so commit ou
+        # abort a encerram: ela esta ativa aqui.
+        self._da_mensagem.abort_transaction()
+        self._da_mensagem.start_transaction(_LEITURA, _ESCRITA, ReadPreference.PRIMARY)
 
     def _gravar_mensagem_processada(self, sessao: ClientSession) -> None:
         # Upsert: o mesmo id de novo (reentrega) nao falha nem muda nada, e o
