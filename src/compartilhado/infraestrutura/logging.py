@@ -63,12 +63,15 @@ _EMAIL_PATTERN = re.compile(
 #      11 digitos corridos com shape de CPF e caem no _CPF_PATTERN acima
 #      antes desta regex; campos NOMEADOS telefone/celular/contato sao
 #      mascarados pela denylist abaixo.
-# O numero nao pode encostar em letra, digito, `_` nem hifen: os ids do servico
+# O numero nao pode vir logo depois de um digito hexadecimal: os ids do servico
 # (`ordem_id`, `correlation_id`, `request_id`, `sub`) sao UUID, e o v4 traz entre
 # os grupos trechos `dd-dddd-dddd` (`732ffc02-3465-4237-...`) que o split 4-4
-# casaria. Sem os lookarounds, cerca de 1,4% dos UUID saiam mascarados do log.
+# casaria, sempre com o DDD colado ao fim de um grupo hexadecimal (minusculo ou
+# maiusculo). Sem a guarda, cerca de 1,4% dos UUID saiam mascarados do log. Quem
+# comeca em `(` ou `+` e telefone mesmo colado a uma palavra (`fone(11)99999-0000`),
+# e depois de hifen ou de letra fora de a-f (`tel-11 99999-0000`) tambem.
 _TELEFONE_PATTERN = re.compile(
-    r"(?<![\w-])"  # nao colado em palavra nem em id hifenizado (UUID)
+    r"(?:(?<![0-9A-Fa-f])|(?=[(+]))"  # nao colado a digito hexadecimal (UUID)
     r"(?:"
     r"(?:\+55[\s.-]?)?"  # codigo do pais opcional
     r"(?:\(\d{2}\)|\d{2})"  # DDD com ou sem parenteses
@@ -77,7 +80,7 @@ _TELEFONE_PATTERN = re.compile(
     r"|"
     r"\+55[\s.-]?\d{10,11}"  # +55 com numero corrido (sem hifen local)
     r")"
-    r"(?![\w-])"  # idem, do lado direito (tambem barra numero maior)
+    r"(?!\d)"  # nao seguido de digito (evita capturar parte de numero maior)
 )
 
 # Denylist de chaves: quando o NOME do campo indica segredo ou PII, o valor

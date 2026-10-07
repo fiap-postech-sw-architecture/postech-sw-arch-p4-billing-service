@@ -138,6 +138,11 @@ class TestLogging:
             ("(11) 3333-4444", "***"),
             ("contato: (11) 99999-0000.", "contato: ***."),
             ("ligar 11 3333-4444, ok", "ligar ***, ok"),
+            # Colado a hifen ou a palavra: so o digito hexadecimal antes do DDD
+            # (o UUID) barra o telefone; `(` e `+` valem mesmo depois de um `e`.
+            ("tel-11 99999-0000", "tel-***"),
+            ("fone(11)99999-0000", "fone***"),
+            ("fone+5511999990000", "fone***"),
         ],
     )
     def test_telefone_br_e_mascarado(self, entrada: str, saida: str) -> None:
@@ -154,11 +159,8 @@ class TestLogging:
             "PEC-OLEO-5W30",
             "2026-10-06T12:00:00Z",
             "req-1234-5678",
-            # Colado em palavra ou em id hifenizado (SKU, UUID): nao e telefone.
-            "x11-99999-0000",
-            "ORD-11-99999-0000",
-            "11 99999-0000x",
-            "11 99999-0000-123",
+            # Digito a mais no fim: numero maior, nao telefone.
+            "(11) 99999-00001",
         ],
     )
     def test_numero_que_nao_e_telefone_fica_como_esta(self, texto: str) -> None:
@@ -166,18 +168,18 @@ class TestLogging:
 
     def test_uuid_v4_nunca_e_mascarado_como_telefone(self) -> None:
         # Os ids do servico sao UUID e entram em todo log. O v4 tem trechos
-        # `dd-dddd-dddd` entre os grupos: sem os lookarounds do regex de
-        # telefone, cerca de 1,4% saiam como "***" (o primeiro abaixo e um deles).
+        # `dd-dddd-dddd` entre os grupos: sem a guarda do regex de telefone,
+        # cerca de 1,4% saiam como "***" (o primeiro abaixo e um deles).
         ids = [
             UUID("732ffc02-3465-4237-a5f6-12fd4a2b3be0"),
             *(uuid4() for _ in range(10_000)),
         ]
         for id_ in ids:
-            texto = str(id_)
-            evento = scrub_pii(
-                None, "info", {"event": f"ordem {texto}", "ordem_id": texto}
-            )
-            assert evento == {"event": f"ordem {texto}", "ordem_id": texto}
+            for texto in (str(id_), str(id_).upper()):  # o id pode chegar em caixa alta
+                evento = scrub_pii(
+                    None, "info", {"event": f"ordem {texto}", "ordem_id": texto}
+                )
+                assert evento == {"event": f"ordem {texto}", "ordem_id": texto}
 
     def test_scrub_mascara_pii_em_estruturas_aninhadas(self) -> None:
         evento = scrub_pii(
