@@ -796,6 +796,35 @@ class TestSolicitarPagamento:
         assert copia.headers["x-tentativa"] == 1
         assert banco["pagamentos"].count_documents({}) == 0
 
+    def test_recusa_do_provedor_vai_para_a_dlq_sem_pagamento_nem_resposta(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+    ) -> None:
+        ordem_id, orcamento_id = self._orcamento_aprovado(
+            banco, consumidor, canal, relogio
+        )
+        gateway.erro_na_cobranca = GatewayPagamentoRecusouError("recusado")
+        mensagem = solicitar(ordem_id, orcamento_id)
+
+        # O 4xx do provedor nao melhora repetindo e o contrato nao tem evento de
+        # falha para o comando: DLQ, com alerta, e o prazo tecnico do OS compensa.
+        assert entregar(consumidor, canal, mensagem) == "dlq"
+
+        assert (canal.rejeitadas, canal.publicadas) == ([2], [])
+        assert banco["pagamentos"].count_documents({}) == 0
+        assert [tipo for tipo, _ in respostas(banco)] == [
+            "OrcamentoGerado",
+            "OrcamentoAprovado",
+        ]
+        assert (
+            banco["mensagens_processadas"].find_one({"_id": UUID(mensagem["id"])})
+            is None
+        )
+
     def test_pagamento_e_recusa_tem_como_causa_o_solicitar_pagamento(
         self,
         banco: Banco,
