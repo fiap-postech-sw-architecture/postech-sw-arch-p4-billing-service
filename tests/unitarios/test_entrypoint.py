@@ -40,3 +40,12 @@ def test_api_sobe_com_o_prefixo_da_borda_no_root_path(
 
     assert executado[:3] == ["uvicorn", "src.main:criar_app", "--factory"]
     assert executado[-2:] == ["--root-path", prefixo]
+
+
+def test_aguarda_banco_espera_a_versao_do_banco(tmp_path: Path) -> None:
+    assert _executado(tmp_path, "aguarda-banco") == [
+        "python",
+        "-m",
+        "src.banco",
+        "aguardar",
+    ]
