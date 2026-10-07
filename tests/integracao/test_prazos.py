@@ -29,6 +29,7 @@ from src.pagamento.aplicacao.use_cases import (
     ConciliarPagamentos,
     ProcessarNotificacaoPagamento,
 )
+from src.pagamento.infraestrutura.gateway import criar_gateway_de_conciliacao
 from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from src.prazos import ResultadoDoCiclo, executar_ciclo, rodar
@@ -445,7 +446,7 @@ class TestBoot:
         simulado = ConfiguracaoDosPrazos.do_ambiente(
             {"ENVIRONMENT": "test", "MP_MODE": "simulado"}
         )
-        assert prazos.criar_gateway(simulado) is None
+        assert criar_gateway_de_conciliacao(simulado) is None
         real = ConfiguracaoDosPrazos.do_ambiente(
             {
                 "ENVIRONMENT": "test",
@@ -453,6 +454,6 @@ class TestBoot:
                 "MP_ACCESS_TOKEN": "TEST-token-de-teste",  # gitleaks:allow
             }
         )
-        gateway = prazos.criar_gateway(real)
+        gateway = criar_gateway_de_conciliacao(real)
         assert isinstance(gateway, MercadoPagoGateway)
         gateway.fechar()

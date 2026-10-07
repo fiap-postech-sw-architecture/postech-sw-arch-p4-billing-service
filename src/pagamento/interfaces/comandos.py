@@ -19,7 +19,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from src.compartilhado.infraestrutura.mensageria.consumidor import Desfecho
+from src.compartilhado.aplicacao.mensageria import Desfecho
 from src.pagamento.aplicacao.use_cases import EstornarPagamento, SolicitarPagamento
 from src.pagamento.dominio.exceptions import OrcamentoNaoAprovadoError
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter

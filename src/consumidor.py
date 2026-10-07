@@ -37,10 +37,9 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
 from src.compartilhado.infraestrutura.processo import instalar_sinais, sinalizar
 from src.configuracao import ConfiguracaoDoConsumidor
-from src.main import criar_gateway
-from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
+from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK, LinkDeDecisao
 from src.orcamento.interfaces import comandos as comandos_do_orcamento
-from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
+from src.pagamento.infraestrutura.gateway import criar_gateway
 from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.metricas import MetricasPrometheus
 from src.pagamento.interfaces import comandos as comandos_do_pagamento
@@ -71,7 +70,7 @@ def criar_handlers(
 ) -> dict[str, Handler]:
     """Um handler por comando do Billing no catalogo (RFC-004, secao 5.3)."""
     link = LinkDeDecisao(
-        segredo=config.link_segredo, url_base=f"{config.url_publica}{PREFIXO_DO_LINK}"
+        segredo=config.link_segredo, url_base=f"{config.url_publica}{CAMINHO_DO_LINK}"
     )
     return {
         "GerarOrcamento": partial(

@@ -29,7 +29,7 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
 from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
-from src.configuracao import ConfiguracaoDosPrazos, ModoMercadoPago
+from src.configuracao import ConfiguracaoDosPrazos
 from src.orcamento.aplicacao.use_cases import ExpirarOrcamentosVencidos
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.aplicacao.use_cases import (
@@ -37,10 +37,7 @@ from src.pagamento.aplicacao.use_cases import (
     ExpirarPagamentosVencidos,
     ProcessarNotificacaoPagamento,
 )
-from src.pagamento.infraestrutura.mercadopago import (
-    ConfiguracaoMercadoPago,
-    MercadoPagoGateway,
-)
+from src.pagamento.infraestrutura.gateway import criar_gateway_de_conciliacao
 from src.pagamento.infraestrutura.metricas import MetricasPrometheus
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 
@@ -162,21 +159,6 @@ def rodar(
             parar.wait(intervalo)
 
 
-def criar_gateway(config: ConfiguracaoDosPrazos) -> MercadoPagoGateway | None:
-    """So o Mercado Pago real e conciliado: o simulador vive na memoria da API."""
-    if config.mp_modo is not ModoMercadoPago.MERCADOPAGO or not config.mp_access_token:
-        return None
-    return MercadoPagoGateway(
-        ConfiguracaoMercadoPago(
-            access_token=config.mp_access_token,
-            # O prazos so consulta: nunca cria preferencia.
-            notification_url="",
-            base_url=config.mp_api_url,
-            timeout_segundos=config.mp_timeout_segundos,
-        )
-    )
-
-
 def main(parar: threading.Event | None = None) -> None:
     configurar_logging()
     config = ConfiguracaoDosPrazos.do_ambiente()
@@ -187,7 +169,7 @@ def main(parar: threading.Event | None = None) -> None:
         instalar_sinais(parar)
     start_http_server(config.porta_metricas)
     cliente = criar_cliente(config.banco.mongodb_uri)
-    gateway = criar_gateway(config)
+    gateway = criar_gateway_de_conciliacao(config)
     metricas = MetricasPrometheus()
     try:
         banco = cliente[config.banco.mongodb_banco]

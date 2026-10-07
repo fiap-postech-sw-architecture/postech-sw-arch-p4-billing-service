@@ -27,7 +27,6 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol
 from uuid import UUID
 
@@ -64,6 +63,7 @@ if TYPE_CHECKING:
 
     from pymongo.database import Database
 
+    from src.compartilhado.aplicacao.mensageria import Desfecho
     from src.compartilhado.dominio.relogio import Relogio
     from src.compartilhado.infraestrutura.mongo import Documento
     from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
@@ -87,14 +87,6 @@ _ROTULOS_TRANSITORIOS: Final = (
     "RetryableWriteError",
     "UnknownTransactionCommitResult",
 )
-
-
-class Desfecho(StrEnum):
-    """O que o handler fez com o comando (rotulo ``resultado`` da metrica)."""
-
-    PROCESSADA = "processada"
-    # Original atrasado depois da lapide: descartado sem efeito e sem resposta.
-    IGNORADA = "ignorada"
 
 
 type Handler = Callable[[Mapping[str, Any], UnidadeDaMensagem], Desfecho]

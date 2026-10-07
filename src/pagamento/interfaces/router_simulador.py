@@ -20,10 +20,10 @@ from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
 from src.pagamento.aplicacao.use_cases import SimularResultadoPagamento
+from src.pagamento.infraestrutura.simulado import CAMINHO_CHECKOUT
 from src.pagamento.interfaces.dependencies import obter_simular_resultado
 from src.pagamento.interfaces.schemas import PagamentoResponse
 
-CAMINHO_CHECKOUT = "/simulador/checkout"
 _CAMINHO_ACOES = "/api/v1/simulador/pagamentos"
 
 router = APIRouter(tags=["simulador"])

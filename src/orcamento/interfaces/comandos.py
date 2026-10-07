@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from src.compartilhado.infraestrutura.mensageria.consumidor import Desfecho
+from src.compartilhado.aplicacao.mensageria import Desfecho
 from src.orcamento.aplicacao.dtos import ItemSolicitado
 from src.orcamento.aplicacao.use_cases import CancelarOrcamento, GerarOrcamento
 from src.orcamento.dominio.orcamento import TipoItem

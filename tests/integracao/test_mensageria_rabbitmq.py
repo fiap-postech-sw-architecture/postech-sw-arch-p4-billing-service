@@ -27,6 +27,7 @@ from pymongo.errors import AutoReconnect
 
 from src import consumidor as processo_consumidor
 from src import relay as processo_relay
+from src.compartilhado.aplicacao.mensageria import Desfecho
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
@@ -34,7 +35,6 @@ from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, parametr
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     EXCHANGE_RETRY,
     ConsumidorDeComandos,
-    Desfecho,
 )
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual

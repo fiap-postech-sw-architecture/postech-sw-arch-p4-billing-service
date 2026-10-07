@@ -13,9 +13,9 @@ from src.configuracao import (
     ConfiguracaoDosPrazos,
     ModoMercadoPago,
 )
-from src.main import criar_gateway
 from src.pagamento.aplicacao.ports import GatewayPagamentoRecusouError
 from src.pagamento.dominio.estados import StatusNoProvedor
+from src.pagamento.infraestrutura.gateway import criar_gateway
 from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from tests.factories import AGORA, dinheiro

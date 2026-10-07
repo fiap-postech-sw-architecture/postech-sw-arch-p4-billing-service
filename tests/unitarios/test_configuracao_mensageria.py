@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -106,3 +108,17 @@ def test_arquivo_de_vida_diz_se_esta_pronto(tmp_path: Path) -> None:
     assert arquivo.read_text() == CONECTANDO
     sinalizar(arquivo, pronto=True)
     assert arquivo.read_text() == PRONTO
+
+
+def test_processos_da_mensageria_nao_carregam_a_pilha_http() -> None:
+    # Relay e consumidor nao servem HTTP de negocio: a fabrica do provedor e o
+    # caminho do link de decisao vem de modulos sem FastAPI.
+    codigo = (
+        "import sys, src.consumidor, src.relay; "
+        "print(sorted(m for m in ('fastapi', 'starlette', 'src.main') "
+        "if m in sys.modules))"
+    )
+    saida = subprocess.run(  # noqa: S603 - o interpretador do proprio teste
+        [sys.executable, "-c", codigo], capture_output=True, text=True, check=True
+    )
+    assert saida.stdout.strip() == "[]"

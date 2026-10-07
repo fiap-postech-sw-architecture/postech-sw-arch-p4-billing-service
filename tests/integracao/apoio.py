@@ -18,8 +18,10 @@ from pymongo import MongoClient, monitoring
 from src.configuracao import Configuracao
 from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
 from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
-from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
-from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
+from src.pagamento.infraestrutura.simulado import (
+    CAMINHO_CHECKOUT,
+    GatewayPagamentoSimulado,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence

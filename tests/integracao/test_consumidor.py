@@ -26,6 +26,7 @@ from pymongo.errors import (
     WriteError,
 )
 
+from src.compartilhado.aplicacao.mensageria import Desfecho
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria.amqp import (
     CanalAmqp,
@@ -33,7 +34,6 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
 )
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     ConsumidorDeComandos,
-    Desfecho,
 )
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
 from src.consumidor import rodar as rodar_consumidor
