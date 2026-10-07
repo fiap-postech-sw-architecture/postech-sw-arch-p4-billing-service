@@ -10,6 +10,7 @@ entao cada processo confere so o que o usuario do servico alcanca (ADR-036).
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final
 
@@ -132,7 +133,7 @@ class CanalAmqp:
                 conexao.close()
 
 
-def manter_conectado(
+def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos testes
     canal: CanalAmqp,
     trabalho: Callable[[], None],
     *,
@@ -140,12 +141,16 @@ def manter_conectado(
     heartbeat: Path,
     processo: str,
     espera_maxima: float = ESPERA_MAXIMA_SEGUNDOS,
+    cronometro: Callable[[], float] = time.monotonic,
 ) -> None:
     """Laco do relay e do consumidor: conecta, roda ``trabalho`` enquanto a
     conexao durar e reconecta com backoff dobrado ate ``espera_maxima``.
 
-    Sem conexao o ``trabalho`` nao roda (o relay nao reivindica linhas). O
-    arquivo de vida fica ``conectando`` fora dele; o ``trabalho`` o marca
+    Sem conexao o ``trabalho`` nao roda (o relay nao reivindica linhas). A
+    conexao que cai logo depois de aberta (o broker fechando o canal a cada
+    mensagem, por permissao, ou cancelando o consumidor) tambem espera antes de
+    reconectar; so a que durou ``espera_maxima`` volta a reconectar na hora. O
+    arquivo de vida fica ``conectando`` fora do ``trabalho``, que o marca
     ``pronto`` a cada volta.
     """
     espera = min(1.0, espera_maxima)
@@ -158,15 +163,24 @@ def manter_conectado(
                 "broker_unavailable",
                 extra={"processo": processo, "espera_segundos": espera},
             )
-            parar.wait(espera)
-            espera = min(espera * 2, espera_maxima)
-            continue
-        espera = min(1.0, espera_maxima)
-        _log.info("broker_connected", extra={"processo": processo})
-        try:
-            trabalho()
-        except AMQPError:
-            _log.warning("broker_connection_lost", extra={"processo": processo})
-        finally:
-            canal.fechar()
+        else:
+            _log.info("broker_connected", extra={"processo": processo})
+            inicio = cronometro()
+            try:
+                trabalho()
+                if not parar.is_set():
+                    # O consume() do pika encerra o gerador, sem excecao, quando
+                    # o broker cancela o consumidor (fila apagada, failover).
+                    _log.warning(
+                        "broker_cancelled_consumer", extra={"processo": processo}
+                    )
+            except AMQPError:
+                _log.warning("broker_connection_lost", extra={"processo": processo})
+            finally:
+                canal.fechar()
+            if cronometro() - inicio >= espera_maxima:
+                espera = min(1.0, espera_maxima)
+                continue
+        parar.wait(espera)
+        espera = min(espera * 2, espera_maxima)
     sinalizar(heartbeat, pronto=False)

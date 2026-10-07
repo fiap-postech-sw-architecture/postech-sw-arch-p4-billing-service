@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 # So traceparent/tracestate: o que o envelope do contrato carrega (sem baggage).
 _PROPAGADOR: Final = TraceContextTextMapPropagator()
 _VERDADEIROS: Final = frozenset({"true", "1"})
+_TAMANHO_MAXIMO_TRACESTATE: Final = 512
 # Padroes do compose da plataforma (Jaeger por OTLP/gRPC).
 _ENDPOINT_PADRAO: Final = "http://jaeger:4317"
 _SERVICO_PADRAO: Final = "billing-service"
@@ -44,10 +45,17 @@ def contexto_atual() -> dict[str, str]:
 
 
 def contexto_de(portador: Mapping[str, object]) -> Context:
-    """Contexto W3C lido de headers AMQP ou de um documento da outbox."""
+    """Contexto W3C lido de headers AMQP ou de um documento da outbox.
+
+    ``tracestate`` acima do limite do W3C Trace Context (512 caracteres) e
+    descartado: o header vem de fora e seria regravado em cada outbox e copia
+    de retry; o ``traceparent`` segue valendo.
+    """
     textos = {
         chave: valor for chave, valor in portador.items() if isinstance(valor, str)
     }
+    if len(textos.get("tracestate", "")) > _TAMANHO_MAXIMO_TRACESTATE:
+        del textos["tracestate"]
     return _PROPAGADOR.extract(textos)
 
 

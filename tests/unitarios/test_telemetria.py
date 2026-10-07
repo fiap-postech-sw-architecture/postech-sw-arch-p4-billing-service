@@ -74,3 +74,20 @@ def test_configurar_instala_o_provider_global(monkeypatch: pytest.MonkeyPatch) -
     provedor = telemetria.configurar_telemetria("relay")
     assert instalados == [provedor]
     provedor.shutdown()
+
+
+def test_tracestate_acima_do_limite_w3c_e_descartado(
+    spans: InMemorySpanExporter,
+) -> None:
+    # 32 membros de 16 caracteres: dentro do limite de membros, acima de 512.
+    grande = ",".join(f"k{i:02d}=v{'x' * 11}" for i in range(32))
+    assert len(grande) > 512
+    curto = "pytstop=abc"
+    for estado, esperado in ((grande, ""), (curto, curto)):
+        pai = telemetria.contexto_de({"traceparent": TRACEPARENT, "tracestate": estado})
+        with telemetria.tracer.start_as_current_span("filho", context=pai):
+            portador = telemetria.contexto_atual()
+        assert portador.get("tracestate", "") == esperado
+        assert portador["traceparent"].startswith(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-"
+        )
