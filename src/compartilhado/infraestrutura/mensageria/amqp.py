@@ -100,7 +100,9 @@ class CanalAmqp:
 
     ``abrir`` (re)conecta e confere por declaracao passiva as filas e os
     exchanges informados; erro de conexao (``AMQPConnectionError``) sobe para
-    o laco do processo, que reconecta com backoff.
+    o laco do processo, que reconecta com backoff. O nome do broker sem
+    resolucao no DNS sobe como ``socket.gaierror`` (um ``OSError``), que o pika
+    nao embrulha em ``AMQPError``; o laco o trata do mesmo jeito.
     """
 
     def __init__(
@@ -270,14 +272,20 @@ def _conectar_e_trabalhar(
     Devolve quanto ela durou (``None`` quando nem abriu). O arquivo de vida so
     diz ``pronto`` dentro do ``trabalho``: fora dele, inclusive na espera antes
     da proxima tentativa, diz ``conectando`` (readiness falsa, liveness pela
-    idade do arquivo).
+    idade do arquivo). So a abertura trata ``OSError`` como broker fora, porque
+    e nela que o pika deixa passar o do nome sem resolucao; durante o
+    ``trabalho`` ele ja embrulha o erro de socket em ``AMQPError``, e um
+    ``OSError`` ali ou no arquivo de vida e de outra origem (disco) e derruba o
+    processo.
     """
     sinalizar(heartbeat, pronto=False)
     try:
         canal.abrir()
-    except AMQPError as exc:
+    except (AMQPError, OSError) as exc:
         # So o tipo: autenticacao recusada ou 403/404 na declaracao passiva nao
-        # se confundem com o broker fora do ar.
+        # se confundem com o broker fora do ar. OSError: o socket.gaierror do
+        # nome do broker sem resolucao (Service headless sem pod pronto, no
+        # boot ou depois de uma queda), que o pika nao embrulha.
         _log.warning(
             "broker_unavailable",
             extra={"processo": processo, "erro": type(exc).__name__},

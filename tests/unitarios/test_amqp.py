@@ -3,7 +3,9 @@ conectar, e o arquivo de vida sem ``pronto`` fora da conexao."""
 
 from __future__ import annotations
 
+import errno
 import logging
+import socket
 import threading
 from typing import TYPE_CHECKING
 
@@ -23,6 +25,8 @@ from src.compartilhado.infraestrutura.processo import sinalizar
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    from tests.conftest import DnsDeTeste
 
 
 class EsperaAnotada(threading.Event):
@@ -81,8 +85,22 @@ class CanalSemBroker(CanalAmqp):
         self.fechamentos += 1
 
 
+class CanalRoteirizado(CanalSemBroker):
+    """Cada abertura segue o roteiro: ``None`` conecta, um erro e levantado."""
+
+    def __init__(self, roteiro: list[Exception | None]) -> None:
+        super().__init__()
+        self.roteiro = roteiro
+
+    def abrir(self) -> None:
+        self.aberturas += 1
+        erro = self.roteiro.pop(0)
+        if erro is not None:
+            raise erro
+
+
 def _rodar(
-    canal: CanalSemBroker,
+    canal: CanalAmqp,
     trabalho: Callable[[], None],
     parar: EsperaAnotada,
     heartbeat: Path,
@@ -175,6 +193,88 @@ def test_broker_fora_tambem_dobra_a_espera(
 
     assert parar.esperas == [1.0, 2.0, 4.0]
     assert canal.fechamentos == 0
+
+
+def test_nome_do_broker_sem_resolucao_no_boot_espera_com_backoff_fora_da_prontidao(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    sorteio: SorteioAnotado,
+    dns: DnsDeTeste,
+) -> None:
+    # Service headless do broker sem pod pronto: o nome some do DNS e o pika
+    # levanta socket.gaierror, um OSError que ele nao embrulha em AMQPError.
+    dns.nomes["rabbitmq.teste"] = None
+    canal = CanalAmqp(
+        amqp.parametros(
+            "amqp://billing:x@rabbitmq.teste:5672/%2F",  # gitleaks:allow (teste)
+            nome="billing-consumidor",
+        )
+    )
+    arquivo = tmp_path / "hb"
+    parar = EsperaAnotada(ate=3, arquivo_de_vida=arquivo)
+
+    def nao_conectou() -> None:
+        pytest.fail("o trabalho nao roda sem conexao")
+
+    with caplog.at_level(logging.INFO):
+        _rodar(canal, nao_conectou, parar, arquivo)
+
+    assert parar.esperas == [1.0, 2.0, 4.0]
+    assert parar.estados_na_espera == ["conectando"] * 3
+    erros = [
+        registro.__dict__["erro"]
+        for registro in caplog.records
+        if registro.getMessage() == "broker_unavailable"
+    ]
+    assert erros == ["gaierror"] * 3
+
+
+def test_nome_do_broker_some_do_dns_depois_de_conectar_e_a_volta_reconecta(
+    tmp_path: Path, sorteio: SorteioAnotado
+) -> None:
+    sem_dns = socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+    canal = CanalRoteirizado([None, sem_dns, sem_dns, None])
+    arquivo = tmp_path / "hb"
+    parar = EsperaAnotada(ate=99, arquivo_de_vida=arquivo)
+    chamadas: list[None] = []
+
+    def trabalho() -> None:
+        sinalizar(arquivo, pronto=True)
+        chamadas.append(None)
+        if len(chamadas) == 1:
+            raise StreamLostError("broker caiu")
+        parar.set()
+
+    _rodar(canal, trabalho, parar, arquivo)
+
+    # Conectou, caiu, o nome nao resolveu duas vezes e voltou: dobrou a espera
+    # a cada tentativa e nunca ficou pronto fora da conexao.
+    assert (canal.aberturas, len(chamadas)) == (4, 2)
+    assert parar.esperas[:3] == [1.0, 2.0, 4.0]
+    assert parar.estados_na_espera == ["conectando"] * len(parar.esperas)
+
+
+@pytest.mark.parametrize(
+    ("arquivo", "erro"),
+    [
+        pytest.param("hb", r"No space left", id="trabalho"),
+        pytest.param("sem-diretorio/hb", r"No such file", id="arquivo-de-vida"),
+    ],
+)
+def test_oserror_que_nao_e_do_broker_derruba_o_processo_em_vez_de_reconectar(
+    tmp_path: Path, arquivo: str, erro: str
+) -> None:
+    # Disco cheio ou sem o diretorio do arquivo de vida nao e broker fora:
+    # reconectar esconderia o defeito, e o processo cai para ser reiniciado.
+    def disco_cheio() -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    parar = EsperaAnotada(ate=3)
+
+    with pytest.raises(OSError, match=erro):
+        _rodar(CanalSemBroker(), disco_cheio, parar, tmp_path / arquivo)
+
+    assert parar.esperas == []
 
 
 def test_conexao_estavel_que_cai_reconecta_na_hora(
