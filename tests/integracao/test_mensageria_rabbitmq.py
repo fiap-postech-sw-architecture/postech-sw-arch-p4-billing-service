@@ -373,6 +373,35 @@ class TestRetryEDlq:
         assert handler.chamadas == 0
 
 
+class Defeito:
+    """Handler com uma excecao que ninguem classificou (defeito do codigo)."""
+
+    def __init__(self) -> None:
+        self.chamadas = 0
+
+    def __call__(self, dados: Mapping[str, Any], uow: MongoUnitOfWork) -> Desfecho:
+        self.chamadas += 1
+        raise KeyError(dados["ordem_id"])
+
+
+def test_excecao_nao_classificada_vai_direto_para_a_dlq(
+    banco: Banco, broker: BrokerDeTeste, tmp_path: Path
+) -> None:
+    handler = Defeito()
+    mensagem = _cancelar()
+    with processos(
+        banco, broker, tmp_path, handlers={"CancelarOrcamento": handler}, relay=False
+    ):
+        publicar_comando(broker, mensagem)
+        props, morta = esperar_mensagem(broker, "billing.comandos.dlq")
+
+    assert morta == mensagem
+    # Direto: uma chamada, sem copia de retry (sem x-tentativa) e sem ack.
+    assert "x-tentativa" not in (props.headers or {})
+    assert handler.chamadas == 1
+    assert banco["mensagens_processadas"].count_documents({}) == 0
+
+
 def _gravar_evento(banco: Banco) -> None:
     uow = MongoUnitOfWork(banco)
     uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))

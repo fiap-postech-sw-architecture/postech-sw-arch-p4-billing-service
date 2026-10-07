@@ -6,6 +6,7 @@ verdade entra em ``test_mensageria_rabbitmq.py``.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import threading
@@ -20,6 +21,7 @@ from pika.exceptions import AMQPConnectionError
 from prometheus_client import REGISTRY
 from pymongo.errors import AutoReconnect
 
+from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria.amqp import (
     CanalAmqp,
     MensagemRecusadaError,
@@ -230,6 +232,8 @@ class TestErrosPermanentes:
         canal = CanalDeTeste()
         with caplog.at_level(logging.ERROR):
             assert entregar(consumidor, canal, _cancelar()) == "dlq"
+        # Direto para a DLQ: sem copia de retry e sem ack silencioso.
+        assert (canal.rejeitadas, canal.confirmadas, canal.publicadas) == ([1], [], [])
         [registro] = [
             r for r in caplog.records if r.getMessage() == "command_dead_lettered"
         ]
@@ -325,6 +329,43 @@ class TestIdempotencia:
 
 
 class TestRastreamento:
+    def test_logs_do_handler_levam_o_trace_do_span_do_consumidor(
+        self,
+        banco: Banco,
+        handler: HandlerDeTeste,
+        relogio: RelogioFixo,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        saida = io.StringIO()
+        configurar_logging(saida)
+        registros = logging.getLogger("teste.handler")
+
+        def com_log(dados: Mapping[str, Any], uow: MongoUnitOfWork) -> Desfecho:
+            registros.info("handler_called")
+            return handler(dados, uow)
+
+        consumidor = ConsumidorDeComandos(
+            banco,
+            {"CancelarOrcamento": com_log},
+            fila="billing.comandos",
+            usuario="billing",
+            relogio=relogio,
+        )
+        envelope = _cancelar()
+        try:
+            entregar(consumidor, CanalDeTeste(), envelope)
+        finally:
+            logging.getLogger().handlers.clear()
+
+        linhas = [json.loads(linha) for linha in saida.getvalue().splitlines()]
+        [do_handler] = [linha for linha in linhas if linha["event"] == "handler_called"]
+        [consumo] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
+        ]
+        assert do_handler["trace_id"] == f"{consumo.context.trace_id:032x}"
+        assert do_handler["span_id"] == f"{consumo.context.span_id:016x}"
+        assert do_handler["correlation_id"] == envelope["correlation_id"]
+
     def test_span_do_consumidor_e_filho_da_publicacao_e_vai_para_a_outbox(
         self,
         banco: Banco,
