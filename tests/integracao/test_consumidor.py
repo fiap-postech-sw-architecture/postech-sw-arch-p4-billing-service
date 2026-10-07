@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 import pika
 import pytest
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, StatusCode
 from pika.exceptions import AMQPConnectionError
 from prometheus_client import REGISTRY
 from pymongo.errors import (
@@ -395,6 +395,7 @@ class TestClassificacao:
             (ExecutionTimeout("operacao longa"), "retry"),
             (_rotulado("TransientTransactionError"), "retry"),
             (_rotulado("RetryableWriteError"), "retry"),
+            (_rotulado("UnknownTransactionCommitResult"), "retry"),
             (GatewayPagamentoIndisponivelError(), "retry"),
             (ConnectionResetError("rede"), "retry"),
             (TimeoutError("rede"), "retry"),
@@ -407,6 +408,7 @@ class TestClassificacao:
             "execution-timeout",
             "transacao-transitoria",
             "escrita-repetivel",
+            "commit-sem-resultado",
             "provedor-fora",
             "conexao",
             "timeout",
@@ -451,6 +453,7 @@ class TestRetry:
             (3, "billing.comandos.retry.60s"),
             (4, "billing.comandos.retry.300s"),
         ],
+        ids=["1s", "5s", "15s", "60s", "300s"],
     )
     def test_erro_transitorio_vai_para_a_fila_do_nivel_seguinte(
         self,
@@ -479,6 +482,11 @@ class TestRetry:
         assert copia.expiration is None
         assert copia.user_id == "billing"
         assert copia.message_id == envelope["id"]
+        assert (copia.correlation_id, copia.type, copia.content_type) == (
+            envelope["correlation_id"],
+            "CancelarOrcamento",
+            "application/json",
+        )
         assert copia.delivery_mode == 2
         [consumo] = [
             s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
@@ -643,6 +651,7 @@ class TestRastreamento:
         assert do_handler["trace_id"] == f"{consumo.context.trace_id:032x}"
         assert do_handler["span_id"] == f"{consumo.context.span_id:016x}"
         assert do_handler["correlation_id"] == envelope["correlation_id"]
+        assert do_handler["mensagem_id"] == envelope["id"]
         [fora] = [linha for linha in linhas if linha["event"] == "fora_do_span"]
         assert "trace_id" not in fora
 
@@ -669,6 +678,40 @@ class TestRastreamento:
         [linha] = banco["outbox"].find()
         assert linha["traceparent"].split("-")[2] == f"{consumo.context.span_id:016x}"
         assert eventos_do_outbox(banco)[0]["causation_id"] == envelope["id"]
+
+    def test_span_com_erro_leva_so_o_nome_da_excecao_e_o_destino(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        handler.erro = ConnectionResetError("dados do cliente: placa ABC1D23")
+
+        entregar(consumidor, CanalDeTeste(), _cancelar())
+
+        [consumo] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
+        ]
+        assert consumo.status.status_code is StatusCode.ERROR
+        assert consumo.status.description == "ConnectionResetError"
+        assert consumo.attributes is not None
+        assert consumo.attributes["messaging.destination.name"] == "billing.comandos"
+
+    def test_mensagem_processada_guarda_tipo_e_correlation_id(
+        self, banco: Banco, consumidor: ConsumidorDeComandos
+    ) -> None:
+        envelope = _cancelar()
+
+        entregar(consumidor, CanalDeTeste(), envelope)
+
+        documento = banco["mensagens_processadas"].find_one(
+            {"_id": UUID(envelope["id"])}
+        )
+        assert documento is not None
+        assert (documento["tipo"], documento["correlation_id"]) == (
+            "CancelarOrcamento",
+            UUID(envelope["correlation_id"]),
+        )
 
 
 class CanalDoBrokerFalso:
