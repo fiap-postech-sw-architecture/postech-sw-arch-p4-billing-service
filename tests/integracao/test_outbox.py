@@ -295,6 +295,35 @@ class TestTransacaoDaMensagem:
         assert banco["orcamentos"].count_documents({}) == 0
         assert banco["mensagens_processadas"].count_documents({}) == 0
 
+    def test_falha_depois_de_um_evento_avulso_registrado_tambem_e_defeito(
+        self, banco: Banco
+    ) -> None:
+        def handler(uow: UnidadeDaMensagem) -> None:
+            # O desfecho republicado: sem agregado alterado, so o evento.
+            uow.executar(lambda: uow.registrar_evento(_falha_de_geracao("primeiro")))
+
+            def falha() -> None:
+                raise LookupError("segundo trabalho")
+
+            uow.executar(falha)
+
+        with pytest.raises(RuntimeError, match="depois de outro gravado"):
+            processar_mensagem(banco, _comando(), handler)
+
+        assert eventos_do_outbox(banco) == []
+        assert banco["mensagens_processadas"].count_documents({}) == 0
+
+    def test_trabalho_dentro_de_outro_trabalho_da_mensagem_e_recusado(
+        self, banco: Banco
+    ) -> None:
+        def handler(uow: UnidadeDaMensagem) -> None:
+            uow.executar(lambda: uow.executar(lambda: None))
+
+        with pytest.raises(RuntimeError, match="aninhada"):
+            processar_mensagem(banco, _comando(), handler)
+
+        assert banco["mensagens_processadas"].count_documents({}) == 0
+
 
 class TestTransacaoNoBanco:
     def test_efeito_outbox_e_mensagem_vao_na_mesma_transacao(
