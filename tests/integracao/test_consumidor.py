@@ -629,6 +629,26 @@ class TestHandlerForaDaConexao:
         assert canal.confirmadas == canal.rejeitadas == []
         assert canal.publicadas == []
 
+    def test_ack_copia_de_retry_e_dlq_saem_da_thread_que_chamou_tratar(
+        self, consumidor: ConsumidorDeComandos, handler: HandlerDeTeste
+    ) -> None:
+        canal = CanalDeTeste()
+
+        assert entregar(consumidor, canal, _cancelar()) == "processada"
+        handler.erro = AutoReconnect("banco caiu")
+        assert entregar(consumidor, canal, _cancelar()) == "retry"
+        handler.erro = KeyError("bug")
+        assert entregar(consumidor, canal, _cancelar()) == "dlq"
+
+        # O handler roda na thread de trabalho; o canal do pika so aceita a
+        # thread da conexao, a que entregou a mensagem.
+        assert (len(canal.confirmadas), len(canal.publicadas), canal.rejeitadas) == (
+            2,
+            1,
+            [3],
+        )
+        assert canal.threads == {threading.get_ident()}
+
 
 class TestIdempotencia:
     def test_mesmo_id_roda_o_handler_e_conta_como_duplicada(

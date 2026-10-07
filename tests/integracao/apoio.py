@@ -229,12 +229,14 @@ class GatewayRoteirizado(GatewayPagamentoSimulado):
 
 
 class CanalDeTeste:
-    """``Canal`` do consumidor que so anota publicacoes, acks e rejeicoes."""
+    """``Canal`` do consumidor que so anota publicacoes, acks e rejeicoes, e
+    as threads que as fizeram (o pika so aceita a da conexao)."""
 
     def __init__(self, erro_ao_publicar: Exception | None = None) -> None:
         self.publicadas: list[tuple[str, str, bytes, pika.BasicProperties]] = []
         self.confirmadas: list[int] = []
         self.rejeitadas: list[int] = []
+        self.threads: set[int] = set()
         self.erro_ao_publicar = erro_ao_publicar
 
     def publicar(
@@ -244,14 +246,17 @@ class CanalDeTeste:
         corpo: bytes,
         propriedades: pika.BasicProperties,
     ) -> None:
+        self.threads.add(threading.get_ident())
         if self.erro_ao_publicar is not None:
             raise self.erro_ao_publicar
         self.publicadas.append((exchange, routing_key, corpo, propriedades))
 
     def confirmar(self, entrega: int) -> None:
+        self.threads.add(threading.get_ident())
         self.confirmadas.append(entrega)
 
     def rejeitar(self, entrega: int) -> None:
+        self.threads.add(threading.get_ident())
         self.rejeitadas.append(entrega)
 
     def aguardar(self, segundos: float) -> None:
