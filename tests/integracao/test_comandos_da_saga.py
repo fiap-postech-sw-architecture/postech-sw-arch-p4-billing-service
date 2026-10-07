@@ -486,6 +486,8 @@ class TestEstornarPagamento:
         assert respostas(banco)[-1] == ("PagamentoCancelado", compensacao["id"])
         assert gateway.cobrancas == []
         assert _pagamento(banco, ordem_id)["status"] == "CANCELADO"
+        # Descartado sem abrir transacao, o pedido fica registrado mesmo assim.
+        assert banco["mensagens_processadas"].find_one({"_id": UUID(atrasado["id"])})
 
     def test_cobranca_aberta_e_cancelada_e_republicada_no_reenvio(
         self,
