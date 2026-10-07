@@ -92,3 +92,14 @@ def test_tracestate_acima_do_limite_w3c_e_descartado(
         assert portador["traceparent"].startswith(
             "00-4bf92f3577b34da6a3ce929d0e0e4736-"
         )
+
+
+def test_tracestate_de_exatamente_512_caracteres_e_mantido(
+    spans: InMemorySpanExporter,
+) -> None:
+    # 16 membros de 31 ou 32 caracteres: exatamente o limite do W3C.
+    exato = ",".join(f"k{i:02d}={'v' * (27 if i < 15 else 28)}" for i in range(16))
+    assert len(exato) == 512
+    pai = telemetria.contexto_de({"traceparent": TRACEPARENT, "tracestate": exato})
+    with telemetria.tracer.start_as_current_span("filho", context=pai):
+        assert telemetria.contexto_atual()["tracestate"] == exato

@@ -122,3 +122,10 @@ def test_processos_da_mensageria_nao_carregam_a_pilha_http() -> None:
         [sys.executable, "-c", codigo], capture_output=True, text=True, check=True
     )
     assert saida.stdout.strip() == "[]"
+
+
+def test_erro_de_rabbitmq_url_nao_ecoa_a_senha() -> None:
+    url = "http://billing:SENHA-DO-BROKER@rabbitmq:5672/"  # gitleaks:allow (teste)
+    with pytest.raises(ValueError, match="amqp") as erro:
+        ConfiguracaoDoRelay.do_ambiente(_env(RABBITMQ_URL=url))
+    assert "SENHA-DO-BROKER" not in str(erro.value)

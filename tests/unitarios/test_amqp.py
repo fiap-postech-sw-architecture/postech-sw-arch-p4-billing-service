@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING
 
 import pika
 import pytest
-from pika.exceptions import AMQPConnectionError, ChannelWrongStateError
+from pika.exceptions import (
+    AMQPConnectionError,
+    ChannelWrongStateError,
+    NackError,
+    StreamLostError,
+)
 
 from src.compartilhado.infraestrutura.mensageria import amqp
 from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, manter_conectado
@@ -213,3 +218,58 @@ def test_bloqueio_do_broker_e_anotado_e_logado(
         "low on memory",
     )
     assert fim.getMessage() == "broker_connection_unblocked"
+
+
+def test_parametros_da_conexao_sao_os_do_contrato_de_operacao() -> None:
+    params = amqp.parametros(
+        "amqp://billing:x@rabbitmq:5672/%2F",  # gitleaks:allow (teste)
+        nome="billing-relay",
+    )
+
+    # Heartbeat de 30 s, bloqueio abaixo do prazo de encerramento, socket de 5 s
+    # e uma tentativa por abertura (o laco do processo faz o backoff).
+    assert (
+        params.heartbeat,
+        params.blocked_connection_timeout,
+        params.socket_timeout,
+        params.connection_attempts,
+    ) == (30, 8, 5, 1)
+    assert params.client_properties == {"connection_name": "billing-relay"}
+
+
+def test_nack_do_broker_e_recusa_da_mensagem_e_nao_queda_da_conexao() -> None:
+    class CanalQueNacka:
+        is_open = True
+
+        def basic_publish(self, *_args: object, **_opcoes: object) -> None:
+            raise NackError([])
+
+    canal = CanalSemBroker()
+    canal._publicacao = CanalQueNacka()
+
+    with pytest.raises(amqp.MensagemRecusadaError, match="NackError"):
+        canal.publicar(
+            "pytstop.eventos", "evento.billing.x", b"{}", pika.BasicProperties()
+        )
+
+
+def test_logs_de_queda_do_broker_nao_levam_o_texto_da_excecao(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, sorteio: SorteioAnotado
+) -> None:
+    # As excecoes do pika trazem a URL, com a senha.
+    url = "amqp://billing:SENHA-DO-BROKER@rabbitmq:5672/%2F"  # gitleaks:allow (teste)
+
+    class NaoAbre(CanalSemBroker):
+        def abrir(self) -> None:
+            raise AMQPConnectionError(url)
+
+    def cai() -> None:
+        raise StreamLostError(url)
+
+    with caplog.at_level(logging.INFO):
+        _rodar(NaoAbre(), cai, EsperaAnotada(ate=1), tmp_path / "hb")
+        _rodar(CanalSemBroker(), cai, EsperaAnotada(ate=1), tmp_path / "hb")
+
+    mensagens = [registro.getMessage() for registro in caplog.records]
+    assert {"broker_unavailable", "broker_connection_lost"} <= set(mensagens)
+    assert "SENHA-DO-BROKER" not in "\n".join(str(r.__dict__) for r in caplog.records)
