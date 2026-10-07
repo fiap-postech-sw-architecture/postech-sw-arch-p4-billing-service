@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	check audit smoke run compose-up compose-down compose-logs seed
+	check audit smoke manifests run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -97,6 +97,30 @@ smoke:
 	if [ $$status -ne 0 ]; then $(SMOKE_COMPOSE) logs --no-color --tail=200; fi; \
 	$(SMOKE_COMPOSE) down -v; \
 	exit $$status
+
+# Manifests do Kubernetes (k8s/), os tres overlays: kubeconform com os schemas
+# do Kubernetes 1.35, a versao do no do kind (Secret reprova: as senhas vem do
+# make deploy do platform), e trivy config sem achado HIGH ou CRITICAL (o que
+# ele ignora, com o motivo, esta em k8s/trivy-ignore.rego), nas versoes do
+# platform. O job build do CI roda este alvo.
+KUBERNETES_VERSION := 1.35.0
+KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0
+TRIVY_IMAGE := aquasec/trivy:0.72.0
+
+manifests:
+	@mkdir -p reports
+	@for overlay in kind kind-ci k3s; do \
+		echo ">> k8s/overlays/$$overlay: kubeconform e trivy config"; \
+		kubectl kustomize k8s/overlays/$$overlay > reports/k8s-$$overlay.yaml || exit 1; \
+		docker run --rm -i $(KUBECONFORM_IMAGE) -strict -summary -output text \
+			-kubernetes-version $(KUBERNETES_VERSION) -reject Secret - \
+			< reports/k8s-$$overlay.yaml || exit 1; \
+		docker run --rm -i -v "$(CURDIR)/k8s/trivy-ignore.rego:/trivy-ignore.rego:ro" \
+			--entrypoint sh $(TRIVY_IMAGE) -c 'cat > /tmp/manifests.yaml && trivy config \
+			--quiet --severity HIGH,CRITICAL --exit-code 1 \
+			--ignore-policy /trivy-ignore.rego /tmp/manifests.yaml' \
+			< reports/k8s-$$overlay.yaml || exit 1; \
+	done
 
 # API local apontando para o MongoDB do compose (make compose-up).
 run:
