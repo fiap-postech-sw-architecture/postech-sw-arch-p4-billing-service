@@ -8,6 +8,10 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Recent decisions
 
+- 2026-10-06 - Historico do provedor (`NotificacaoRecebida`, `EstornoAutomatico` e as duas colecoes com a regra de idempotencia: a tentativa entra uma vez por status do provedor, o estorno automatico uma vez por tentativa) vive em `src/pagamento/dominio/historico.py`, colaborador interno do agregado `Pagamento`; a decisao do que cada tentativa muda no pagamento continua no agregado
+- 2026-10-06 - `iss` (`pytstop-os-service`) e `aud` (`pytstop`) do JWT sao constantes do validador (ADR-039), como no Execution Service: sem `JWT_ISSUER` e `JWT_AUDIENCE` no ambiente, no compose e no `.env.example`. Um valor trocado por engano rejeitaria todo token valido
+- 2026-10-06 - Contradiz a ressalva de codigo do contexto na entrada dos erros: o 404 de dominio (orcamento, preco, pagamento) sai como `ENTIDADE_NAO_ENCONTRADA`, como no OS e na Execucao; so o link de decisao (`LINK_DECISAO_INVALIDO`) e o checkout simulado (`CHECKOUT_NAO_ENCONTRADO`) mantem codigo proprio, o mesmo 404 para qualquer falha do token. Um teste lista as subclasses do 404 e seus codigos: excecao nova entra de proposito
+- 2026-10-06 - Compensacao de cobranca aberta: recusa do provedor ao fechar o checkout (`PUT /checkout/preferences/{id}`: preferencia inexistente, data recusada, referencia invalida) nao trava a saga. O caso de uso loga (`checkout_close_refused`), conta em `pytstop_cancelamentos_de_cobranca_recusados_total` e conclui CANCELADO com `PagamentoCancelado`, porque a aprovacao tardia ja e estornada pelo Billing (ADR-040, passo 7). Falha transitoria continua propagando para o consumidor repetir
 - 2026-10-06 - Documento gravado que fere as invariantes do agregado vira `DocumentoInvalidoError` na leitura (decorator `reidratacao` dos repositorios): defeito de dado e 500 com traceback no log, nunca o 422 `VALOR_INVALIDO`, que e so para a entrada do chamador
 - 2026-10-06 - `decidido_por` e o `sub` do JWT sao UUID (o contrato da plataforma define `decidido_por` como uuid; o OS emite o id do usuario no `sub`): token com `sub` fora do formato e o mesmo 401, e a `Decisao` do atendente exige o UUID canonico. Achado pelo teste de contrato contra os JSON Schemas da plataforma, copiados em `tests/contratos` (origem: contratos/schemas do repo platform @ 99c6ca6)
 - 2026-10-06 - `Dinheiro` com teto de 10 digitos inteiros (o `dinheiro` do contrato das mensagens), conferido antes do `quantize`; linha do orcamento com quantidade inteira de 1 a 1000 e tetos de codigo (50) e descricao (255). `GerarOrcamento` fora desses limites responde `GeracaoDeOrcamentoFalhou` com a mensagem do dominio (sem o valor recebido)
@@ -33,6 +37,8 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Discovered conventions
 
+- 2026-10-06 - Teste de ordem de consulta no MongoDB precisa tirar o indice que a entregaria por acaso (`sem_o_indice_de_prazo`): com o indice (status, expira_em) a fila de prazo sai em ordem mesmo sem o sort da consulta. Para provar que algo NAO gravou, `cliente_espiado` e `EscritasEspiadas` (tests/integracao/apoio.py) contam os insert e update enviados
+- 2026-10-06 - Textos de erro iguais nos tres servicos: 401 `Credencial ausente, invalida ou expirada`, 403 `Papel nao autorizado para esta operacao`, 405 `Metodo nao permitido para este recurso`
 - 2026-10-06 - Supressao do SonarQube so com o motivo no codigo, como no Execution Service: `# NOSONAR` nos handlers de erro async sem await (S7503, de proposito para nao ir ao threadpool) e no caminho fixo do heartbeat no tmpfs do container (S5443)
 - 2026-10-06 - Contradiz a entrada do DOCKER_HOST abaixo: quem aponta o colima e o fixture `mongo_uri` (tests/integracao/conftest.py), so durante a sessao, inclusive o socket do Ryuk; a imagem do MongoDB dos testes e do compose e `mongo:7.0.43`, a mesma da plataforma
 - 2026-10-06 - Rota nova fora da lista publica precisa entrar na matriz papel x rota de `tests/integracao/test_api_autorizacao.py` (o teste compara com o OpenAPI); evento novo precisa de schema em `tests/contratos` e de exemplo em `tests/unitarios/test_outbox_envelope.py`
@@ -43,6 +49,8 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Gotchas
 
+- 2026-10-06 - `! curl ... | grep -q` num alvo do Makefile passa mesmo com o curl falhando: sem pipefail (o sh do CI e o dash, que nem o tem) o grep ve entrada vazia e a negacao da certo. Capturar os cabecalhos numa variavel (`-f` derruba a cadeia) e exigir tambem a linha `HTTP/`
+- 2026-10-06 - O regex de telefone do scrub mascarava cerca de 1,4% dos UUID v4 (o trecho `dd-dddd-dddd` entre os grupos casa o split 4-4), justamente os ids de ordem, correlacao e requisicao que se procuram no log. A guarda e `(?:(?<![0-9A-Fa-f])|(?=[(+]))` (nao colado a digito hexadecimal, salvo se comeca em `(` ou `+`) com `(?!\d)` no fim, testada com 10 mil `uuid4()` em minusculas e maiusculas; a primeira versao (`(?<![\w-])` e `(?![\w-])`) deixava de mascarar telefone colado a hifen ou letra (`tel-11 99999-0000`). Vale para todo regex de PII que roda sobre ids
 - 2026-10-06 - O laco do `prazos` so repete sem esperar quando a expiracao bate no limite (ela tira os vencidos da fila); a conciliacao consulta sem mudar o status, e contar os consultados fazia o processo repetir os mesmos 100 pagamentos sem parar, martelando o Mercado Pago
 - 2026-10-06 - testcontainers acha o colima pelo contexto do Docker e preenche `DOCKER_HOST`, mas nao o socket que o Ryuk monta: sem `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` o Ryuk tenta montar o caminho do host e o container nao sobe
 - 2026-10-06 - `app.mount("/metrics", make_asgi_app())` so responde `/metrics/`; com `redirect_slashes=False` o scrape em `/metrics` vira 404. Expor como rota comum com `generate_latest()`
@@ -62,6 +70,8 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Tech debt / TODO
 
+- 2026-10-06 - LOW - `PUT /checkout/preferences/{id}` com `expiration_date_to = agora` so foi provado com respx. Se o Mercado Pago recusar data nao futura, toda compensacao de cobranca aberta conclui sem fechar o checkout (a aprovacao tardia e estornada e a metrica `pytstop_cancelamentos_de_cobranca_recusados_total` cresce): validar na sandbox junto da evidencia do RF-034
+- 2026-10-06 - LOW - Contradiz a entrada da classe `Pagamento` abaixo: o historico do provedor e os estornos automaticos sairam para `historico.py` (classe de 433 para 412 linhas), mas ela segue acima do limite de 300 linhas e 10 metodos do checklist: 13 dos 25 membros publicos sao leituras e o resto e a maquina de estados da RFC (solicitar, aplicar tentativa, estornar automaticamente, expirar, compensar), que fica no agregado porque as invariantes vivem nele. Nova extracao so se a maquina crescer
 - 2026-10-06 - RESOLVIDO - Contradiz as entradas do estorno automatico e da saude abaixo: estorno automatico recusado tem marca no agregado e a metrica `pytstop_estornos_automaticos_recusados_total`; a readiness com o MongoDB existe (`/api/v1/saude/pronto`)
 - 2026-10-06 - MEDIUM - Ainda fora do repositorio: consumidor dos comandos da saga e relay da outbox (ADR-036), manifests do Kubernetes com o Job de init do banco, `root_path` atras do Kong, `docs/arquitetura.md` e `docs/api` (OpenAPI e colecao Postman). `GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento`, `EstornarPagamento` e os adapters entre contextos so tem chamador nos testes ate o consumidor existir
 - 2026-10-06 - LOW - `tests/contratos` e copia dos JSON Schemas do repo platform (contratos/schemas @ 99c6ca6): atualizar quando a plataforma publicar a versao na main
@@ -73,6 +83,9 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Review lessons
 
+- 2026-10-06 - Docstring ou README que promete um desfecho (`EstornoDePagamentoFalhou` ao fechar o checkout) precisa de teste do ramo: a promessa nunca foi exercida e o codigo propagava a excecao, travando a saga
+- 2026-10-06 - Regex de mascaramento de PII precisa de teste pelos dois lados: a classe inteira de valores legitimos que passam por ele (10 mil UUID v4, em caixa baixa e alta) e as formas de PII coladas a hifen e a palavra. O falso positivo de 1,4% passou por 100% de cobertura, e a primeira correcao trocou o falso positivo por um falso negativo
+- 2026-10-06 - Mutacao achou lacunas que 100% de cobertura nao viu: laco sem espera (observar o `wait` com um Event espiao), "nao gravou" (contar os comandos do banco, nao comparar o documento), ordem de consulta que o indice ja entrega, opcoes do cliente (ler `cliente.options`) e classes de status do adapter (4xx fora do 404 e 3xx onde o corpo e ignorado)
 - 2026-10-06 - 100% de linhas e ramos nao impediu regressao em autorizacao, outbox e maquina de estados: testes de mutacao acharam 48 lacunas. Para cada permissao, transacao ou transicao, o teste precisa falhar quando a regra e removida (matriz guiada pelo OpenAPI, matriz origem x comando, `CommandListener` na outbox)
 - 2026-10-06 - Docstring que afirma propriedade de seguranca ("so para demo", "UID numerico", "invariante de dominio") precisa ter o codigo que a imponha: conferir cada uma contra o comportamento
 - 2026-10-06 - Padrao inseguro por omissao (simulador de pagamento ligado sem `MP_MODE`) e falha critica mesmo com aviso no log: configuracao que aprova dinheiro falha fechada
