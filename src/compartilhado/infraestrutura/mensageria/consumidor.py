@@ -1,19 +1,22 @@
 """Consumidor dos comandos da saga (ADR-036; RFC-004, secoes 5.1 e 5.4).
 
-Para cada mensagem: confere o ``user_id`` contra o produtor do tipo (comandos
-sao do ``os``; a copia de retry chega com o proprio usuario e ``x-tentativa``
-maior que zero), abre o span CONSUMER filho da publicacao, valida o envelope
-no contrato e chama o handler do tipo com uma unidade de trabalho da mensagem,
-que grava ``mensagens_processadas`` na transacao do efeito. O handler roda
-mesmo para o ``id`` ja visto: os casos de uso sao idempotentes pela chave de
-negocio e republicam o desfecho registrado, sem repetir o efeito.
+Para cada mensagem, antes de qualquer campo dela ir para o log ou para o span:
+``x-tentativa``, corpo de ate 64 KiB, JSON, tipo com handler, ``user_id`` do
+produtor do tipo (comandos sao do ``os``; a copia de retry chega com o proprio
+usuario e ``x-tentativa`` maior que zero) e envelope no contrato. Qualquer
+falha nessa leitura, por qualquer motivo, vai para a DLQ: nenhuma excecao
+causada pela mensagem sai de ``tratar``. Depois, o span CONSUMER filho da
+publicacao e o handler do tipo com uma unidade de trabalho da mensagem, que
+grava ``mensagens_processadas`` na transacao do efeito. O handler roda mesmo
+para o ``id`` ja visto: os casos de uso sao idempotentes pela chave de negocio
+e republicam o desfecho registrado, sem repetir o efeito.
 
 Erro transitorio (banco, provedor ou rede fora; erro que o MongoDB marca como
 repetivel): copia publicada no ``pytstop.retry`` com ``x-tentativa``
 incrementado, na fila de retry do nivel da nova tentativa (``<fila>.retry.1s``
 a ``.300s``, cada uma com o proprio TTL), com confirm, e so entao ack na
-original. A sexta falha, a copia recusada e qualquer outro erro (contrato,
-tipo, versao, ``user_id``, regra de negocio ou defeito) vao para a DLQ.
+original. A sexta falha, a copia recusada e qualquer outro erro (regra de
+negocio sem evento de falha no contrato ou defeito) vao para a DLQ.
 """
 
 from __future__ import annotations
@@ -63,6 +66,10 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 EXCHANGE_RETRY: Final = "pytstop.retry"
+# O envelope real tem poucos KB; acima disso o corpo nem chega ao parser.
+TAMANHO_MAXIMO_DO_CORPO: Final = 64 * 1024
+# Campo ainda nao validado vai para o log cortado.
+_LIMITE_NO_LOG: Final = 64
 # Fila de retry por tentativa (1 a 5); a sexta falha vai para a DLQ.
 NIVEIS_DE_RETRY: Final = ("1s", "5s", "15s", "60s", "300s")
 PRODUTOR_DOS_COMANDOS: Final = "os"
@@ -138,7 +145,11 @@ class ConsumidorDeComandos:
         propriedades: pika.BasicProperties,
         corpo: bytes,
     ) -> str:
-        """Processa uma entrega; devolve o ``resultado`` contado na metrica."""
+        """Processa uma entrega; devolve o ``resultado`` contado na metrica.
+
+        So a queda do broker (erro do canal ao confirmar, rejeitar ou publicar)
+        sobe para o laco do processo, que reconecta.
+        """
         cabecalhos: dict[str, Any] = dict(propriedades.headers or {})
         tipo = TIPO_DESCONHECIDO
         try:
@@ -146,13 +157,13 @@ class ConsumidorDeComandos:
             envelope = _envelope(corpo)
             tipo = self._tipo_conhecido(envelope)
             self._conferir_origem(propriedades.user_id, tentativa)
-        except _PermanenteError as exc:
-            resultado = self._descartar(canal, tag, tipo, exc)
+            contratos.validar(envelope)
+        except Exception as exc:  # noqa: BLE001 - entrada fora da regra, por qualquer motivo, vai para a DLQ
+            resultado = self._descartar(canal, tag, exc, **_identificacao(propriedades))
         else:
             entrega = _Entrega(tag, propriedades, cabecalhos, corpo, tentativa, tipo)
             with structlog.contextvars.bound_contextvars(
-                correlation_id=str(envelope.get("correlation_id")),
-                mensagem_id=str(envelope.get("id")),
+                correlation_id=envelope["correlation_id"], mensagem_id=envelope["id"]
             ):
                 resultado = self._tratar_no_span(canal, entrega, envelope)
         MENSAGENS_CONSUMIDAS.labels(tipo=tipo, resultado=resultado).inc()
@@ -161,7 +172,7 @@ class ConsumidorDeComandos:
     def _tipo_conhecido(self, envelope: Mapping[str, Any]) -> str:
         tipo = envelope.get("tipo")
         if not isinstance(tipo, str) or tipo not in self._handlers:
-            msg = "tipo sem handler neste consumidor"
+            msg = f"tipo {_curto(repr(tipo))} sem handler neste consumidor"
             raise _PermanenteError(msg)
         return tipo
 
@@ -186,21 +197,18 @@ class ConsumidorDeComandos:
                 "messaging.system": "rabbitmq",
                 "messaging.operation.type": "process",
                 "messaging.destination.name": self._fila,
-                "messaging.message.id": str(envelope.get("id")),
-                "messaging.message.conversation_id": str(
-                    envelope.get("correlation_id")
-                ),
+                "messaging.message.id": envelope["id"],
+                "messaging.message.conversation_id": envelope["correlation_id"],
                 "pytstop.tentativa": entrega.tentativa,
             },
         ) as span:
             try:
-                contratos.validar(envelope)
                 resultado = self._processar(envelope)
             except Exception as exc:  # noqa: BLE001 - classificado abaixo; nunca ack mudo
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 if _transitorio(exc):
                     return self._repetir(canal, entrega, exc)
-                return self._descartar(canal, entrega.tag, entrega.tipo, exc)
+                return self._descartar(canal, entrega.tag, exc, tipo=entrega.tipo)
             canal.confirmar(entrega.tag)
             _log.info(
                 "command_consumed",
@@ -230,7 +238,7 @@ class ConsumidorDeComandos:
     def _repetir(self, canal: Canal, entrega: _Entrega, erro: Exception) -> str:
         proxima = entrega.tentativa + 1
         if proxima > len(NIVEIS_DE_RETRY):
-            return self._descartar(canal, entrega.tag, entrega.tipo, erro)
+            return self._descartar(canal, entrega.tag, erro, tipo=entrega.tipo)
         original = entrega.propriedades
         copia = pika.BasicProperties(
             message_id=original.message_id,
@@ -248,7 +256,7 @@ class ConsumidorDeComandos:
             canal.publicar(EXCHANGE_RETRY, fila_de_retry, entrega.corpo, copia)
         except MensagemRecusadaError as exc:
             # Sem a copia confirmada, a original nao pode sumir: vai para a DLQ.
-            return self._descartar(canal, entrega.tag, entrega.tipo, exc)
+            return self._descartar(canal, entrega.tag, exc, tipo=entrega.tipo)
         canal.confirmar(entrega.tag)
         _log.warning(
             "command_retry_scheduled",
@@ -260,9 +268,11 @@ class ConsumidorDeComandos:
         )
         return "retry"
 
-    def _descartar(self, canal: Canal, tag: int, tipo: str, erro: Exception) -> str:
+    def _descartar(
+        self, canal: Canal, tag: int, erro: Exception, **identificacao: str | None
+    ) -> str:
         canal.rejeitar(tag)
-        contexto: dict[str, Any] = {"tipo": tipo, "erro": type(erro).__name__}
+        contexto: dict[str, Any] = {**identificacao, "erro": type(erro).__name__}
         if isinstance(erro, DomainException):
             # So o codigo: a mensagem pode trazer texto do provedor de pagamento.
             _log.error(
@@ -303,18 +313,37 @@ def _transitorio(erro: Exception) -> bool:
 def _tentativa(cabecalhos: Mapping[str, Any]) -> int:
     valor = cabecalhos.get("x-tentativa", 0)
     if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0:
-        msg = "x-tentativa invalido"
+        msg = f"x-tentativa invalido: {_curto(repr(valor))}"
         raise _PermanenteError(msg)
     return valor
 
 
 def _envelope(corpo: bytes) -> dict[str, Any]:
+    if len(corpo) > TAMANHO_MAXIMO_DO_CORPO:
+        msg = f"corpo de {len(corpo)} bytes, acima de {TAMANHO_MAXIMO_DO_CORPO}"
+        raise _PermanenteError(msg)
     try:
         envelope = json.loads(corpo)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: JSON aninhado alem do limite do parser.
         msg = "corpo nao e JSON"
         raise _PermanenteError(msg) from None
     if not isinstance(envelope, dict):
         msg = "corpo nao e um envelope"
         raise _PermanenteError(msg)
     return envelope
+
+
+def _identificacao(propriedades: pika.BasicProperties) -> dict[str, str | None]:
+    """O que acha na DLQ a mensagem descartada antes da validacao, cortado (as
+    propriedades AMQP repetem o envelope, mas ainda ninguem as conferiu)."""
+    return {
+        "tipo": _curto(propriedades.type),
+        "mensagem_id": _curto(propriedades.message_id),
+        "correlation_id": _curto(propriedades.correlation_id),
+        "user_id": _curto(propriedades.user_id),
+    }
+
+
+def _curto(valor: object) -> str | None:
+    return None if valor is None else str(valor)[:_LIMITE_NO_LOG]

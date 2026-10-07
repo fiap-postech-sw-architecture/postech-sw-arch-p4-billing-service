@@ -250,6 +250,124 @@ class TestErrosPermanentes:
         assert registro.__dict__["erro"] == "KeyError"
 
 
+class TestEntradaHostil:
+    """Nenhuma excecao causada pela mensagem sai de ``tratar``, e nenhum campo
+    dela vai para o log ou para o span antes da validacao (so cortado)."""
+
+    def test_corpo_acima_do_teto_nao_chega_ao_parser(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        envelope = {**_cancelar(), "enchimento": "x" * 70_000}
+        corpo = json.dumps(envelope).encode()
+        canal = CanalDeTeste()
+
+        with caplog.at_level(logging.ERROR):
+            resultado = consumidor.tratar(canal, 1, propriedades(envelope), corpo)
+
+        assert (resultado, canal.rejeitadas, handler.chamadas) == ("dlq", [1], 0)
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "command_dead_lettered"
+        ]
+        assert registro.__dict__["detalhe"] == (
+            f"corpo de {len(corpo)} bytes, acima de 65536"
+        )
+
+    def test_json_aninhado_alem_da_pilha_do_parser_vai_para_a_dlq(
+        self, consumidor: ConsumidorDeComandos
+    ) -> None:
+        # Numa thread de pilha curta o parser do json estoura a pilha
+        # (RecursionError) antes do teto de tamanho do corpo.
+        corpo = b"[" * 30_000 + b"]" * 30_000
+        canal = CanalDeTeste()
+        resultados: list[str] = []
+
+        def tratar() -> None:
+            resultados.append(
+                consumidor.tratar(canal, 1, propriedades(_cancelar()), corpo)
+            )
+
+        thread = threading.Thread(target=tratar)
+        anterior = threading.stack_size(256 * 1024)
+        try:
+            thread.start()
+        finally:
+            threading.stack_size(anterior)
+        thread.join(timeout=30)
+
+        assert (resultados, canal.rejeitadas) == (["dlq"], [1])
+
+    def test_campo_fora_do_contrato_nao_vai_inteiro_para_o_log_nem_para_o_span(
+        self,
+        consumidor: ConsumidorDeComandos,
+        caplog: pytest.LogCaptureFixture,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        envelope = _cancelar()
+        hostil = "a." * 20_000
+        props = propriedades(envelope)
+        props.message_id = hostil
+        corpo = json.dumps({**envelope, "id": hostil, "correlation_id": hostil})
+
+        with caplog.at_level(logging.INFO):
+            resultado = consumidor.tratar(CanalDeTeste(), 1, props, corpo.encode())
+
+        assert resultado == "dlq"
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "command_dead_lettered"
+        ]
+        assert registro.__dict__["mensagem_id"] == hostil[:64]
+        assert max(len(str(r.__dict__)) for r in caplog.records) < 2000
+        assert spans.get_finished_spans() == ()
+
+    @pytest.mark.parametrize(
+        "etapa",
+        ["_conferir_origem", "_tipo_conhecido"],
+        ids=["origem", "tipo"],
+    )
+    def test_falha_inesperada_na_leitura_tambem_vai_para_a_dlq(
+        self,
+        consumidor: ConsumidorDeComandos,
+        monkeypatch: pytest.MonkeyPatch,
+        etapa: str,
+    ) -> None:
+        def defeito(*_args: object) -> None:
+            raise TypeError("defeito")
+
+        monkeypatch.setattr(ConsumidorDeComandos, etapa, defeito)
+        canal = CanalDeTeste()
+
+        assert entregar(consumidor, canal, _cancelar()) == "dlq"
+        assert canal.rejeitadas == [1]
+
+    def test_dlq_antes_da_validacao_loga_o_que_acha_a_mensagem(
+        self, consumidor: ConsumidorDeComandos, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        envelope = {**_cancelar(), "tipo": "TipoInventado"}
+        antes = _consumidas("desconhecido", "dlq")
+
+        with caplog.at_level(logging.ERROR):
+            assert entregar(consumidor, CanalDeTeste(), envelope) == "dlq"
+
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "command_dead_lettered"
+        ]
+        assert (
+            registro.__dict__["tipo"],
+            registro.__dict__["mensagem_id"],
+            registro.__dict__["correlation_id"],
+            registro.__dict__["user_id"],
+        ) == ("TipoInventado", envelope["id"], envelope["correlation_id"], "os")
+        assert registro.__dict__["detalhe"] == (
+            "tipo 'TipoInventado' sem handler neste consumidor"
+        )
+        # O rotulo da metrica fica fechado: o tipo inventado nao vira serie.
+        assert _consumidas("desconhecido", "dlq") == antes + 1
+        assert _consumidas("TipoInventado", "dlq") == 0
+
+
 def _rotulado(rotulo: str) -> OperationFailure:
     # O driver le os rotulos de errorLabels na resposta do servidor.
     return OperationFailure("conflito", code=112, details={"errorLabels": [rotulo]})
