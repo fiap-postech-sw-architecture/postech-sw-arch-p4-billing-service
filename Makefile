@@ -59,8 +59,8 @@ audit:
 
 # Smoke da imagem pelo entrypoint real (init do banco, seed, usuario 1001), o
 # job build do CI: sobe a stack (o --wait espera o healthcheck de cada servico,
-# inclusive relay e consumidor prontos, conectados ao RabbitMQ), confere de
-# novo o estado dos dois, publica um GerarOrcamento como o OS e espera o
+# inclusive relay e consumidor prontos, conectados ao RabbitMQ; servico doente
+# derruba o --wait), publica um GerarOrcamento como o OS e espera o
 # OrcamentoGerado (scripts/smoke_mensageria.py), confere a readiness da API
 # (MongoDB preparado), que rota autenticada sem token responde 401 e que a
 # resposta nao anuncia o servidor (os cabecalhos vem de uma variavel: num pipe,
@@ -82,13 +82,7 @@ SMOKE_COMPOSE := API_PORT=$(SMOKE_PORT) MONGO_PORT=$(SMOKE_MONGO_PORT) \
 smoke:
 	@status=0; \
 	$(SMOKE_COMPOSE) up -d --build --wait \
-	&& nao_prontos="" \
-	&& for processo in relay consumidor; do \
-		test "$$($(SMOKE_COMPOSE) ps --format '{{.Health}}' $$processo)" = healthy \
-			|| nao_prontos="$$nao_prontos $$processo"; \
-	done \
-	&& test -z "$$nao_prontos" \
-	&& echo "relay e consumidor prontos (conectados ao RabbitMQ)" \
+	&& echo "relay e consumidor prontos (healthcheck: conectados ao RabbitMQ)" \
 	&& $(SMOKE_COMPOSE) exec -T -e SMOKE_OS_URL=$(SMOKE_OS_URL) relay \
 		python - < scripts/smoke_mensageria.py \
 	&& curl -fsS --max-time 5 $(SMOKE_URL)/api/v1/saude/pronto && echo \
