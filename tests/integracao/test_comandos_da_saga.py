@@ -9,12 +9,14 @@ prazo) leva o id do comando que abriu o fluxo (RFC-004, secoes 4.5 e 5.4).
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import pytest
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
+from prometheus_client import REGISTRY
 
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     ConsumidorDeComandos,
@@ -294,6 +296,234 @@ class TestCancelarOrcamento:
         assert entregar(consumidor, canal, errado) == "dlq"
         assert canal.rejeitadas == [2]
         assert [tipo for tipo, _ in respostas(banco)] == ["OrcamentoGerado"]
+
+
+class TestTraducaoDosComandos:
+    """Cada campo do ``dados`` chega ao caso de uso, com valores que mudam o
+    resultado (a quantidade fixa em 1 ou o motivo constante passavam)."""
+
+    def test_gerar_leva_itens_quantidades_e_validade_ao_orcamento(
+        self, banco: Banco, consumidor: ConsumidorDeComandos, canal: CanalDeTeste
+    ) -> None:
+        entregar(consumidor, canal, gerar(uuid4()))
+
+        [evento] = eventos_do_outbox(banco, "OrcamentoGerado")
+        linhas = {
+            linha["codigo"]: (linha["quantidade"], linha["subtotal"])
+            for linha in evento["dados"]["linhas"]
+        }
+        assert linhas == {
+            "SRV-TROCA-OLEO": (1, "120.00"),
+            "PEC-OLEO-5W30": (4, "180.00"),
+        }
+        assert evento["dados"]["total"] == "300.00"
+        # ORCAMENTO_VALIDADE_HORAS (72) a partir do relogio do consumidor.
+        assert evento["dados"]["valido_ate"] == "2026-10-09T12:00:00.000Z"
+
+    def test_cancelar_grava_o_motivo_do_comando(
+        self, banco: Banco, consumidor: ConsumidorDeComandos, canal: CanalDeTeste
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        dados = {"ordem_id": str(ordem_id), "motivo": "orcamento_expirado"}
+
+        entregar(consumidor, canal, comando("CancelarOrcamento", dados))
+
+        documento = banco["orcamentos"].find_one({"ordem_id": ordem_id})
+        assert documento is not None
+        assert documento["motivo_cancelamento"] == "orcamento_expirado"
+
+    def test_estornar_grava_o_motivo_do_comando(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        relogio: RelogioFixo,
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        aprovar_pelo_atendente(banco, relogio, ordem_id)
+        entregar(consumidor, canal, solicitar(ordem_id, _orcamento_id(banco, ordem_id)))
+        dados = {"ordem_id": str(ordem_id), "motivo": "pagamento_expirado"}
+
+        entregar(consumidor, canal, comando("EstornarPagamento", dados))
+
+        assert _pagamento(banco, ordem_id)["motivo"] == "pagamento_expirado"
+
+    def test_estornar_pagamento_de_outra_ordem_vai_para_a_dlq(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        relogio: RelogioFixo,
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        aprovar_pelo_atendente(banco, relogio, ordem_id)
+        entregar(consumidor, canal, solicitar(ordem_id, _orcamento_id(banco, ordem_id)))
+        antes = len(eventos_do_outbox(banco))
+        errado = comando(
+            "EstornarPagamento",
+            {
+                "ordem_id": str(ordem_id),
+                "pagamento_id": str(uuid4()),
+                "motivo": "cancelamento",
+            },
+        )
+
+        assert entregar(consumidor, canal, errado) == "dlq"
+
+        assert len(eventos_do_outbox(banco)) == antes
+        assert _pagamento(banco, ordem_id)["status"] == "SOLICITADO"
+
+    def test_estorno_pelo_comando_conta_na_metrica_de_estornos(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        aprovar_pelo_atendente(banco, relogio, ordem_id)
+        entregar(consumidor, canal, solicitar(ordem_id, _orcamento_id(banco, ordem_id)))
+        pagar_no_checkout(banco, gateway, relogio, ordem_id)
+        antes = _estornos("compensacao")
+
+        entregar(consumidor, canal, estornar(ordem_id))
+
+        assert _estornos("compensacao") == antes + 1
+
+    def test_dados_do_comando_nao_vao_para_o_log_nem_para_o_span(
+        self,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        caplog: pytest.LogCaptureFixture,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        with caplog.at_level(logging.INFO):
+            entregar(consumidor, canal, gerar(uuid4()))
+
+        logs = "\n".join(
+            str(r.__dict__) for r in caplog.records if r.name.startswith("src.")
+        )
+        atributos = "\n".join(
+            f"{dict(s.attributes or {})} {s.status.description}"
+            for s in spans.get_finished_spans()
+        )
+        assert "command_consumed" in logs  # o log existe; o dados e que nao
+        for codigo in ("SRV-TROCA-OLEO", "PEC-OLEO-5W30"):
+            assert codigo not in logs
+            assert codigo not in atributos
+
+
+def _estornos(motivo: str) -> float:
+    valor = REGISTRY.get_sample_value(
+        "pytstop_pagamentos_estornados_total", {"motivo": motivo}
+    )
+    return valor or 0.0
+
+
+class TestConcorrencia:
+    """Dois consumidores com a mesma mensagem (ou a mesma ordem) ao mesmo tempo:
+    o indice unico por ordem decide dentro da transacao e os dois dao ack."""
+
+    def _em_paralelo(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        envelopes: list[dict[str, Any]],
+    ) -> list[tuple[str, CanalDeTeste]]:
+        handlers = criar_handlers(
+            configuracao().comandos, gateway=gateway, relogio=relogio
+        )
+        largada = threading.Barrier(len(envelopes))
+        canais = [CanalDeTeste() for _ in envelopes]
+        resultados: list[str] = ["" for _ in envelopes]
+
+        def trabalhar(indice: int) -> None:
+            consumidor = ConsumidorDeComandos(
+                banco, handlers, fila=FILA, usuario="billing", relogio=relogio
+            )
+            largada.wait(timeout=10)
+            try:
+                resultados[indice] = entregar(
+                    consumidor, canais[indice], envelopes[indice]
+                )
+            finally:
+                consumidor.fechar()
+
+        threads = [
+            threading.Thread(target=trabalhar, args=(i,)) for i in range(len(envelopes))
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        return list(zip(resultados, canais, strict=True))
+
+    @pytest.mark.parametrize("rodada", range(5))
+    def test_mesmo_gerar_em_dois_consumidores_gera_um_orcamento(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        rodada: int,
+    ) -> None:
+        mensagem = gerar(uuid4())
+
+        resultados = self._em_paralelo(banco, gateway, relogio, [mensagem, mensagem])
+
+        assert {r for r, _ in resultados} <= {"processada", "duplicada"}
+        assert [c.confirmadas for _, c in resultados] == [[1], [1]]
+        assert banco["orcamentos"].count_documents({}) == 1
+        assert banco["mensagens_processadas"].count_documents({}) == 1
+
+    @pytest.mark.parametrize("rodada", range(5))
+    def test_ids_novos_da_mesma_ordem_respondem_cada_um_com_a_propria_causa(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        rodada: int,
+    ) -> None:
+        ordem_id = uuid4()
+        original, reenvio = gerar(ordem_id), gerar(ordem_id)
+
+        resultados = self._em_paralelo(banco, gateway, relogio, [original, reenvio])
+
+        assert [r for r, _ in resultados] == ["processada", "processada"]
+        assert banco["orcamentos"].count_documents({}) == 1
+        assert {causa for _, causa in respostas(banco)} == {
+            original["id"],
+            reenvio["id"],
+        }
+        assert len(respostas(banco)) == 2
+
+    @pytest.mark.parametrize("rodada", range(5))
+    def test_mesmo_solicitar_em_dois_consumidores_grava_um_pagamento(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        rodada: int,
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        aprovar_pelo_atendente(banco, relogio, ordem_id)
+        pedido = solicitar(ordem_id, _orcamento_id(banco, ordem_id))
+
+        resultados = self._em_paralelo(banco, gateway, relogio, [pedido, pedido])
+
+        assert {r for r, _ in resultados} <= {"processada", "duplicada"}
+        assert [c.confirmadas for _, c in resultados] == [[1], [1]]
+        assert banco["pagamentos"].count_documents({"ordem_id": ordem_id}) == 1
 
 
 class TestEventosDoOrcamentoSemComando:
