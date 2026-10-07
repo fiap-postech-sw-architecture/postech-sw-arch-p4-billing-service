@@ -47,6 +47,7 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Gotchas
 
+- 2026-10-07 - No consumidor, o `pymongo.timeout(10)` envolve o handler inteiro (o `with_transaction` chama o handler), entao o tempo de leitura e do provedor antes do primeiro `executar` tambem conta no teto: provedor lento demais faz a escrita seguinte estourar o prazo, e a mensagem passa pela fila de retry
 - 2026-10-07 - `ChannelClosedByBroker` (403 de permissao de topico, 406 de `user_id`) fecha so o canal em que aconteceu: a publicacao vira `MensagemRecusadaError` (conta tentativa no relay; no consumidor, a original vai para a DLQ) e o canal de publicacao, separado do de consumo, e reaberto na publicacao seguinte, sem reconectar
 - 2026-10-07 - pika so despacha `Connection.Blocked`/`Unblocked` dentro de `process_data_events`, e o RabbitMQ so manda `connection.blocked` para conexao que publica: o publish preso no alarme do broker nao ve o callback. O relay confere a flag `bloqueada` antes de reivindicar, e o `blocked_connection_timeout` (8 s) solta o publish preso
 - 2026-10-07 - No Python 3.14 o `RecursionError` do `json.loads` vem do limite da pilha C, nao do `sys.getrecursionlimit`: o teste do JSON aninhado roda o parse numa thread com pilha de 256 KiB para provar a DLQ sem depender da pilha da thread principal
