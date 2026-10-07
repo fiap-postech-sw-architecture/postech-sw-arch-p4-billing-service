@@ -74,6 +74,7 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Tech debt / TODO
 
+- 2026-10-07 - LOW - Sem teste: o consumidor publicando a copia de retry com o broker sob alarme de memoria (o relay tem o dele, com alarme de verdade); a original so sai da fila depois do confirm da copia
 - 2026-10-07 - RESOLVIDO - Contradiz a divida do platform#6 abaixo: ele entrou na `main` do platform (282f6a3); `contratos/` foi sincronizado (so textos de descricao e exemplos com o `causation_id` do comando que abriu o fluxo), e o README linka o runbook da saga. Segue valida a entrada de levar ao platform o ER com `aberto_por` e o ADR-040 refinado
 - 2026-10-07 - LOW - O platform#6 (aberto) muda os schemas de `CancelarOrcamento`, `EstornarPagamento`, `PagamentoEstornado` e do envelope, o `asyncapi.yaml` e o ADR-040 (resposta reconhecida pelo `causation_id`) e cria o runbook `docs/operacao/runbook-saga.md` que o README cita: quando entrar na `main`, re-sincronizar `contratos/` e o `ORIGEM` e rodar `tests/contratos`
 - 2026-10-07 - LOW - Levar ao platform: o ER com `aberto_por{mensagem_id, traceparent, tracestate}` no orcamento e no pagamento (a RFC-004, secao 7.4, mostra `traceparent` solto) e o ADR-040 refinado: so falha transitoria do provedor volta pela fila de retry, e a recusa 4xx vai para a DLQ
@@ -84,6 +85,8 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Review lessons
 
+- 2026-10-07 - Valor documentado (teto de 10 s da transacao, versao 3 do banco) precisa de teste do valor: trocar o teto por 0,3 s no teste prova que ele existe, nao que e 10, e a versao so era exercida com o banco sem marca. Quando ha comportamento, prefira ele a constante (versao 2 recusada, 3 aceita)
+- 2026-10-07 - Guarda que so age no caminho de falha (o recomeco da transacao descartar o que a tentativa que falhou registrou) passa em 100% de linhas e ramos sem teste que force a falha: o perdedor da corrida no indice unico publicava um `PagamentoSolicitado` fantasma. O teste faz o outro consumidor comitar enquanto este espera o provedor (`durante_a_cobranca` do `GatewayRoteirizado`), sem thread nem `sleep`
 - 2026-10-07 - Comando recusado pelo estado atual nao e erro: mandar descompasso de estado para a DLQ alerta o operador sem nada a corrigir. A DLQ fica para falha permanente sem evento no contrato e erro tecnico, e comando repetido, inclusive compensacao, republica o desfecho
 - 2026-10-07 - Teste de prefetch e de mensagem venenosa precisa das mensagens na fila antes de o consumidor subir: com ele ja ligado, cada uma chega sozinha, e o teste passava com prefetch 10
 - 2026-10-07 - Readiness precisa ser lida dentro da espera do backoff: o arquivo de vida ficava `pronto` durante a espera depois de uma queda, e os testes so o liam antes e depois dela
