@@ -5,19 +5,23 @@ routers fazem com o HTTP. A unidade de trabalho e a da mensagem: o handler
 grava o efeito sem comitar, e o consumidor comita junto a outbox (o comando e
 a causa das respostas) e ``mensagens_processadas``.
 
-``SolicitarPagamento`` nao tem evento de falha no contrato: orcamento ausente,
-de outra ordem ou nao aprovado e recusa do provedor sao erro permanente (DLQ
-com alerta, e o orquestrador compensa pelo prazo tecnico); provedor fora do ar
-e transitorio (fila de retry, ADR-040).
+``SolicitarPagamento`` nao tem evento de falha no contrato. Orcamento que nao
+esta aprovado e descompasso de estado: o comando e ignorado (ack, log
+``command_ignored`` com o codigo, sem resposta), e a saga segue pelo evento que
+ja recebeu ou pelo prazo. Orcamento ausente ou de outra ordem e recusa do
+provedor sao falha permanente (DLQ com alerta, e o orquestrador compensa pelo
+prazo tecnico); provedor fora do ar e transitorio (fila de retry, ADR-040).
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.compartilhado.infraestrutura.mensageria.consumidor import Desfecho
 from src.pagamento.aplicacao.use_cases import EstornarPagamento, SolicitarPagamento
+from src.pagamento.dominio.exceptions import OrcamentoNaoAprovadoError
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 
@@ -29,6 +33,8 @@ if TYPE_CHECKING:
     from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
     from src.pagamento.aplicacao.ports import GatewayPagamento, MetricasDePagamento
 
+_log = logging.getLogger(__name__)
+
 
 def solicitar_pagamento(
     dados: Mapping[str, Any],
@@ -39,16 +45,26 @@ def solicitar_pagamento(
     relogio: Relogio,
 ) -> Desfecho:
     """``PagamentoSolicitado``; repetido republica, depois da lapide descarta."""
-    pagamento = SolicitarPagamento(
-        uow,
-        MongoPagamentoRepository(uow),
-        OrcamentosMongoAdapter(uow),
-        gateway,
-        validade,
-        relogio,
-    ).executar(
-        ordem_id=UUID(dados["ordem_id"]), orcamento_id=UUID(dados["orcamento_id"])
-    )
+    ordem_id = UUID(dados["ordem_id"])
+    try:
+        pagamento = SolicitarPagamento(
+            uow,
+            MongoPagamentoRepository(uow),
+            OrcamentosMongoAdapter(uow),
+            gateway,
+            validade,
+            relogio,
+        ).executar(ordem_id=ordem_id, orcamento_id=UUID(dados["orcamento_id"]))
+    except OrcamentoNaoAprovadoError as exc:
+        _log.info(
+            "command_ignored",
+            extra={
+                "comando": "SolicitarPagamento",
+                "motivo": exc.codigo,
+                "ordem_id": str(ordem_id),
+            },
+        )
+        return Desfecho.IGNORADA
     # A lapide nao tem cobranca: o comando atrasado sai sem efeito e sem resposta.
     if pagamento.checkout_url is None:
         return Desfecho.IGNORADA

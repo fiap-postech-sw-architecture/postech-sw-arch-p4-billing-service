@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 MOTIVO_SEM_ITENS = "Diagnostico sem itens para orcar"
+# Codigo do log de comando ignorado: o original que chegou depois da lapide.
+MOTIVO_LAPIDE = "LAPIDE"
 MOTIVO_ITENS_INVALIDOS = "Itens inexistentes ou inativos na tabela de precos"
 
 
@@ -155,10 +157,12 @@ class GerarOrcamento:
 
     def _repetido(self, existente: Orcamento) -> OrcamentoDTO:
         if existente.valido_ate is None:
+            # A compensacao chegou antes (lapide): sem efeito e sem resposta.
             _log.info(
-                "command_discarded",
+                "command_ignored",
                 extra={
                     "comando": "GerarOrcamento",
+                    "motivo": MOTIVO_LAPIDE,
                     "ordem_id": str(existente.ordem_id),
                 },
             )

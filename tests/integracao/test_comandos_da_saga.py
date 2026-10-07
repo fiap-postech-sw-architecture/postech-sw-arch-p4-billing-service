@@ -8,6 +8,7 @@ prazo) leva o id do comando que abriu o fluxo (RFC-004, secoes 4.5 e 5.4).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -234,14 +235,24 @@ class TestGerarOrcamento:
 
 class TestCancelarOrcamento:
     def test_compensacao_antes_do_original_grava_lapide_e_descarta_o_original(
-        self, banco: Banco, consumidor: ConsumidorDeComandos, canal: CanalDeTeste
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         ordem_id = uuid4()
         compensacao, atrasado = cancelar(ordem_id), gerar(ordem_id)
 
         assert entregar(consumidor, canal, compensacao) == "processada"
-        assert entregar(consumidor, canal, atrasado) == "ignorada"
+        with caplog.at_level(logging.INFO):
+            assert entregar(consumidor, canal, atrasado) == "ignorada"
 
+        [ignorado] = [r for r in caplog.records if r.getMessage() == "command_ignored"]
+        assert (ignorado.__dict__["comando"], ignorado.__dict__["motivo"]) == (
+            "GerarOrcamento",
+            "LAPIDE",
+        )
         assert respostas(banco) == [("OrcamentoCancelado", compensacao["id"])]
         [lapide] = banco["orcamentos"].find()
         assert (lapide["status"], lapide["linhas"]) == ("CANCELADO", [])
@@ -435,17 +446,46 @@ class TestSolicitarPagamento:
             original["id"]
         )
 
-    def test_orcamento_nao_aprovado_vai_para_a_dlq_sem_cobranca(
+    def test_orcamento_nao_aprovado_e_ignorado_sem_cobranca_nem_resposta(
         self,
         banco: Banco,
         consumidor: ConsumidorDeComandos,
         canal: CanalDeTeste,
         gateway: GatewayRoteirizado,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         ordem_id = uuid4()
         entregar(consumidor, canal, gerar(ordem_id))
         mensagem = solicitar(ordem_id, _orcamento_id(banco, ordem_id))
 
+        # Descompasso de estado: ack e log com o codigo, nunca a DLQ.
+        with caplog.at_level(logging.INFO):
+            assert entregar(consumidor, canal, mensagem) == "ignorada"
+
+        assert (canal.confirmadas, canal.rejeitadas) == ([1, 2], [])
+        assert gateway.cobrancas == []
+        assert [tipo for tipo, _ in respostas(banco)] == ["OrcamentoGerado"]
+        assert banco["mensagens_processadas"].find_one({"_id": UUID(mensagem["id"])})
+        [ignorado] = [r for r in caplog.records if r.getMessage() == "command_ignored"]
+        assert (ignorado.__dict__["comando"], ignorado.__dict__["motivo"]) == (
+            "SolicitarPagamento",
+            "ORCAMENTO_NAO_APROVADO",
+        )
+
+    def test_orcamento_de_outra_ordem_vai_para_a_dlq_sem_cobranca(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+    ) -> None:
+        ordem_id, outra = uuid4(), uuid4()
+        entregar(consumidor, canal, gerar(outra))
+        aprovar_pelo_atendente(banco, relogio, outra)
+        mensagem = solicitar(ordem_id, _orcamento_id(banco, outra))
+
+        # Falha permanente sem evento de falha no contrato: DLQ, com alerta.
         assert entregar(consumidor, canal, mensagem) == "dlq"
 
         assert canal.rejeitadas == [2]
@@ -551,6 +591,7 @@ class TestEstornarPagamento:
         canal: CanalDeTeste,
         gateway: GatewayRoteirizado,
         relogio: RelogioFixo,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         ordem_id = uuid4()
         entregar(consumidor, canal, gerar(ordem_id))
@@ -559,8 +600,14 @@ class TestEstornarPagamento:
 
         assert entregar(consumidor, canal, compensacao) == "processada"
         atrasado = solicitar(ordem_id, _orcamento_id(banco, ordem_id))
-        assert entregar(consumidor, canal, atrasado) == "ignorada"
+        with caplog.at_level(logging.INFO):
+            assert entregar(consumidor, canal, atrasado) == "ignorada"
 
+        [ignorado] = [r for r in caplog.records if r.getMessage() == "command_ignored"]
+        assert (ignorado.__dict__["comando"], ignorado.__dict__["motivo"]) == (
+            "SolicitarPagamento",
+            "LAPIDE",
+        )
         assert respostas(banco)[-1] == ("PagamentoCancelado", compensacao["id"])
         assert gateway.cobrancas == []
         assert _pagamento(banco, ordem_id)["status"] == "CANCELADO"
