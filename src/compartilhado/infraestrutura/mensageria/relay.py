@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 import pika
 from opentelemetry.trace import SpanKind, Status, StatusCode
+from pika.exceptions import AMQPError
 from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
@@ -174,15 +175,24 @@ class RelayDaOutbox:
                 span.set_status(Status(StatusCode.ERROR, str(exc)))
                 self._contar_falha(linha, str(exc))
                 return
-            except Exception:
+            except AMQPError:
                 # Queda do broker: devolve sem gastar tentativa e deixa o laco
                 # do processo reconectar.
                 self._devolver(linha)
                 raise
+            except Exception as exc:  # noqa: BLE001 - defeito: conta ate dead (alerta)
+                # Sem contar, a linha voltaria a cada lease e o processo cairia
+                # nela para sempre; contando, vira dead e aparece em outbox_dead.
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                _log.exception("outbox_publish_failed", extra=linha.rotulos)
+                self._contar_falha(linha, type(exc).__name__)
+                return
+        MENSAGENS_PUBLICADAS.labels(tipo=linha.tipo).inc()
         if self._marcar_entregue(linha):
-            MENSAGENS_PUBLICADAS.labels(tipo=linha.tipo).inc()
             _log.info("outbox_message_published", extra=linha.rotulos)
         else:
+            # Lease vencido e retomado por outro relay: a linha e dele agora (a
+            # mensagem pode sair duas vezes; o consumidor deduplica pelo id).
             _log.warning("outbox_claim_lost", extra=linha.rotulos)
 
     def _propriedades(self, linha: _Linha) -> pika.BasicProperties:

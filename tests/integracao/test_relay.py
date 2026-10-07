@@ -8,6 +8,7 @@ broker real entra em ``test_mensageria_rabbitmq.py``.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -224,6 +225,24 @@ class TestFalhas:
         assert (linha["status"], linha["tentativas"]) == ("pendente", 0)
         assert linha["proxima_tentativa_em"] == relogio.agora
         assert "reivindicacao" not in linha
+
+    def test_defeito_ao_publicar_conta_tentativa_em_vez_de_derrubar_o_relay(
+        self, banco: Banco, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        relogio = RelogioFixo()
+        _gravar_orcamentos(banco)
+        relay = _relay(banco, PublicadorFalso(ValueError("defeito")), relogio)
+
+        with caplog.at_level(logging.ERROR):
+            assert relay.entregar_pendentes(1) == 1
+
+        [linha] = _linhas(banco)
+        assert (linha["status"], linha["tentativas"]) == ("pendente", 1)
+        assert linha["ultimo_erro"] == "ValueError"
+        assert any(
+            r.getMessage() == "outbox_publish_failed" and r.exc_info
+            for r in caplog.records
+        )
 
 
 class TestDoisRelays:
