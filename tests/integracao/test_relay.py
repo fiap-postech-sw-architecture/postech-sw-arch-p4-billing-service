@@ -225,6 +225,77 @@ class TestEntrega:
         assert doc["envelope"]["dados"]["link_decisao"] not in texto
         assert str(doc["_id"]) in texto
 
+    def test_publica_o_tracestate_gravado_na_outbox(self, banco: Banco) -> None:
+        _gravar_orcamentos(banco)
+        banco["outbox"].update_one(
+            {},
+            {
+                "$set": {
+                    "traceparent": (
+                        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                    ),
+                    "tracestate": "pytstop=abc",
+                }
+            },
+        )
+        publicador = PublicadorFalso()
+
+        _relay(banco, publicador, RelogioFixo()).entregar_pendentes(1)
+
+        [(*_, props)] = publicador.publicadas
+        assert props.headers["tracestate"] == "pytstop=abc"
+
+    def test_reivindica_pela_proxima_tentativa_e_nao_pela_criacao(
+        self, banco: Banco
+    ) -> None:
+        relogio = RelogioFixo()
+        _gravar_orcamentos(banco, 2)
+        primeira, segunda = _linhas(banco)
+        # A primeira gravada volta de um atraso e fica elegivel depois da
+        # segunda: a segunda sai antes.
+        banco["outbox"].update_one(
+            {"_id": primeira["_id"]},
+            {"$set": {"proxima_tentativa_em": relogio.agora + timedelta(seconds=1)}},
+        )
+        relogio.avancar(seconds=2)
+        publicador = PublicadorFalso()
+
+        _relay(banco, publicador, relogio).entregar_pendentes(2)
+
+        assert publicador.ids == [str(segunda["_id"]), str(primeira["_id"])]
+
+    def test_envelope_nao_vai_para_o_log_nem_para_o_span(
+        self,
+        banco: Banco,
+        caplog: pytest.LogCaptureFixture,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        _gravar_orcamentos(banco)
+        [linha] = _linhas(banco)
+        dados = linha["envelope"]["dados"]
+
+        with caplog.at_level(logging.INFO):
+            _relay(banco, PublicadorFalso(), RelogioFixo()).entregar_pendentes(10)
+
+        logs = "\n".join(
+            str(r.__dict__) for r in caplog.records if r.name.startswith("src.")
+        )
+        atributos = "\n".join(
+            str(dict(s.attributes or {})) for s in spans.get_finished_spans()
+        )
+        assert "outbox_message_published" in logs
+        for valor in (dados["linhas"][0]["descricao"], dados["link_decisao"]):
+            assert valor not in logs
+            assert valor not in atributos
+
+    def test_laco_ocioso_nao_abre_span(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        assert (
+            _relay(banco, PublicadorFalso(), RelogioFixo()).entregar_pendentes(10) == 0
+        )
+        assert spans.get_finished_spans() == ()
+
 
 class TestFalhas:
     def test_recusa_conta_tentativa_com_os_atrasos_do_p3_ate_dead(
@@ -290,17 +361,44 @@ class TestFalhas:
         )
 
 
+class PublicadorQueEspera(PublicadorFalso):
+    """So publica quando todos os relays da corrida ja reivindicaram."""
+
+    def __init__(self, todos_reivindicaram: threading.Barrier) -> None:
+        super().__init__()
+        self.todos_reivindicaram = todos_reivindicaram
+
+    def publicar(
+        self,
+        exchange: str,
+        routing_key: str,
+        corpo: bytes,
+        propriedades: pika.BasicProperties,
+    ) -> None:
+        self.todos_reivindicaram.wait(timeout=10)
+        super().publicar(exchange, routing_key, corpo, propriedades)
+
+
 class TestDoisRelays:
-    def test_concorrentes_nunca_publicam_a_mesma_linha(self, banco: Banco) -> None:
-        _gravar_orcamentos(banco, 40)
+    @pytest.mark.parametrize("rodada", range(25))
+    def test_concorrentes_nunca_reivindicam_a_mesma_linha(
+        self, banco: Banco, rodada: int
+    ) -> None:
+        """Quatro relays largam juntos, cada um reivindica uma linha e so
+        publica quando todos reivindicaram: a janela do claim fica aberta para
+        todos ao mesmo tempo (com um laco longo, um relay a monopolizava e o
+        claim nao atomico passava em uma de cada doze execucoes)."""
+        relays = 4
+        _gravar_orcamentos(banco, relays)
         relogio = RelogioFixo()
-        publicadores = [PublicadorFalso(), PublicadorFalso()]
-        largada = threading.Barrier(2)
+        largada = threading.Barrier(relays)
+        todos_reivindicaram = threading.Barrier(relays)
+        publicadores = [PublicadorQueEspera(todos_reivindicaram) for _ in range(relays)]
 
         def entregar(publicador: PublicadorFalso) -> None:
             relay = _relay(banco, publicador, relogio)
             largada.wait(timeout=10)
-            relay.entregar_pendentes(100)
+            relay.entregar_pendentes(1)
 
         threads = [threading.Thread(target=entregar, args=(p,)) for p in publicadores]
         for thread in threads:
@@ -308,9 +406,29 @@ class TestDoisRelays:
         for thread in threads:
             thread.join(timeout=30)
 
-        publicadas = publicadores[0].ids + publicadores[1].ids
-        assert len(publicadas) == len(set(publicadas)) == 40
+        publicadas = [mensagem for p in publicadores for mensagem in p.ids]
+        assert len(publicadas) == len(set(publicadas)) == relays
         assert {linha["status"] for linha in _linhas(banco)} == {"entregue"}
+
+    def test_lease_vale_exatamente_30_segundos(self, banco: Banco) -> None:
+        _gravar_orcamentos(banco)
+        relogio = RelogioFixo()
+        solta = threading.Event()
+        lento = PublicadorFalso(segura=solta)
+        primeiro = threading.Thread(
+            target=_relay(banco, lento, relogio).entregar_pendentes, args=(1,)
+        )
+        primeiro.start()
+        assert lento.entrou.wait(10)
+        segundo = PublicadorFalso()
+        try:
+            relogio.avancar(seconds=29, milliseconds=999)
+            assert _relay(banco, segundo, relogio).entregar_pendentes(1) == 0
+            relogio.avancar(milliseconds=1)
+            assert _relay(banco, segundo, relogio).entregar_pendentes(1) == 1
+        finally:
+            solta.set()
+            primeiro.join(timeout=10)
 
     @pytest.mark.parametrize(
         "erro_do_primeiro",
@@ -533,13 +651,20 @@ class TestLacoDoProcesso:
 
 
 class TestMetricas:
-    def test_pendentes_e_dead_contados_a_cada_scrape(self, banco: Banco) -> None:
-        _gravar_orcamentos(banco, 3)
-        banco["outbox"].update_one({}, {"$set": {"status": "dead"}})
+    def test_pendentes_em_entrega_e_dead_contados_a_cada_scrape(
+        self, banco: Banco
+    ) -> None:
+        _gravar_orcamentos(banco, 4)
+        situacoes = ("pendente", "em_entrega", "dead", "entregue")
+        for linha, status in zip(_linhas(banco), situacoes, strict=True):
+            banco["outbox"].update_one(
+                {"_id": linha["_id"]}, {"$set": {"status": status}}
+            )
         amostras = {
             familia.name: familia.samples[0].value
             for familia in ColetorDaOutbox("outbox", banco).collect()
         }
+        # Pendente e em entrega ainda nao foram confirmadas pelo broker.
         assert amostras == {"outbox_pendentes": 2, "outbox_dead": 1}
 
     def test_banco_fora_deixa_os_gauges_sem_dado(self) -> None:
