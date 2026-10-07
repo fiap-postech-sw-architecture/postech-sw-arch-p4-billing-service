@@ -6,6 +6,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import shutil
 import socket
 import ssl
 import threading
@@ -283,6 +284,27 @@ def test_abertura_lenta_que_falha_toca_o_arquivo_de_vida_antes_da_espera(
     # A idade na espera e so a da espera: a da tentativa nao se soma a ela.
     [idade] = parar.idades_na_espera
     assert idade < 5
+
+
+def test_erro_de_disco_ao_tocar_o_arquivo_depois_da_abertura_falha_derruba_o_processo(
+    tmp_path: Path,
+) -> None:
+    pasta = tmp_path / "vida"
+    pasta.mkdir()
+
+    class SomeODiretorio(CanalSemBroker):
+        def abrir(self) -> None:
+            # O diretorio do arquivo de vida some durante a tentativa.
+            shutil.rmtree(pasta)
+            msg = "Name or service not known"
+            raise socket.gaierror(socket.EAI_NONAME, msg)
+
+    parar = EsperaAnotada(ate=3)
+
+    with pytest.raises(FileNotFoundError):
+        _rodar(SomeODiretorio(), lambda: None, parar, pasta / "hb")
+
+    assert parar.esperas == []
 
 
 def test_broker_que_aceita_o_tcp_e_nao_responde_espera_com_backoff_fora_da_prontidao(
