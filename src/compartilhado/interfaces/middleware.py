@@ -32,7 +32,10 @@ _DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 _REQUEST_ID_EXTERNO_VALIDO = re.compile(r"[A-Za-z0-9._=-]{1,128}")
 
 
-def _caminho_de_docs(path: str) -> bool:
+def _caminho_de_docs(request: Request) -> bool:
+    # Atras da borda o uvicorn poe o root_path (ROOT_PATH, o prefixo do Kong)
+    # na frente do path: /billing/docs e a pagina /docs.
+    path = request.url.path.removeprefix(request.scope.get("root_path", ""))
     return any(path == p or path.startswith(p + "/") for p in _DOCS_PATHS)
 
 
@@ -64,7 +67,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "max-age=31536000; includeSubDomains"
         )
         response.headers["Cache-Control"] = "no-store"
-        if not _caminho_de_docs(request.url.path):
+        if not _caminho_de_docs(request):
             response.headers["Content-Security-Policy"] = _CSP_DEFAULT
         response.headers["X-Request-ID"] = request_id
         return response
