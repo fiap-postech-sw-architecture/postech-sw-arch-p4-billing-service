@@ -367,8 +367,25 @@ def test_sigterm_encerra_o_laco() -> None:
 
 class TestBoot:
     @pytest.fixture
+    def telemetria(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Processos que pediram o SDK do OpenTelemetry. O provider global e o
+        dos testes (fixture spans): aqui so se anota o pedido."""
+        processos: list[str] = []
+
+        def configurar(processo: str) -> TracerProvider:
+            processos.append(processo)
+            return TracerProvider()
+
+        monkeypatch.setattr(prazos, "configurar_telemetria", configurar)
+        return processos
+
+    @pytest.fixture
     def ambiente(
-        self, monkeypatch: pytest.MonkeyPatch, mongo_uri: str, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mongo_uri: str,
+        tmp_path: Path,
+        telemetria: list[str],
     ) -> dict[str, str]:
         variaveis = {
             "ENVIRONMENT": "test",
@@ -379,16 +396,13 @@ class TestBoot:
         }
         for nome, valor in variaveis.items():
             monkeypatch.setenv(nome, valor)
-        # O provider global do OpenTelemetry e o dos testes (fixture spans).
-        monkeypatch.setattr(
-            prazos, "configurar_telemetria", lambda _processo: TracerProvider()
-        )
         return variaveis
 
     @pytest.mark.parametrize("modo", ["simulado", "mercadopago"])
     def test_main_sobe_com_a_configuracao_minima_e_para_no_sinal(
         self,
         ambiente: dict[str, str],
+        telemetria: list[str],
         monkeypatch: pytest.MonkeyPatch,
         cliente_mongo: MongoClient[dict[str, Any]],
         modo: str,
@@ -405,6 +419,9 @@ class TestBoot:
         finally:
             cliente_mongo.drop_database(ambiente["MONGODB_DB"])
         assert portas == [9100]
+        # Sem o SDK o ciclo nao grava o contexto e o evento de expiracao perde
+        # o span link para o trace do prazos (ADR-043).
+        assert telemetria == ["prazos"]
 
     def test_main_instala_os_sinais_quando_nao_recebe_o_evento(
         self,
