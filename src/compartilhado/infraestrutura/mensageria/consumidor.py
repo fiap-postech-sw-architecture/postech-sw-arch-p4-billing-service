@@ -8,11 +8,12 @@ que grava ``mensagens_processadas`` na transacao do efeito. O handler roda
 mesmo para o ``id`` ja visto: os casos de uso sao idempotentes pela chave de
 negocio e republicam o desfecho registrado, sem repetir o efeito.
 
-Erro transitorio (banco, provedor ou dependencia fora): copia publicada no
-``pytstop.retry`` com ``x-tentativa`` incrementado, na fila de retry do nivel
-da nova tentativa (``<fila>.retry.1s`` a ``.300s``, cada uma com o proprio TTL),
-com confirm, e so entao ack na original. A sexta falha e o erro permanente
-(contrato, tipo, versao, ``user_id`` ou regra de negocio) vao para a DLQ.
+Erro transitorio (banco, provedor ou rede fora; erro que o MongoDB marca como
+repetivel): copia publicada no ``pytstop.retry`` com ``x-tentativa``
+incrementado, na fila de retry do nivel da nova tentativa (``<fila>.retry.1s``
+a ``.300s``, cada uma com o proprio TTL), com confirm, e so entao ack na
+original. A sexta falha, a copia recusada e qualquer outro erro (contrato,
+tipo, versao, ``user_id``, regra de negocio ou defeito) vao para a DLQ.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from uuid import UUID
 import pika
 import structlog
 from opentelemetry.trace import SpanKind, Status, StatusCode
-from pymongo.errors import PyMongoError
+from pymongo.errors import ConnectionFailure, PyMongoError
 
 from src.compartilhado.dominio.exceptions import (
     DependenciaIndisponivelError,
@@ -65,12 +66,11 @@ EXCHANGE_RETRY: Final = "pytstop.retry"
 # Fila de retry por tentativa (1 a 5); a sexta falha vai para a DLQ.
 NIVEIS_DE_RETRY: Final = ("1s", "5s", "15s", "60s", "300s")
 PRODUTOR_DOS_COMANDOS: Final = "os"
-# Falhas que passam sozinhas: banco, provedor ou rede fora (repetir resolve).
-_TRANSITORIOS: Final = (
-    DependenciaIndisponivelError,
-    PyMongoError,
-    ConnectionError,
-    TimeoutError,
+# Rotulos que o proprio MongoDB poe no erro que vale repetir.
+_ROTULOS_TRANSITORIOS: Final = (
+    "TransientTransactionError",
+    "RetryableWriteError",
+    "UnknownTransactionCommitResult",
 )
 
 
@@ -99,7 +99,7 @@ class Canal(Protocol):
     def rejeitar(self, entrega: int) -> None: ...
 
 
-class _ErroPermanenteError(Exception):
+class _PermanenteError(Exception):
     """Mensagem que nenhuma repeticao conserta: vai direto para a DLQ."""
 
 
@@ -146,7 +146,7 @@ class ConsumidorDeComandos:
             envelope = _envelope(corpo)
             tipo = self._tipo_conhecido(envelope)
             self._conferir_origem(propriedades.user_id, tentativa)
-        except _ErroPermanenteError as exc:
+        except _PermanenteError as exc:
             resultado = self._descartar(canal, tag, tipo, exc)
         else:
             entrega = _Entrega(tag, propriedades, cabecalhos, corpo, tentativa, tipo)
@@ -162,7 +162,7 @@ class ConsumidorDeComandos:
         tipo = envelope.get("tipo")
         if not isinstance(tipo, str) or tipo not in self._handlers:
             msg = "tipo sem handler neste consumidor"
-            raise _ErroPermanenteError(msg)
+            raise _PermanenteError(msg)
         return tipo
 
     def _conferir_origem(self, usuario: str | None, tentativa: int) -> None:
@@ -173,7 +173,7 @@ class ConsumidorDeComandos:
         ):
             return
         msg = "user_id diferente do produtor do tipo"
-        raise _ErroPermanenteError(msg)
+        raise _PermanenteError(msg)
 
     def _tratar_no_span(
         self, canal: Canal, entrega: _Entrega, envelope: Mapping[str, Any]
@@ -196,11 +196,10 @@ class ConsumidorDeComandos:
             try:
                 contratos.validar(envelope)
                 resultado = self._processar(envelope)
-            except _TRANSITORIOS as exc:
+            except Exception as exc:  # noqa: BLE001 - classificado abaixo; nunca ack mudo
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
-                return self._repetir(canal, entrega, exc)
-            except Exception as exc:  # noqa: BLE001 - permanente: DLQ com alerta
-                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                if _transitorio(exc):
+                    return self._repetir(canal, entrega, exc)
                 return self._descartar(canal, entrega.tag, entrega.tipo, exc)
             canal.confirmar(entrega.tag)
             _log.info(
@@ -264,13 +263,17 @@ class ConsumidorDeComandos:
     def _descartar(self, canal: Canal, tag: int, tipo: str, erro: Exception) -> str:
         canal.rejeitar(tag)
         contexto: dict[str, Any] = {"tipo": tipo, "erro": type(erro).__name__}
-        if isinstance(
+        if isinstance(erro, DomainException):
+            # So o codigo: a mensagem pode trazer texto do provedor de pagamento.
+            _log.error(
+                "command_dead_lettered", extra={**contexto, "codigo": erro.codigo}
+            )
+        elif isinstance(
             erro,
             (
-                _ErroPermanenteError,
+                _PermanenteError,
                 MensagemRecusadaError,
                 contratos.MensagemForaDoContratoError,
-                DomainException,
             ),
         ):
             # Textos fixos ou o ponto do contrato que falhou, nunca o dado.
@@ -282,11 +285,26 @@ class ConsumidorDeComandos:
         return "dlq"
 
 
+def _transitorio(erro: Exception) -> bool:
+    """Falha que passa sozinha: provedor ou rede fora, banco inacessivel ou
+    erro que o MongoDB marca como repetivel. O resto (contrato, regra, defeito,
+    documento recusado pelo validador do banco) nao melhora repetindo."""
+    if isinstance(erro, (DependenciaIndisponivelError, ConnectionError, TimeoutError)):
+        return True
+    if not isinstance(erro, PyMongoError):
+        return False
+    return (
+        isinstance(erro, ConnectionFailure)
+        or erro.timeout
+        or any(erro.has_error_label(rotulo) for rotulo in _ROTULOS_TRANSITORIOS)
+    )
+
+
 def _tentativa(cabecalhos: Mapping[str, Any]) -> int:
     valor = cabecalhos.get("x-tentativa", 0)
     if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0:
         msg = "x-tentativa invalido"
-        raise _ErroPermanenteError(msg)
+        raise _PermanenteError(msg)
     return valor
 
 
@@ -295,8 +313,8 @@ def _envelope(corpo: bytes) -> dict[str, Any]:
         envelope = json.loads(corpo)
     except ValueError:
         msg = "corpo nao e JSON"
-        raise _ErroPermanenteError(msg) from None
+        raise _PermanenteError(msg) from None
     if not isinstance(envelope, dict):
         msg = "corpo nao e um envelope"
-        raise _ErroPermanenteError(msg)
+        raise _PermanenteError(msg)
     return envelope

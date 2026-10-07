@@ -19,7 +19,12 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from pika.exceptions import AMQPConnectionError
 from prometheus_client import REGISTRY
-from pymongo.errors import AutoReconnect
+from pymongo.errors import (
+    AutoReconnect,
+    ExecutionTimeout,
+    OperationFailure,
+    WriteError,
+)
 
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria.amqp import (
@@ -34,6 +39,10 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atua
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.consumidor import rodar as rodar_consumidor
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
+from src.pagamento.aplicacao.ports import (
+    GatewayPagamentoIndisponivelError,
+    GatewayPagamentoRecusouError,
+)
 from tests.integracao.apoio import (
     CanalDeTeste,
     RelogioFixo,
@@ -241,6 +250,65 @@ class TestErrosPermanentes:
         assert registro.__dict__["erro"] == "KeyError"
 
 
+def _rotulado(rotulo: str) -> OperationFailure:
+    # O driver le os rotulos de errorLabels na resposta do servidor.
+    return OperationFailure("conflito", code=112, details={"errorLabels": [rotulo]})
+
+
+class TestClassificacao:
+    @pytest.mark.parametrize(
+        ("erro", "resultado"),
+        [
+            (AutoReconnect("primario caiu"), "retry"),
+            (ExecutionTimeout("operacao longa"), "retry"),
+            (_rotulado("TransientTransactionError"), "retry"),
+            (_rotulado("RetryableWriteError"), "retry"),
+            (GatewayPagamentoIndisponivelError(), "retry"),
+            (ConnectionResetError("rede"), "retry"),
+            (TimeoutError("rede"), "retry"),
+            (WriteError("documento recusado pelo validador", code=121), "dlq"),
+            (OperationFailure("sem permissao", code=13), "dlq"),
+            (ValueError("defeito"), "dlq"),
+        ],
+        ids=[
+            "auto-reconnect",
+            "execution-timeout",
+            "transacao-transitoria",
+            "escrita-repetivel",
+            "provedor-fora",
+            "conexao",
+            "timeout",
+            "validador-do-banco",
+            "permissao-no-banco",
+            "defeito",
+        ],
+    )
+    def test_so_o_que_passa_sozinho_volta_pela_fila_de_retry(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        erro: Exception,
+        resultado: str,
+    ) -> None:
+        handler.erro = erro
+        assert entregar(consumidor, CanalDeTeste(), _cancelar()) == resultado
+
+    def test_dlq_por_regra_de_negocio_loga_o_codigo_e_nao_o_texto(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        handler.erro = GatewayPagamentoRecusouError("texto livre do provedor")
+        with caplog.at_level(logging.ERROR):
+            assert entregar(consumidor, CanalDeTeste(), _cancelar()) == "dlq"
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "command_dead_lettered"
+        ]
+        assert registro.__dict__["codigo"] == "GATEWAY_PAGAMENTO_RECUSOU"
+        assert "texto livre" not in str(registro.__dict__)
+
+
 class TestRetry:
     @pytest.mark.parametrize(
         ("tentativa", "fila"),
@@ -353,6 +421,7 @@ class TestRastreamento:
         )
         envelope = _cancelar()
         try:
+            registros.info("fora_do_span")
             entregar(consumidor, CanalDeTeste(), envelope)
         finally:
             logging.getLogger().handlers.clear()
@@ -365,6 +434,8 @@ class TestRastreamento:
         assert do_handler["trace_id"] == f"{consumo.context.trace_id:032x}"
         assert do_handler["span_id"] == f"{consumo.context.span_id:016x}"
         assert do_handler["correlation_id"] == envelope["correlation_id"]
+        [fora] = [linha for linha in linhas if linha["event"] == "fora_do_span"]
+        assert "trace_id" not in fora
 
     def test_span_do_consumidor_e_filho_da_publicacao_e_vai_para_a_outbox(
         self,
