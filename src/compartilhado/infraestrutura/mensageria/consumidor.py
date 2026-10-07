@@ -26,7 +26,7 @@ import contextvars
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
@@ -104,9 +104,10 @@ class _PermanenteError(Exception):
 @dataclass(frozen=True, slots=True)
 class _Entrega:
     tag: int
-    propriedades: pika.BasicProperties
-    cabecalhos: dict[str, Any]
-    corpo: bytes
+    propriedades: pika.BasicProperties = field(repr=False)
+    # Fora do repr: o corpo e os headers vem de fora e trazem o dados.
+    cabecalhos: dict[str, Any] = field(repr=False)
+    corpo: bytes = field(repr=False)
     tentativa: int
     tipo: str
 

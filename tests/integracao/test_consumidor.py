@@ -34,6 +34,7 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
 )
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     ConsumidorDeComandos,
+    _Entrega,
 )
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
 from src.consumidor import rodar as rodar_consumidor
@@ -369,6 +370,16 @@ class TestEntradaHostil:
         # O rotulo da metrica fica fechado: o tipo inventado nao vira serie.
         assert _consumidas("desconhecido", "dlq") == antes + 1
         assert _consumidas("TipoInventado", "dlq") == 0
+
+
+def test_entrega_nao_poe_o_corpo_no_repr() -> None:
+    envelope = _cancelar()
+    corpo = json.dumps(envelope).encode()
+
+    texto = repr(_Entrega(1, propriedades(envelope), {}, corpo, 0, "CancelarOrcamento"))
+
+    assert envelope["dados"]["ordem_id"] not in texto
+    assert "CancelarOrcamento" in texto
 
 
 def _rotulado(rotulo: str) -> OperationFailure:

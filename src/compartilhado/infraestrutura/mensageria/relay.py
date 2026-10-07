@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid4
@@ -63,7 +63,8 @@ class _Linha:
     tentativas: int
     exchange: str
     routing_key: str
-    envelope: dict[str, Any]
+    # Fora do repr: o envelope traz link_decisao e checkout_url, com token.
+    envelope: dict[str, Any] = field(repr=False)
     contexto: dict[str, str]
     retomado_por: dict[str, str]
     reivindicacao: UUID
@@ -153,7 +154,8 @@ class RelayDaOutbox:
             links=links_de(linha.retomado_por),
             attributes={
                 "messaging.system": "rabbitmq",
-                "messaging.operation.type": "publish",
+                # Valor atual da convencao semantica (o OS usa o mesmo).
+                "messaging.operation.type": "send",
                 "messaging.destination.name": linha.exchange,
                 "messaging.rabbitmq.destination.routing_key": linha.routing_key,
                 "messaging.message.id": str(linha.id),
@@ -183,13 +185,14 @@ class RelayDaOutbox:
                 _log.exception("outbox_publish_failed", extra=linha.rotulos)
                 self._contar_falha(linha, type(exc).__name__)
                 return
-        MENSAGENS_PUBLICADAS.labels(tipo=linha.tipo).inc()
-        if self._marcar_entregue(linha):
-            _log.info("outbox_message_published", extra=linha.rotulos)
-        else:
-            # Lease vencido e retomado por outro relay: a linha e dele agora (a
-            # mensagem pode sair duas vezes; o consumidor deduplica pelo id).
-            _log.warning("outbox_claim_lost", extra=linha.rotulos)
+            # Ainda no span: a marcacao e o log levam o trace da publicacao.
+            MENSAGENS_PUBLICADAS.labels(tipo=linha.tipo).inc()
+            if self._marcar_entregue(linha):
+                _log.info("outbox_message_published", extra=linha.rotulos)
+            else:
+                # Lease vencido e retomado por outro relay: a linha e dele agora
+                # (a mensagem pode sair duas vezes; o consumidor deduplica).
+                _log.warning("outbox_claim_lost", extra=linha.rotulos)
 
     def _propriedades(self, linha: _Linha) -> pika.BasicProperties:
         # Sem x-tentativa na primeira entrega (ele so existe na copia de retry).

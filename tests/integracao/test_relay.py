@@ -7,6 +7,7 @@ broker real entra em ``test_mensageria_rabbitmq.py``.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import threading
@@ -24,12 +25,13 @@ from pymongo import MongoClient
 from pymongo.errors import AutoReconnect
 
 from src import relay as processo_relay
+from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria.amqp import (
     CanalAmqp,
     MensagemRecusadaError,
 )
 from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
-from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
+from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox, _Linha
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
 from src.compartilhado.infraestrutura.processo import CONECTANDO, PRONTO
 from src.compartilhado.infraestrutura.unit_of_work import (
@@ -147,6 +149,8 @@ class TestEntrega:
             s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
         )
         assert producer.name == "publish OrcamentoGerado"
+        assert producer.attributes is not None
+        assert producer.attributes["messaging.operation.type"] == "send"
         assert producer.parent is not None
         assert producer.parent.span_id == consumidor.get_span_context().span_id
         assert producer.context.trace_id == consumidor.get_span_context().trace_id
@@ -188,6 +192,38 @@ class TestEntrega:
             s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
         ]
         assert producer.links == ()
+
+    def test_log_da_entrega_leva_o_trace_da_publicacao(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        _gravar_orcamentos(banco)
+        saida = io.StringIO()
+        configurar_logging(saida)
+        try:
+            _relay(banco, PublicadorFalso(), RelogioFixo()).entregar_pendentes(1)
+        finally:
+            logging.getLogger().handlers.clear()
+
+        [producer] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        [entregue] = [
+            linha
+            for linha in map(json.loads, saida.getvalue().splitlines())
+            if linha["event"] == "outbox_message_published"
+        ]
+        assert entregue["trace_id"] == f"{producer.context.trace_id:032x}"
+        assert entregue["span_id"] == f"{producer.context.span_id:016x}"
+
+    def test_linha_reivindicada_nao_poe_o_envelope_no_repr(self, banco: Banco) -> None:
+        _gravar_orcamentos(banco)
+        [doc] = _linhas(banco)
+        doc["reivindicacao"] = uuid4()
+
+        texto = repr(_Linha.de(doc))
+
+        assert doc["envelope"]["dados"]["link_decisao"] not in texto
+        assert str(doc["_id"]) in texto
 
 
 class TestFalhas:
