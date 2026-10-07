@@ -147,6 +147,24 @@ def test_arquivo_de_vida_nao_diz_pronto_durante_a_espera(
     assert parar.estados_na_espera == ["conectando"] * 3
 
 
+def test_arquivo_de_vida_diz_conectando_com_o_broker_fora_desde_o_boot(
+    tmp_path: Path, sorteio: SorteioAnotado
+) -> None:
+    arquivo = tmp_path / "hb"  # o processo acabou de subir: o arquivo nao existe
+    parar = EsperaAnotada(ate=3, arquivo_de_vida=arquivo)
+
+    _rodar(
+        CanalSemBroker(falha_ao_abrir=True),
+        _canal_fechado_pelo_broker,
+        parar,
+        arquivo,
+    )
+
+    # Sem nenhuma conexao o laco nunca chega ao ``finally``: so o sinal antes de
+    # abrir cria o arquivo, e a liveness (pela idade dele) depende disso.
+    assert parar.estados_na_espera == ["conectando"] * 3
+
+
 def test_broker_fora_tambem_dobra_a_espera(
     tmp_path: Path, sorteio: SorteioAnotado
 ) -> None:
