@@ -17,7 +17,7 @@ import pika
 import pytest
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, StatusCode
-from pika.exceptions import AMQPConnectionError
+from pika.exceptions import AMQPConnectionError, StreamLostError
 from prometheus_client import REGISTRY
 from pymongo.errors import (
     AutoReconnect,
@@ -594,6 +594,40 @@ class TestTransacaoDaMensagem:
         assert banco["orcamentos"].count_documents({}) == 1
         assert [e["causation_id"] for e in eventos_do_outbox(banco)] == [envelope["id"]]
         assert banco["mensagens_processadas"].count_documents({}) == 1
+
+
+class TestHandlerForaDaConexao:
+    def test_queda_da_conexao_com_o_handler_em_curso_sobe_sem_ack_nem_dlq(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        liberar = threading.Event()
+
+        def lento(_dados: Mapping[str, Any], _uow: UnidadeDaMensagem) -> Desfecho:
+            liberar.wait(5)
+            return Desfecho.PROCESSADA
+
+        class CanalQueCai(CanalDeTeste):
+            def aguardar(self, segundos: float) -> None:
+                raise StreamLostError("caiu")
+
+        consumidor = ConsumidorDeComandos(
+            banco,
+            {"CancelarOrcamento": lento},
+            fila="billing.comandos",
+            usuario="billing",
+            relogio=relogio,
+        )
+        canal = CanalQueCai()
+        try:
+            with pytest.raises(StreamLostError):
+                entregar(consumidor, canal, _cancelar())
+        finally:
+            liberar.set()
+            consumidor.fechar()
+
+        # O laco reconecta e o broker devolve a mensagem (handler idempotente).
+        assert canal.confirmadas == canal.rejeitadas == []
+        assert canal.publicadas == []
 
 
 class TestIdempotencia:
