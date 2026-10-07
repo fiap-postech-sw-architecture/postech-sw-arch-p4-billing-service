@@ -200,6 +200,26 @@ forbidden_modules = [
     "src.orcamento.aplicacao",
 ]
 
+# Nenhum contexto importa a camada interfaces de outro (rotas, handlers de
+# comando, schemas): o que um contexto le de outro passa por porta e adapter.
+[[tool.importlinter.contracts]]
+name = "precos nao importa interfaces de outros contextos"
+type = "forbidden"
+source_modules = ["src.precos"]
+forbidden_modules = ["src.orcamento.interfaces", "src.pagamento.interfaces"]
+
+[[tool.importlinter.contracts]]
+name = "orcamento nao importa interfaces de outros contextos"
+type = "forbidden"
+source_modules = ["src.orcamento"]
+forbidden_modules = ["src.precos.interfaces", "src.pagamento.interfaces"]
+
+[[tool.importlinter.contracts]]
+name = "pagamento nao importa interfaces de outros contextos"
+type = "forbidden"
+source_modules = ["src.pagamento"]
+forbidden_modules = ["src.precos.interfaces", "src.orcamento.interfaces"]
+
 [tool.mypy]
 strict = true
 python_version = "3.14"

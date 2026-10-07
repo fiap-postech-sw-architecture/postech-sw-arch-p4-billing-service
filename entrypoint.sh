@@ -1,8 +1,7 @@
 #!/bin/bash
 # Um container, processos diferentes (RFC-004 secao 10.2): `api` (padrao),
-# `prazos` e `banco` (preparacao idempotente do MongoDB, antes dos outros).
-# O relay da outbox e o consumidor dos comandos da saga (ADR-036) nao fazem
-# parte desta versao da imagem.
+# `prazos`, `relay` (outbox -> RabbitMQ), `consumidor` (comandos da saga) e
+# `banco` (preparacao idempotente do MongoDB, antes dos outros).
 set -euo pipefail
 
 processo="${1:-api}"
@@ -24,11 +23,17 @@ case "$processo" in
   prazos)
     exec python -m src.prazos
     ;;
+  relay)
+    exec python -m src.relay
+    ;;
+  consumidor)
+    exec python -m src.consumidor
+    ;;
   banco)
     exec python -m src.banco
     ;;
   *)
-    echo "Processo desconhecido: ${processo} (use api, prazos ou banco)" >&2
+    echo "Processo desconhecido: ${processo} (use api, prazos, relay, consumidor ou banco)" >&2
     exit 64
     ;;
 esac

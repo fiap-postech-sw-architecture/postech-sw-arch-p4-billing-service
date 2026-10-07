@@ -1,7 +1,9 @@
-# Ambiente de desenvolvimento do Billing (RFC-004, secao 10.1): API, prazos
-# e MongoDB 7 em replica set de um no (transacoes exigem replica set). Sem
-# credencial externa: o Mercado Pago roda no modo simulado. A stack completa
-# (OS, Execucao, RabbitMQ, Kong) fica no compose do repo platform.
+# Ambiente de desenvolvimento do Billing (RFC-004, secao 10.1): API, prazos,
+# relay da outbox, consumidor dos comandos da saga, MongoDB 7 em replica set de
+# um no (transacoes exigem replica set) e RabbitMQ 4 com a topologia do
+# platform (rabbitmq/, copiada com o init de usuarios). Sem credencial externa:
+# o Mercado Pago roda no modo simulado. A stack completa (OS, Execucao, Kong)
+# fica no compose do repo platform.
 name: pytstop-billing
 
 # Processos do Billing: so leitura, sem capabilities e sem escalada de
@@ -37,6 +39,20 @@ x-ambiente: &ambiente
   MP_NOTIFICATION_URL: ${MP_NOTIFICATION_URL:-}
   MP_TIMEOUT_SEGUNDOS: ${MP_TIMEOUT_SEGUNDOS:-5}
   PRAZOS_INTERVALO_SEGUNDOS: ${PRAZOS_INTERVALO_SEGUNDOS:-30}
+  # Usuario billing do broker (senha de demonstracao, a mesma do platform).
+  RABBITMQ_URL: amqp://billing:${RABBITMQ_BILLING_PASSWORD:-pytstop-billing-demo-2026}@rabbitmq:5672/%2F  # gitleaks:allow
+  OTEL_ENABLED: ${OTEL_ENABLED:-false}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
+  OTEL_SERVICE_NAME: billing-service
+
+# Heartbeat em arquivo tocado a cada volta do laco: saudavel com o arquivo
+# recente e "pronto" (conexao com o broker estabelecida).
+x-saude-da-mensageria: &saude-da-mensageria
+  interval: 10s
+  timeout: 5s
+  start_period: 30s
+  start_interval: 2s
+  retries: 3
 
 services:
   # Preparacao idempotente do MongoDB (indices e validadores) antes da API e
@@ -100,6 +116,108 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # Publica no RabbitMQ os eventos da outbox (ADR-036).
+  relay:
+    <<: *endurecimento
+    image: ${BILLING_IMAGE:-pytstop-billing:dev}
+    command: ["relay"]
+    environment: *ambiente
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      rabbitmq-usuarios:
+        condition: service_healthy
+    healthcheck:
+      <<: *saude-da-mensageria
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; p=os.environ.get('RELAY_HEARTBEAT','/tmp/relay-heartbeat'); sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 60 and open(p).read() == 'pronto' else 1)"
+    restart: unless-stopped
+
+  # Consome billing.comandos e responde em pytstop.eventos pela outbox.
+  consumidor:
+    <<: *endurecimento
+    image: ${BILLING_IMAGE:-pytstop-billing:dev}
+    command: ["consumidor"]
+    environment: *ambiente
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      rabbitmq-usuarios:
+        condition: service_healthy
+    healthcheck:
+      <<: *saude-da-mensageria
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; p=os.environ.get('CONSUMIDOR_HEARTBEAT','/tmp/consumidor-heartbeat'); sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 60 and open(p).read() == 'pronto' else 1)"
+    restart: unless-stopped
+
+  # Mesmo broker da plataforma (versao, conf, plugins e definitions copiados
+  # em rabbitmq/). Nome do no fixo e usuario 999 pelos mesmos motivos de la.
+  rabbitmq:
+    image: rabbitmq:4.3.6-management
+    hostname: rabbitmq
+    user: "999:999"
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-pytstop.conf:ro
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions/definitions.json:ro
+      - ./rabbitmq/admin.json:/etc/rabbitmq/definitions/admin.json:ro
+    healthcheck:
+      # A fila de retry de 1 s so existe se o definitions.json entrou.
+      test: ["CMD-SHELL", "rabbitmqctl -s list_queues name | grep -qx billing.comandos.retry.1s && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 10s
+      timeout: 20s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # Usuarios os, billing e execucao com as permissoes de rabbitmq/permissoes.json,
+  # pelo script do platform. Fica parado depois do script: o `up --wait` trata
+  # container que terminou como falha.
+  rabbitmq-usuarios:
+    image: rabbitmq:4.3.6-management
+    user: "999:999"
+    init: true
+    entrypoint: ["sh", "-c", "sh /scripts/criar-usuarios.sh && touch /tmp/usuarios-criados && exec sleep infinity"]
+    volumes:
+      - ./rabbitmq/criar-usuarios.sh:/scripts/criar-usuarios.sh:ro
+      - ./rabbitmq/permissoes.json:/scripts/permissoes.json:ro
+    environment:
+      RABBITMQADMIN_TARGET_HOST: rabbitmq
+      RABBITMQADMIN_TARGET_PORT: "15672"
+      RABBITMQADMIN_NON_INTERACTIVE_MODE: "true"
+      RABBITMQADMIN_USERNAME: admin
+      RABBITMQADMIN_PASSWORD: pytstop-rabbitmq-admin-demo-2026  # gitleaks:allow
+      RABBITMQ_OS_PASSWORD: pytstop-os-demo-2026  # gitleaks:allow
+      RABBITMQ_BILLING_PASSWORD: ${RABBITMQ_BILLING_PASSWORD:-pytstop-billing-demo-2026}  # gitleaks:allow
+      RABBITMQ_EXECUCAO_PASSWORD: pytstop-execucao-demo-2026  # gitleaks:allow
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/usuarios-criados"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: "no"
+
   mongo:
     # Mesma versao do compose da plataforma e dos testes de integracao.
     image: mongo:7.0.43
@@ -134,3 +252,4 @@ services:
 
 volumes:
   mongo_data:
+  rabbitmq_data:
