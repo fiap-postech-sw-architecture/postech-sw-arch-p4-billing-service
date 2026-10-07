@@ -26,6 +26,7 @@ from opentelemetry.trace import SpanKind
 from pymongo.errors import AutoReconnect
 
 from src import consumidor as processo_consumidor
+from src import prazos as processo_prazos
 from src import relay as processo_relay
 from src.compartilhado.aplicacao.mensageria import Desfecho
 from src.compartilhado.dominio.relogio import agora_utc
@@ -39,7 +40,10 @@ from src.compartilhado.infraestrutura.mensageria.consumidor import (
 )
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
-from src.compartilhado.infraestrutura.mongo import marcar_versao
+from src.compartilhado.infraestrutura.mongo import (
+    BancoNaoPreparadoError,
+    marcar_versao,
+)
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.consumidor import FILA, criar_handlers
 from src.consumidor import rodar as rodar_consumidor
@@ -288,6 +292,47 @@ class TestPontaAPonta:
         assert [primeiro["tipo"], segundo["tipo"]] == ["OrcamentoGerado"] * 2
         assert primeiro["dados"]["orcamento_id"] == segundo["dados"]["orcamento_id"]
 
+    def test_lapide_descarta_o_atrasado_e_reenvio_republica_pelo_broker(
+        self, banco: Banco, broker: BrokerDeTeste, tmp_path: Path
+    ) -> None:
+        semear(banco)
+        ordem_id = str(uuid4())
+        compensacao = comando(
+            "CancelarOrcamento", {"ordem_id": ordem_id, "motivo": "cancelamento"}
+        )
+        atrasado = comando(
+            "GerarOrcamento",
+            {
+                "ordem_id": ordem_id,
+                "itens": [
+                    {"tipo": "servico", "codigo": "SRV-TROCA-OLEO", "quantidade": 1}
+                ],
+            },
+        )
+        reenvio = comando(
+            "CancelarOrcamento", {"ordem_id": ordem_id, "motivo": "cancelamento"}
+        )
+
+        with processos(banco, broker, tmp_path):
+            publicar_comando(broker, compensacao)
+            _, primeiro = esperar_mensagem(broker, "os.eventos")
+            publicar_comando(broker, atrasado)  # depois da lapide: sem resposta
+            publicar_comando(broker, reenvio)  # id novo, mesma ordem: republica
+            _, segundo = esperar_mensagem(broker, "os.eventos")
+
+        assert (primeiro["tipo"], primeiro["causation_id"]) == (
+            "OrcamentoCancelado",
+            compensacao["id"],
+        )
+        # Se o atrasado tivesse respondido, o segundo seria o OrcamentoGerado.
+        assert (segundo["tipo"], segundo["causation_id"]) == (
+            "OrcamentoCancelado",
+            reenvio["id"],
+        )
+        assert banco["mensagens_processadas"].count_documents({}) == 3
+        [lapide] = banco["orcamentos"].find()
+        assert (lapide["status"], lapide["linhas"]) == ("CANCELADO", [])
+
 
 class FalhaTransitoria:
     """Handler que falha ``vezes`` com o banco fora e depois processa."""
@@ -318,7 +363,7 @@ class TestRetryEDlq:
     def test_transitorio_passa_pela_fila_de_cada_nivel_e_volta(
         self, banco: Banco, broker: BrokerDeTeste, tmp_path: Path
     ) -> None:
-        handler = FalhaTransitoria(vezes=2)
+        handler = FalhaTransitoria(vezes=5)
         mensagem = _cancelar()
         with processos(
             banco,
@@ -328,14 +373,17 @@ class TestRetryEDlq:
             relay=False,
         ) as consumidor:
             publicar_comando(broker, mensagem)
-            esperar(lambda: handler.chamadas == 3)
+            esperar(lambda: handler.chamadas == 6)
 
-        primeira, segunda, terceira = consumidor.entregas
+        primeira, *repetidas = consumidor.entregas
         assert "x-tentativa" not in primeira
-        assert segunda["x-tentativa"] == 1
-        assert "billing.comandos.retry.1s" in _filas_de_retry(segunda)
-        assert terceira["x-tentativa"] == 2
-        assert "billing.comandos.retry.5s" in _filas_de_retry(terceira)
+        # A entrega k volta da fila do nivel k (o x-death guarda a ultima).
+        niveis = ("1s", "5s", "15s", "60s", "300s")
+        for tentativa, (entrega, nivel) in enumerate(
+            zip(repetidas, niveis, strict=True), start=1
+        ):
+            assert entrega["x-tentativa"] == tentativa
+            assert _filas_de_retry(entrega) == {f"billing.comandos.retry.{nivel}"}
         assert banco["mensagens_processadas"].find_one({"_id": UUID(mensagem["id"])})
 
     def test_sexta_falha_vai_para_a_dlq(
@@ -661,6 +709,36 @@ class TestRelayNoBroker:
         assert "body_prefix" not in log
         assert "ocorrido_em" not in log
 
+    def test_nack_do_broker_conta_tentativa(
+        self, banco: Banco, broker: BrokerDeTeste
+    ) -> None:
+        for _ in range(3):
+            _gravar_evento(banco)
+        canal = CanalAmqp(
+            parametros(broker.url("billing"), nome="teste-nack"),
+            exchanges=(contratos.EXCHANGE_EVENTOS,),
+        )
+        with fila_cheia(broker, "os.eventos", maximo=1):
+            canal.abrir()
+            try:
+                RelayDaOutbox(banco, canal, usuario="billing").entregar_pendentes(3)
+            finally:
+                canal.fechar()
+
+        # A fila quorum confere o limite de forma aproximada: as primeiras
+        # entram e as seguintes voltam em nack (reject-publish), cada uma com
+        # uma tentativa contada, como a devolucao sem rota.
+        linhas = [
+            (linha["status"], linha["tentativas"], linha.get("ultimo_erro"))
+            for linha in banco["outbox"].find().sort("_id")
+        ]
+        entregues = [linha for linha in linhas if linha[0] == "entregue"]
+        recusadas = linhas[len(entregues) :]
+        assert entregues == [("entregue", 0, None)] * len(entregues)
+        assert entregues
+        assert recusadas
+        assert recusadas == [("pendente", 1, "NackError")] * len(recusadas)
+
     def test_routing_key_sem_permissao_conta_tentativa_e_segue_na_mesma_conexao(
         self, banco: Banco, broker: BrokerDeTeste
     ) -> None:
@@ -693,16 +771,31 @@ class TestRelayNoBroker:
         assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
 
     def test_broker_parado_nao_gasta_tentativa_e_entrega_na_volta(
-        self, banco: Banco, broker: BrokerDeTeste, tmp_path: Path
+        self,
+        banco: Banco,
+        broker: BrokerDeTeste,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        with processos(banco, broker, tmp_path):
+        def recusas_ao_relay() -> int:
+            return sum(
+                1
+                for r in caplog.records
+                if r.getMessage() == "broker_unavailable"
+                and r.__dict__.get("processo") == "relay"
+            )
+
+        with caplog.at_level(logging.INFO), processos(banco, broker, tmp_path):
             esperar(lambda: _pronto(tmp_path / "relay"))
             codigo, saida = broker.container.exec(["rabbitmqctl", "stop_app"])
             assert codigo == 0, saida
             try:
                 esperar(lambda: (tmp_path / "relay").read_text() == "conectando")
                 _gravar_evento(banco)
-                time.sleep(1)  # o relay tenta reconectar e nao reivindica nada
+                antes = recusas_ao_relay()
+                # Duas tentativas de conexao recusadas depois da gravacao: o
+                # relay tentou e, sem conexao, nao reivindicou a linha.
+                esperar(lambda: recusas_ao_relay() >= antes + 2)
                 [parada] = banco["outbox"].find()
                 assert (parada["status"], parada["tentativas"]) == ("pendente", 0)
             finally:
@@ -713,6 +806,43 @@ class TestRelayNoBroker:
         [entregue] = banco["outbox"].find()
         assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
         assert evento["id"] == str(entregue["_id"])
+
+
+@contextmanager
+def fila_cheia(broker: BrokerDeTeste, fila: str, *, maximo: int) -> Iterator[None]:
+    """Policy de prioridade maior: a fila aceita ``maximo`` mensagens e recusa
+    as seguintes com nack (a mesma politica que o platform aplica em 10000)."""
+    url = f"{broker.api}/policies/%2F/teste-fila-cheia"
+    with httpx.Client(auth=("admin", SENHA_DO_ADMIN), timeout=10) as http:
+        http.put(
+            url,
+            json={
+                "pattern": f"^{re.escape(fila)}$",
+                "apply-to": "queues",
+                "priority": 100,
+                "definition": {"max-length": maximo, "overflow": "reject-publish"},
+            },
+        ).raise_for_status()
+        # A policy chega a fila existente com um atraso: espera a fila a usar.
+        esperar(lambda: _policy_da_fila(broker, fila) == "teste-fila-cheia")
+        try:
+            yield
+        finally:
+            http.delete(url).raise_for_status()
+            esperar(lambda: _policy_da_fila(broker, fila) != "teste-fila-cheia")
+
+
+def _policy_da_fila(broker: BrokerDeTeste, fila: str) -> str:
+    """Pelo rabbitmqctl, que pergunta a propria fila (a API de gerenciamento
+    so atualiza a cada coleta de estatisticas)."""
+    _, saida = broker.container.exec(
+        ["rabbitmqctl", "-q", "list_queues", "--no-table-headers", "name", "policy"]
+    )
+    texto: str = saida.decode()
+    politicas = dict(
+        linha.split("\t", 1) for linha in texto.splitlines() if "\t" in linha
+    )
+    return politicas.get(fila, "").strip()
 
 
 def _mensagens(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -860,5 +990,147 @@ class TestProcessos:
 
 
 class ServidorFalso:
+    def __init__(self) -> None:
+        self.desligado = False
+
     def shutdown(self) -> None:
-        return None
+        self.desligado = True
+
+
+class TestFiacaoDosProcessos:
+    """O que o main de cada processo liga: filas e exchanges conferidos, o
+    usuario da copia de retry, o coletor de metricas e o boot sem schemas."""
+
+    @pytest.fixture
+    def ambiente(
+        self,
+        banco: Banco,
+        mongo_uri: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> ServidorFalso:
+        for nome, valor in {
+            "ENVIRONMENT": "test",
+            "MP_MODE": "simulado",
+            "MONGODB_URI": mongo_uri,
+            "MONGODB_DB": banco.name,
+            # Nunca conecta: o parar ja chega acionado.
+            "RABBITMQ_URL": "amqp://billing:x@127.0.0.1:1/%2F",  # gitleaks:allow
+            "RELAY_HEARTBEAT": str(tmp_path / "relay"),
+            "CONSUMIDOR_HEARTBEAT": str(tmp_path / "consumidor"),
+        }.items():
+            monkeypatch.setenv(nome, valor)
+        servidor = ServidorFalso()
+        monkeypatch.setattr(boot, "start_http_server", lambda _porta: (servidor, None))
+        monkeypatch.setattr(
+            boot, "configurar_telemetria", lambda _processo: TracerProvider()
+        )
+        return servidor
+
+    @staticmethod
+    def _canais(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+        canais: list[dict[str, Any]] = []
+
+        class CanalEspiao(CanalAmqp):
+            def __init__(
+                self, params: Any, *, filas: Any = (), exchanges: Any = ()
+            ) -> None:
+                canais.append({"filas": tuple(filas), "exchanges": tuple(exchanges)})
+                super().__init__(params, filas=filas, exchanges=exchanges)
+
+        monkeypatch.setattr(boot, "CanalAmqp", CanalEspiao)
+        return canais
+
+    def test_consumidor_confere_a_fila_e_o_retry_e_republica_como_billing(
+        self,
+        banco: Banco,
+        ambiente: ServidorFalso,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        marcar_versao(banco)
+        canais = self._canais(monkeypatch)
+        consumidores: list[dict[str, Any]] = []
+
+        class ConsumidorEspiao(ConsumidorDeComandos):
+            def __init__(self, *args: Any, **opcoes: Any) -> None:
+                consumidores.append(opcoes)
+                super().__init__(*args, **opcoes)
+
+        monkeypatch.setattr(
+            processo_consumidor, "ConsumidorDeComandos", ConsumidorEspiao
+        )
+        parar = threading.Event()
+        parar.set()
+
+        processo_consumidor.main(parar)
+
+        assert canais == [
+            {"filas": ("billing.comandos",), "exchanges": ("pytstop.retry",)}
+        ]
+        # O usuario vai na copia de retry; com outro, o broker a recusa (406).
+        assert [(c["fila"], c["usuario"]) for c in consumidores] == [
+            ("billing.comandos", "billing")
+        ]
+        assert ambiente.desligado
+
+    def test_relay_confere_o_exchange_e_registra_o_coletor(
+        self,
+        banco: Banco,
+        ambiente: ServidorFalso,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        marcar_versao(banco)
+        canais = self._canais(monkeypatch)
+        registros: list[tuple[str, str]] = []
+
+        class RegistroEspiao:
+            def register(self, coletor: object) -> None:
+                registros.append(("register", type(coletor).__name__))
+
+            def unregister(self, coletor: object) -> None:
+                registros.append(("unregister", type(coletor).__name__))
+
+        monkeypatch.setattr(processo_relay, "REGISTRY", RegistroEspiao())
+        parar = threading.Event()
+        parar.set()
+
+        processo_relay.main(parar)
+
+        assert canais == [{"filas": (), "exchanges": ("pytstop.eventos",)}]
+        assert registros == [
+            ("register", "ColetorDaOutbox"),
+            ("unregister", "ColetorDaOutbox"),
+        ]
+
+    def test_boot_que_falha_fecha_o_que_ja_abriu(self, ambiente: ServidorFalso) -> None:
+        # Sem o init do banco (a fixture banco limpa a marca de versao).
+        with pytest.raises(BancoNaoPreparadoError):
+            processo_relay.main(threading.Event())
+
+        assert ambiente.desligado
+
+    @pytest.mark.parametrize(
+        "processo",
+        [processo_consumidor, processo_prazos],
+        ids=["consumidor", "prazos"],
+    )
+    def test_processo_nao_sobe_sem_os_schemas(
+        self,
+        ambiente: ServidorFalso,
+        processo: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def nao_pode_subir(_porta: int) -> None:
+            raise AssertionError("subiu sem os schemas")
+
+        monkeypatch.setattr(boot, "start_http_server", nao_pode_subir)
+        monkeypatch.setattr(processo_prazos, "start_http_server", nao_pode_subir)
+        monkeypatch.setenv("CONTRATOS_DIR", str(tmp_path))
+        contratos._validadores.cache_clear()
+        try:
+            with pytest.raises(contratos.ContratosAusentesError):
+                processo.main(threading.Event())
+        finally:
+            monkeypatch.delenv("CONTRATOS_DIR")
+            contratos._validadores.cache_clear()
