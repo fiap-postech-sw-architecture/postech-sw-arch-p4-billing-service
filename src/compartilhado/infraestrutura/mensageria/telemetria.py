@@ -68,8 +68,9 @@ def links_de(portador: Mapping[str, object]) -> list[trace.Link]:
 def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvider:
     """``TracerProvider`` do processo; com ``OTEL_ENABLED``, exporta por OTLP.
 
-    Imports aqui dentro: a API e o ``prazos`` so leem e gravam o contexto W3C
-    (pacote da API do OpenTelemetry) e nao carregam o SDK nem o gRPC.
+    Imports aqui dentro: so relay, consumidor e ``prazos`` instalam o provider;
+    a API so le e grava o contexto W3C (pacote da API do OpenTelemetry) e nao
+    carrega o SDK nem o gRPC.
     """
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider

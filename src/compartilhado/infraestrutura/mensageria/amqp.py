@@ -120,8 +120,9 @@ class CanalAmqp:
         self._publicacao: Any = None
         # Connection.Blocked (alarme de memoria ou disco do broker, que o
         # broker manda a conexao que publica e o pika entrega quando o processo
-        # o atende): o relay para de reivindicar ate o Connection.Unblocked. O
-        # publish que ja estava preso espera o teto do bloqueio e a conexao cai.
+        # o atende): o relay para de reivindicar enquanto a conexao estiver
+        # bloqueada. No teto do bloqueio o pika a derruba, mesmo ociosa, e o
+        # publish que estava preso cai junto; o laco reconecta com backoff.
         self.bloqueada = False
 
     def abrir(self) -> None:
