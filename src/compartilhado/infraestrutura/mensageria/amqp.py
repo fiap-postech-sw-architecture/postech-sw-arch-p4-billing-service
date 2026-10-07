@@ -31,9 +31,11 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # Heartbeat curto acha conexao morta sem esperar o TCP; o bloqueio do broker
-# (alarme de memoria ou disco) vira erro em vez de pendurar o processo.
+# (alarme de memoria ou disco) vira queda da conexao em vez de pendurar o
+# processo, abaixo do prazo de encerramento do docker (10 s) e do Kubernetes
+# (30 s): o SIGTERM durante um publish bloqueado ainda termina limpo.
 _HEARTBEAT_SEGUNDOS: Final = 30
-_BLOQUEIO_MAXIMO_SEGUNDOS: Final = 30
+_BLOQUEIO_MAXIMO_SEGUNDOS: Final = 8
 _TIMEOUT_SOCKET_SEGUNDOS: Final = 5
 ESPERA_MAXIMA_SEGUNDOS: Final = 30.0
 # Jitter da reconexao: replicas que perderam o broker juntas nao voltam juntas.
@@ -116,17 +118,35 @@ class CanalAmqp:
         self._conexao: Any = None
         self._canal: Any = None
         self._publicacao: Any = None
+        # Connection.Blocked (alarme de memoria ou disco do broker, que o
+        # broker manda a conexao que publica e o pika entrega quando o processo
+        # o atende): o relay para de reivindicar ate o Connection.Unblocked. O
+        # publish que ja estava preso espera o teto do bloqueio e a conexao cai.
+        self.bloqueada = False
 
     def abrir(self) -> None:
         """Conecta (fechando a conexao anterior) e confere, por declaracao
         passiva, as filas e os exchanges que o processo usa."""
         self.fechar()
         self._conexao = pika.BlockingConnection(self._parametros)
+        self.bloqueada = False
+        self._conexao.add_on_connection_blocked_callback(self._ao_bloquear)
+        self._conexao.add_on_connection_unblocked_callback(self._ao_desbloquear)
         self._canal = self._conexao.channel()
         for fila in self._filas:
             self._canal.queue_declare(fila, passive=True)
         for exchange in self._exchanges:
             self._canal.exchange_declare(exchange, passive=True)
+
+    def _ao_bloquear(self, _conexao: object, metodo: Any) -> None:  # noqa: ANN401 - frame do pika
+        self.bloqueada = True
+        _log.warning(
+            "broker_connection_blocked", extra={"motivo": metodo.method.reason}
+        )
+
+    def _ao_desbloquear(self, _conexao: object, _metodo: object) -> None:
+        self.bloqueada = False
+        _log.info("broker_connection_unblocked")
 
     def _canal_de_publicacao(self) -> Any:  # noqa: ANN401 - BlockingChannel do pika
         if self._publicacao is None or not self._publicacao.is_open:

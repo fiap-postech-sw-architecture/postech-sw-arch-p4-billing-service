@@ -72,6 +72,11 @@ def _entregar_enquanto_conectado(
 ) -> None:
     while not parar.is_set():
         sinalizar(heartbeat, pronto=True)
+        if canal.bloqueada:
+            # Alarme do broker: nada de reivindicar; atender o broker traz o
+            # Connection.Unblocked (ou a queda, quando o bloqueio vence).
+            canal.aguardar(intervalo)
+            continue
         try:
             lote_cheio = relay.entregar_pendentes(LOTE) == LOTE
         except PyMongoError:

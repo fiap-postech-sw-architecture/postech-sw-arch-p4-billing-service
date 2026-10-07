@@ -149,6 +149,7 @@ def processos(
     handlers: Mapping[str, Handler] | None = None,
     relay: bool = True,
     heartbeat: int | None = None,
+    bloqueio_maximo: float | None = None,
 ) -> Iterator[ConsumidorAnotado]:
     """Consumidor e relay do Billing em threads, com o usuario billing."""
     parar = threading.Event()
@@ -177,9 +178,11 @@ def processos(
         )
     ]
     if relay:
+        parametros_do_relay = parametros(broker.url("billing"), nome="teste-relay")
+        if bloqueio_maximo is not None:
+            parametros_do_relay.blocked_connection_timeout = bloqueio_maximo
         canal_do_relay = CanalAmqp(
-            parametros(broker.url("billing"), nome="teste-relay"),
-            exchanges=(contratos.EXCHANGE_EVENTOS,),
+            parametros_do_relay, exchanges=(contratos.EXCHANGE_EVENTOS,)
         )
         threads.append(
             threading.Thread(
@@ -709,6 +712,52 @@ class TestRelayNoBroker:
         [entregue] = banco["outbox"].find()
         assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
         assert evento["id"] == str(entregue["_id"])
+
+
+def _mensagens(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [registro.getMessage() for registro in caplog.records]
+
+
+@contextmanager
+def alarme_de_memoria(broker: BrokerDeTeste) -> Iterator[None]:
+    """Alarme de memoria do broker: toda conexao que publica fica bloqueada."""
+    codigo, saida = broker.container.exec(
+        ["rabbitmqctl", "set_vm_memory_high_watermark", "0"]
+    )
+    assert codigo == 0, saida
+    try:
+        yield
+    finally:
+        codigo, saida = broker.container.exec(
+            ["rabbitmqctl", "set_vm_memory_high_watermark", "0.6"]
+        )
+        assert codigo == 0, saida
+
+
+def test_alarme_do_broker_nao_gasta_tentativa_nem_perde_o_evento(
+    banco: Banco,
+    broker: BrokerDeTeste,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        caplog.at_level(logging.INFO),
+        processos(banco, broker, tmp_path, bloqueio_maximo=1),
+    ):
+        esperar(lambda: _pronto(tmp_path / "relay"))
+        with alarme_de_memoria(broker):
+            _gravar_evento(banco)
+            # O broker bloqueia o relay quando ele publica; o publish preso cai
+            # no teto do bloqueio, a conexao cai e a linha volta sem contar
+            # tentativa, a cada reconexao, ate o alarme passar.
+            esperar(lambda: _mensagens(caplog).count("broker_connection_lost") >= 2)
+            [bloqueada] = banco["outbox"].find()
+            assert bloqueada["tentativas"] == 0
+        _, evento = esperar_mensagem(broker, "os.eventos")
+
+    [entregue] = banco["outbox"].find()
+    assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
+    assert evento["id"] == str(entregue["_id"])
 
 
 class TestProcessos:

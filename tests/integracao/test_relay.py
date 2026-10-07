@@ -403,9 +403,12 @@ class CanalFalso(CanalAmqp):
         *,
         falhas_ao_abrir: int = 0,
         erro_ate_a_abertura: int = 0,
+        bloqueada_nas_esperas: int = 0,
     ) -> None:
+        super().__init__(pika.ConnectionParameters())
         self.falhas_ao_abrir = falhas_ao_abrir
         self.erro_ate_a_abertura = erro_ate_a_abertura
+        self.bloqueada_nas_esperas = bloqueada_nas_esperas
         self.aberturas = 0
         self.esperas = 0
         self.fechamentos = 0
@@ -433,7 +436,9 @@ class CanalFalso(CanalAmqp):
 
     def aguardar(self, segundos: float) -> None:
         self.esperas += 1
-        if self.esperas >= 2:
+        # Connection.Blocked nas primeiras esperas, depois o Unblocked.
+        self.bloqueada = self.esperas < self.bloqueada_nas_esperas
+        if self.esperas >= 2 + self.bloqueada_nas_esperas:
             self.parar.set()
 
     def fechar(self) -> None:
@@ -493,6 +498,24 @@ class TestLacoDoProcesso:
 
         assert canal.aberturas == 2
         assert canal.fechamentos == 2
+        [linha] = _linhas(banco)
+        assert (linha["status"], linha["tentativas"]) == ("entregue", 0)
+
+    def test_conexao_bloqueada_pelo_broker_nao_reivindica_ate_desbloquear(
+        self, banco: Banco, tmp_path: Path
+    ) -> None:
+        _gravar_orcamentos(banco)
+        parar = threading.Event()
+        canal = CanalFalso(parar, bloqueada_nas_esperas=2)
+        canal.bloqueada = True
+        heartbeat = tmp_path / "relay-heartbeat"
+        relay = RelayEspiado(banco, canal, heartbeat)
+
+        rodar(relay, canal, parar=parar, heartbeat=heartbeat)
+
+        # Duas esperas bloqueadas sem pedir lote; desbloqueada, entrega.
+        assert len(relay.estados) == 2
+        assert canal.esperas == 4
         [linha] = _linhas(banco)
         assert (linha["status"], linha["tentativas"]) == ("entregue", 0)
 

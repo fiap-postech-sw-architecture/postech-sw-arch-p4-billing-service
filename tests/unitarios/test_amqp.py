@@ -7,6 +7,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+import pika
 import pytest
 from pika.exceptions import AMQPConnectionError, ChannelWrongStateError
 
@@ -61,6 +62,7 @@ class CanalSemBroker(CanalAmqp):
     """Abre sempre (ou falha se mandado), sem conexao de verdade."""
 
     def __init__(self, falha_ao_abrir: bool = False) -> None:
+        super().__init__(pika.ConnectionParameters())
         self.falha_ao_abrir = falha_ao_abrir
         self.aberturas = 0
         self.fechamentos = 0
@@ -187,3 +189,27 @@ def test_consumo_cancelado_pelo_broker_reconecta_com_backoff(
         "broker_cancelled_consumer"
     ) == 2
     assert (tmp_path / "hb").read_text() == "conectando"
+
+
+def test_bloqueio_do_broker_e_anotado_e_logado(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    canal = CanalSemBroker()
+    bloqueio = pika.frame.Method(
+        0, pika.spec.Connection.Blocked(reason="low on memory")
+    )
+
+    with caplog.at_level(logging.INFO):
+        canal._ao_bloquear(None, bloqueio)
+        bloqueada = canal.bloqueada
+        canal._ao_desbloquear(
+            None, pika.frame.Method(0, pika.spec.Connection.Unblocked())
+        )
+
+    assert (bloqueada, canal.bloqueada) == (True, False)
+    [aviso, fim] = caplog.records
+    assert (aviso.getMessage(), aviso.__dict__["motivo"]) == (
+        "broker_connection_blocked",
+        "low on memory",
+    )
+    assert fim.getMessage() == "broker_connection_unblocked"
