@@ -2,9 +2,11 @@
 
 ``contratos/`` guarda os schemas e exemplos das mensagens que o Billing produz e
 consome e o ``asyncapi.yaml``, copiados do repositorio da plataforma no commit
-gravado em ``contratos/ORIGEM``. A copia tem de ser identica a origem (o CI
-baixa cada arquivo pelo raw do GitHub, o repositorio e publico), e todo exemplo
-do platform tem de passar na validacao que o servico aplica.
+gravado em ``contratos/ORIGEM``; ``rabbitmq/`` guarda a topologia do broker
+(compose e testes), com o commit de origem em ``rabbitmq/ORIGEM``. A copia tem
+de ser identica a origem (o CI baixa cada arquivo pelo raw do GitHub, o
+repositorio e publico), e todo exemplo do platform tem de passar na validacao
+que o servico aplica.
 """
 
 from __future__ import annotations
@@ -21,10 +23,22 @@ from src.compartilhado.infraestrutura.mensageria import contratos
 
 RAIZ = contratos.diretorio()
 ORIGEM = (RAIZ / "ORIGEM").read_text(encoding="utf-8").strip()
-URL_DO_PLATFORM = (
+PLATFORM = (
     "https://raw.githubusercontent.com/fiap-postech-sw-architecture/"
-    f"postech-sw-arch-p4-platform/{ORIGEM}/contratos"
+    "postech-sw-arch-p4-platform"
 )
+URL_DO_PLATFORM = f"{PLATFORM}/{ORIGEM}/contratos"
+TOPOLOGIA = RAIZ.parent / "rabbitmq"
+ORIGEM_DA_TOPOLOGIA = (TOPOLOGIA / "ORIGEM").read_text(encoding="utf-8").strip()
+# Arquivo de rabbitmq/ -> caminho no platform.
+ARQUIVOS_DA_TOPOLOGIA = {
+    "definitions.json": "k8s/base/rabbitmq/definitions.json",
+    "permissoes.json": "k8s/base/rabbitmq/permissoes.json",
+    "rabbitmq.conf": "k8s/base/rabbitmq/rabbitmq.conf",
+    "criar-usuarios.sh": "k8s/base/rabbitmq/criar-usuarios.sh",
+    "enabled_plugins": "k8s/base/rabbitmq/enabled_plugins",
+    "admin.json": "compose/rabbitmq-admin.json",
+}
 COPIADOS = sorted(
     caminho.relative_to(RAIZ).as_posix()
     for caminho in RAIZ.rglob("*")
@@ -42,21 +56,43 @@ def _sha256(conteudo: bytes) -> str:
     return hashlib.sha256(conteudo).hexdigest()
 
 
-def test_origem_e_um_sha_completo() -> None:
-    assert len(ORIGEM) == 40
-    assert int(ORIGEM, 16) >= 0
+@pytest.mark.parametrize("origem", [ORIGEM, ORIGEM_DA_TOPOLOGIA])
+def test_origem_e_um_sha_completo(origem: str) -> None:
+    assert len(origem) == 40
+    assert int(origem, 16) >= 0
+
+
+def _divergentes(pares: dict[str, tuple[str, bytes]]) -> list[str]:
+    """Arquivos cuja copia local difere do platform (sha256 do conteudo)."""
+    divergentes = []
+    with httpx.Client(timeout=15, follow_redirects=True) as cliente:
+        for nome, (url, local) in pares.items():
+            resposta = cliente.get(url)
+            resposta.raise_for_status()
+            if _sha256(resposta.content) != _sha256(local):
+                divergentes.append(nome)
+    return divergentes
 
 
 def test_copia_bate_com_o_platform_no_sha_de_origem() -> None:
-    divergentes = []
-    with httpx.Client(timeout=15, follow_redirects=True) as cliente:
-        for relativo in COPIADOS:
-            resposta = cliente.get(f"{URL_DO_PLATFORM}/{relativo}")
-            resposta.raise_for_status()
-            local = (RAIZ / relativo).read_bytes()
-            if _sha256(resposta.content) != _sha256(local):
-                divergentes.append(relativo)
-    assert divergentes == []
+    pares = {
+        relativo: (f"{URL_DO_PLATFORM}/{relativo}", (RAIZ / relativo).read_bytes())
+        for relativo in COPIADOS
+    }
+    assert _divergentes(pares) == []
+
+
+def test_topologia_bate_com_o_platform_no_sha_de_origem() -> None:
+    copiados = {c.name for c in TOPOLOGIA.iterdir() if c.name != "ORIGEM"}
+    assert copiados == set(ARQUIVOS_DA_TOPOLOGIA)
+    pares = {
+        nome: (
+            f"{PLATFORM}/{ORIGEM_DA_TOPOLOGIA}/{caminho}",
+            (TOPOLOGIA / nome).read_bytes(),
+        )
+        for nome, caminho in ARQUIVOS_DA_TOPOLOGIA.items()
+    }
+    assert _divergentes(pares) == []
 
 
 def test_copia_tem_o_envelope_e_os_tipos_do_billing() -> None:

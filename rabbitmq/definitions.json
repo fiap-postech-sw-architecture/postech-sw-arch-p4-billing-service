@@ -294,7 +294,7 @@
     {
       "vhost": "/",
       "name": "retry-billing.comandos",
-      "pattern": "^billing\\.comandos\\.retry\\.\\d+s$",
+      "pattern": "^billing\\.comandos\\.retry\\.",
       "apply-to": "queues",
       "priority": 0,
       "definition": {
@@ -307,7 +307,7 @@
     {
       "vhost": "/",
       "name": "retry-execucao.comandos",
-      "pattern": "^execucao\\.comandos\\.retry\\.\\d+s$",
+      "pattern": "^execucao\\.comandos\\.retry\\.",
       "apply-to": "queues",
       "priority": 0,
       "definition": {
@@ -320,7 +320,7 @@
     {
       "vhost": "/",
       "name": "retry-os.eventos",
-      "pattern": "^os\\.eventos\\.retry\\.\\d+s$",
+      "pattern": "^os\\.eventos\\.retry\\.",
       "apply-to": "queues",
       "priority": 0,
       "definition": {
