@@ -380,13 +380,17 @@ class TestEntradaHostil:
         assert _consumidas("TipoInventado", "dlq") == 0
 
 
-def test_entrega_nao_poe_o_corpo_no_repr() -> None:
+def test_entrega_nao_poe_o_corpo_nem_os_cabecalhos_no_repr() -> None:
     envelope = _cancelar()
     corpo = json.dumps(envelope).encode()
+    cabecalhos = {"x-de-fora": "valor-do-cabecalho"}
 
-    texto = repr(_Entrega(1, propriedades(envelope), {}, corpo, 0, "CancelarOrcamento"))
+    texto = repr(
+        _Entrega(1, propriedades(envelope), cabecalhos, corpo, 0, "CancelarOrcamento")
+    )
 
     assert envelope["dados"]["ordem_id"] not in texto
+    assert "valor-do-cabecalho" not in texto
     assert "CancelarOrcamento" in texto
 
 
