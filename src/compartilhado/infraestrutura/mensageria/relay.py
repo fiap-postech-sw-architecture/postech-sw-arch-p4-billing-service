@@ -48,9 +48,9 @@ _log = logging.getLogger(__name__)
 
 LEASE: Final = timedelta(seconds=30)
 # Politica do relay do p3 (relay/backoff.py): a N-esima falha espera
-# ATRASOS[N-1]; a de numero MAX_TENTATIVAS vira dead.
-ATRASOS_SEGUNDOS: Final = (1, 4, 16, 64, 256)
-MAX_TENTATIVAS: Final = 5
+# ATRASOS[N-1]; a quinta vira dead.
+ATRASOS_SEGUNDOS: Final = (1, 4, 16, 64)
+MAX_TENTATIVAS: Final = len(ATRASOS_SEGUNDOS) + 1
 _EM_ENTREGA: Final = "em_entrega"
 
 
@@ -236,12 +236,15 @@ class RelayDaOutbox:
                 "status": "pendente",
                 "proxima_tentativa_em": self._relogio() + atraso,
             }
-        self._outbox.update_one(
+        resultado = self._outbox.update_one(
             self._da_reivindicacao(linha),
             {"$set": mudanca, "$unset": {"reivindicacao": ""}},
         )
         contexto = {**linha.rotulos, "tentativas": tentativas, "erro": erro}
-        if mudanca["status"] == "dead":
+        if resultado.modified_count == 0:
+            # Lease retomado por outro relay: a falha nao e mais desta linha.
+            _log.warning("outbox_claim_lost", extra=linha.rotulos)
+        elif mudanca["status"] == "dead":
             _log.error("outbox_message_dead", extra=contexto)
         else:
             _log.warning("outbox_message_refused", extra=contexto)

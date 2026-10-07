@@ -309,9 +309,13 @@ class TestDoisRelays:
         ids=["primeiro-confirma", "primeiro-falha"],
     )
     def test_relay_atrasado_nao_mexe_na_linha_que_outro_esta_entregando(
-        self, banco: Banco, erro_do_primeiro: Exception | None
+        self,
+        banco: Banco,
+        erro_do_primeiro: Exception | None,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Os dois em voo ao mesmo tempo: so o token distingue o dono da linha."""
+        caplog.set_level(logging.INFO)
         _gravar_orcamentos(banco)
         relogio = RelogioFixo()
         solta_o_primeiro, solta_o_segundo = threading.Event(), threading.Event()
@@ -335,6 +339,9 @@ class TestDoisRelays:
         # O primeiro terminou (publicou ou falhou), e a linha segue do segundo.
         assert _linhas(banco) == [do_segundo]
         assert do_segundo["status"] == "em_entrega"
+        mensagens = [r.getMessage() for r in caplog.records]
+        assert "outbox_claim_lost" in mensagens
+        assert "outbox_message_refused" not in mensagens
 
         solta_o_segundo.set()
         thread_do_segundo.join(timeout=10)
