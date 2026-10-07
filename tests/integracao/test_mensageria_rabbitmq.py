@@ -31,6 +31,7 @@ from src.compartilhado.aplicacao.mensageria import Desfecho
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria import processo as boot
 from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, parametros
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     EXCHANGE_RETRY,
@@ -793,13 +794,12 @@ class TestProcessos:
             return ServidorFalso(), None
 
         sinais: list[threading.Event] = []
-        for modulo in (processo_relay, processo_consumidor):
-            monkeypatch.setattr(modulo, "start_http_server", servidor_de_metricas)
-            monkeypatch.setattr(
-                modulo, "configurar_telemetria", lambda _processo: TracerProvider()
-            )
-            # SIGTERM de mentira: o Event que o handler do sinal acionaria.
-            monkeypatch.setattr(modulo, "instalar_sinais", sinais.append)
+        monkeypatch.setattr(boot, "start_http_server", servidor_de_metricas)
+        monkeypatch.setattr(
+            boot, "configurar_telemetria", lambda _processo: TracerProvider()
+        )
+        # SIGTERM de mentira: o Event que o handler do sinal acionaria.
+        monkeypatch.setattr(boot, "instalar_sinais", sinais.append)
         threads = [
             threading.Thread(target=processo.main)
             for processo in (processo_relay, processo_consumidor)
@@ -843,13 +843,12 @@ class TestProcessos:
         }
         for nome, valor in ambiente.items():
             monkeypatch.setenv(nome, valor)
-        for modulo in (processo_relay, processo_consumidor):
-            monkeypatch.setattr(
-                modulo, "start_http_server", lambda _porta: (ServidorFalso(), None)
-            )
-            monkeypatch.setattr(
-                modulo, "configurar_telemetria", lambda _processo: TracerProvider()
-            )
+        monkeypatch.setattr(
+            boot, "start_http_server", lambda _porta: (ServidorFalso(), None)
+        )
+        monkeypatch.setattr(
+            boot, "configurar_telemetria", lambda _processo: TracerProvider()
+        )
         parar = threading.Event()
         parar.set()
 

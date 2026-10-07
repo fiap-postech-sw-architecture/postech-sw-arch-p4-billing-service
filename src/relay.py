@@ -10,10 +10,9 @@ secao 6); SIGTERM conclui a mensagem em curso e fecha as conexoes.
 from __future__ import annotations
 
 import logging
-import threading
 from typing import TYPE_CHECKING, Final
 
-from prometheus_client import REGISTRY, start_http_server
+from prometheus_client import REGISTRY
 from pymongo.errors import PyMongoError
 
 from src.compartilhado.infraestrutura.logging import configurar_logging
@@ -21,20 +20,19 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
     ESPERA_MAXIMA_SEGUNDOS,
     CanalAmqp,
     manter_conectado,
-    parametros,
 )
 from src.compartilhado.infraestrutura.mensageria.contratos import EXCHANGE_EVENTOS
 from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
-from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
-from src.compartilhado.infraestrutura.mensageria.telemetria import (
-    configurar_telemetria,
+from src.compartilhado.infraestrutura.mensageria.processo import (
+    processo_da_mensageria,
 )
-from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
-from src.compartilhado.infraestrutura.processo import instalar_sinais, sinalizar
+from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
+from src.compartilhado.infraestrutura.processo import sinalizar
 from src.compartilhado.infraestrutura.unit_of_work import COLECAO_OUTBOX
 from src.configuracao import ConfiguracaoDoRelay
 
 if TYPE_CHECKING:
+    import threading
     from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -91,35 +89,24 @@ def main(parar: threading.Event | None = None) -> None:
     """Sobe o relay e roda ate o SIGTERM (``parar`` serve aos testes)."""
     configurar_logging()
     config = ConfiguracaoDoRelay.do_ambiente()
-    provedor = configurar_telemetria("relay")
-    if parar is None:
-        parar = threading.Event()
-        instalar_sinais(parar)
-    servidor, _ = start_http_server(config.porta_metricas)
-    cliente = criar_cliente(config.banco.mongodb_uri)
-    canal = CanalAmqp(
-        parametros(config.rabbitmq_url, nome="billing-relay"),
-        exchanges=(EXCHANGE_EVENTOS,),
-    )
-    banco = cliente[config.banco.mongodb_banco]
-    coletor = ColetorDaOutbox(COLECAO_OUTBOX, banco)
-    REGISTRY.register(coletor)
-    try:
-        conferir_versao(banco)
-        _log.info("relay_started")
-        rodar(
-            RelayDaOutbox(banco, canal, usuario=config.rabbitmq_usuario),
-            canal,
-            parar=parar,
-            heartbeat=config.heartbeat,
-        )
-        _log.info("relay_stopped")
-    finally:
-        REGISTRY.unregister(coletor)
-        canal.fechar()
-        cliente.close()
-        servidor.shutdown()
-        provedor.shutdown()
+    with processo_da_mensageria(
+        "relay", config, parar, exchanges=(EXCHANGE_EVENTOS,)
+    ) as processo:
+        coletor = ColetorDaOutbox(COLECAO_OUTBOX, processo.banco)
+        REGISTRY.register(coletor)
+        try:
+            _log.info("relay_started")
+            rodar(
+                RelayDaOutbox(
+                    processo.banco, processo.canal, usuario=config.rabbitmq_usuario
+                ),
+                processo.canal,
+                parar=processo.parar,
+                heartbeat=config.heartbeat,
+            )
+            _log.info("relay_stopped")
+        finally:
+            REGISTRY.unregister(coletor)
 
 
 if __name__ == "__main__":  # pragma: no cover

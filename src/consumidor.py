@@ -12,11 +12,8 @@ voltam a fila) e fecha as conexoes.
 from __future__ import annotations
 
 import logging
-import threading
 from functools import partial
 from typing import TYPE_CHECKING, Final
-
-from prometheus_client import start_http_server
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
@@ -25,17 +22,15 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
     ESPERA_MAXIMA_SEGUNDOS,
     CanalAmqp,
     manter_conectado,
-    parametros,
 )
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     EXCHANGE_RETRY,
     ConsumidorDeComandos,
 )
-from src.compartilhado.infraestrutura.mensageria.telemetria import (
-    configurar_telemetria,
+from src.compartilhado.infraestrutura.mensageria.processo import (
+    processo_da_mensageria,
 )
-from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
-from src.compartilhado.infraestrutura.processo import instalar_sinais, sinalizar
+from src.compartilhado.infraestrutura.processo import sinalizar
 from src.configuracao import ConfiguracaoDoConsumidor
 from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK, LinkDeDecisao
 from src.orcamento.interfaces import comandos as comandos_do_orcamento
@@ -45,6 +40,7 @@ from src.pagamento.infraestrutura.metricas import MetricasPrometheus
 from src.pagamento.interfaces import comandos as comandos_do_pagamento
 
 if TYPE_CHECKING:
+    import threading
     from pathlib import Path
 
     from src.compartilhado.dominio.relogio import Relogio
@@ -141,38 +137,33 @@ def main(parar: threading.Event | None = None) -> None:
     configurar_logging()
     config = ConfiguracaoDoConsumidor.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
-    provedor = configurar_telemetria("consumidor")
-    if parar is None:
-        parar = threading.Event()
-        instalar_sinais(parar)
-    servidor, _ = start_http_server(config.porta_metricas)
-    cliente = criar_cliente(config.banco.mongodb_uri)
-    canal = CanalAmqp(
-        parametros(config.rabbitmq_url, nome="billing-consumidor"),
+    with processo_da_mensageria(
+        "consumidor",
+        config,
+        parar,
         filas=(FILA,),
         exchanges=(EXCHANGE_RETRY,),
-    )
-    gateway = criar_gateway(config.comandos)
-    banco = cliente[config.banco.mongodb_banco]
-    consumidor = ConsumidorDeComandos(
-        banco,
-        criar_handlers(config.comandos, gateway=gateway),
-        fila=FILA,
-        usuario=config.rabbitmq_usuario,
-    )
-    try:
-        conferir_versao(banco)
-        _log.info("consumer_started", extra={"fila": FILA})
-        rodar(consumidor, canal, parar=parar, heartbeat=config.heartbeat)
-        _log.info("consumer_stopped")
-    finally:
-        consumidor.fechar()
-        canal.fechar()
-        cliente.close()
-        if isinstance(gateway, MercadoPagoGateway):
-            gateway.fechar()
-        servidor.shutdown()
-        provedor.shutdown()
+    ) as processo:
+        gateway = criar_gateway(config.comandos)
+        consumidor = ConsumidorDeComandos(
+            processo.banco,
+            criar_handlers(config.comandos, gateway=gateway),
+            fila=FILA,
+            usuario=config.rabbitmq_usuario,
+        )
+        try:
+            _log.info("consumer_started", extra={"fila": FILA})
+            rodar(
+                consumidor,
+                processo.canal,
+                parar=processo.parar,
+                heartbeat=config.heartbeat,
+            )
+            _log.info("consumer_stopped")
+        finally:
+            consumidor.fechar()
+            if isinstance(gateway, MercadoPagoGateway):
+                gateway.fechar()
 
 
 if __name__ == "__main__":  # pragma: no cover
