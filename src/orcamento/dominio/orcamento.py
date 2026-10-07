@@ -326,6 +326,12 @@ class Orcamento(AggregateRoot):
         return self._valido_ate
 
     @property
+    def e_lapide(self) -> bool:
+        """Cancelamento que chegou antes da geracao: CANCELADO, sem linhas nem
+        validade (RFC-004, secao 4.5)."""
+        return self._valido_ate is None
+
+    @property
     def status(self) -> StatusOrcamento:
         return self._status
 

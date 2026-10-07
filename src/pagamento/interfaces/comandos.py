@@ -65,8 +65,8 @@ def solicitar_pagamento(
             },
         )
         return Desfecho.IGNORADA
-    # A lapide nao tem cobranca: o comando atrasado sai sem efeito e sem resposta.
-    if pagamento.checkout_url is None:
+    # Depois da lapide o comando atrasado sai sem efeito e sem resposta.
+    if pagamento.lapide:
         return Desfecho.IGNORADA
     return Desfecho.PROCESSADA
 

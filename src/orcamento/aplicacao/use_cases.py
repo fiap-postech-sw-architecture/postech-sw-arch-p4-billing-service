@@ -156,6 +156,8 @@ class GerarOrcamento:
         )
 
     def _repetido(self, existente: Orcamento) -> OrcamentoDTO:
+        # So a lapide nao tem validade (e_lapide); o teste explicito da ao link
+        # a validade do orcamento gerado.
         if existente.valido_ate is None:
             # A compensacao chegou antes (lapide): sem efeito e sem resposta.
             _log.info(

@@ -161,7 +161,7 @@ class SolicitarPagamento:
         return PagamentoDTO.de(pagamento)
 
     def _repetido(self, existente: Pagamento) -> PagamentoDTO:
-        if existente.cobranca is None:
+        if existente.e_lapide:
             # A compensacao chegou antes (lapide): sem efeito e sem resposta.
             _log.info(
                 "command_ignored",

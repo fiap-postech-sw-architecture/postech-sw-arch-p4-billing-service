@@ -221,6 +221,10 @@ class TestLapide:
         ]
         assert tumulo.compensar() is PlanoDeCompensacao.RESPONDER_CANCELADO
         assert not tumulo.vencido(DEPOIS_DO_PRAZO)
+        assert tumulo.e_lapide
+
+    def test_pagamento_solicitado_nao_e_lapide(self) -> None:
+        assert not pagamento().e_lapide
 
     def test_lapide_nao_tem_pagamento_solicitado(self) -> None:
         tumulo = Pagamento.lapide(

@@ -195,6 +195,12 @@ class Pagamento(AggregateRoot):
         return self._cobranca
 
     @property
+    def e_lapide(self) -> bool:
+        """Compensacao que chegou antes do ``SolicitarPagamento``: CANCELADO e
+        sem cobranca (RFC-004, secao 4.5)."""
+        return self._cobranca is None
+
+    @property
     def status(self) -> StatusPagamento:
         return self._status
 

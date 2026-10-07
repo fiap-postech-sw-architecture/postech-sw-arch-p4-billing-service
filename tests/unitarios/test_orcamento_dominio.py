@@ -317,6 +317,12 @@ class TestLapide:
         ]
         assert not tumulo.vencido(DEPOIS_DO_PRAZO)
         assert tumulo.cancelar(motivo="de novo") is False
+        assert tumulo.e_lapide
+
+    def test_orcamento_gerado_nao_e_lapide_mesmo_cancelado(self) -> None:
+        gerado = orcamento()
+        gerado.cancelar(motivo="cancelamento")
+        assert not gerado.e_lapide
 
     def test_lapide_exige_motivo(self) -> None:
         with pytest.raises(ValorInvalidoError, match="Motivo"):

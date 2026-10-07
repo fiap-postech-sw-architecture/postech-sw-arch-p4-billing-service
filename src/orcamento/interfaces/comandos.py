@@ -55,7 +55,7 @@ def gerar_orcamento(
         ],
     )
     # A lapide (cancelamento que chegou antes) descarta o comando, sem resposta.
-    if orcamento is not None and orcamento.valido_ate is None:
+    if orcamento is not None and orcamento.lapide:
         return Desfecho.IGNORADA
     return Desfecho.PROCESSADA
 
