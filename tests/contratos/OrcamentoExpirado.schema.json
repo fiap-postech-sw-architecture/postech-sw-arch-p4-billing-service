@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OrcamentoExpirado (dados)",
+  "description": "Campo dados da mensagem OrcamentoExpirado (evento, billing-service -> os-service). O prazo de decisão (ORCAMENTO_VALIDADE_HORAS) venceu sem resposta do cliente.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "orcamento_id"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "orcamento_id": {
+      "$ref": "#/$defs/uuid"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

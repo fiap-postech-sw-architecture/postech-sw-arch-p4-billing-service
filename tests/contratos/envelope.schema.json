@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Envelope de mensagem do PytStop",
+  "description": "Corpo JSON de todo comando e evento publicado no RabbitMQ. O campo dados segue o schema <tipo>.schema.json.",
+  "type": "object",
+  "required": [
+    "id",
+    "tipo",
+    "versao",
+    "origem",
+    "correlation_id",
+    "causation_id",
+    "ocorrido_em",
+    "dados"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Id único da mensagem. Vai também na propriedade AMQP message_id e é a chave de idempotência do consumidor."
+    },
+    "tipo": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Z][A-Za-z]+$",
+      "description": "Nome da mensagem no catálogo (ex.: GerarOrcamento). Vai também na propriedade AMQP type."
+    },
+    "versao": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Versão do schema de dados; mudança incompatível cria versão nova."
+    },
+    "origem": {
+      "enum": [
+        "os-service",
+        "billing-service",
+        "execution-service"
+      ],
+      "description": "Serviço que publicou a mensagem."
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Id da ordem de serviço, que também identifica a instância da saga; em mensagem fora da saga, o id do agregado tratado (AnonimizarVeiculo: veiculo_id). Vai também na propriedade AMQP correlation_id."
+    },
+    "causation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid",
+      "description": "Id da mensagem que causou esta: a resposta a um comando leva o id do comando; null só quando a causa é uma requisição HTTP, um webhook ou um prazo."
+    },
+    "ocorrido_em": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$",
+      "description": "Instante do fato em UTC (RFC 3339 com Z ou +00:00)."
+    },
+    "dados": {
+      "type": "object",
+      "description": "Conteúdo específico do tipo."
+    }
+  }
+}

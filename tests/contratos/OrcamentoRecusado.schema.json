@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OrcamentoRecusado (dados)",
+  "description": "Campo dados da mensagem OrcamentoRecusado (evento, billing-service -> os-service). Decisão do cliente (pelo link ou pelo atendente) recusando o orçamento; o OS compensa a saga e cancela a OS.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "orcamento_id",
+    "decidido_em",
+    "canal"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "orcamento_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "decidido_em": {
+      "$ref": "#/$defs/data_hora"
+    },
+    "canal": {
+      "$ref": "#/$defs/canal"
+    },
+    "decidido_por": {
+      "$ref": "#/$defs/uuid",
+      "description": "sub do atendente que registrou a decisão; obrigatório com canal=atendente e ausente com canal=link."
+    }
+  },
+  "$defs": {
+    "canal": {
+      "enum": [
+        "link",
+        "atendente"
+      ],
+      "description": "link: o cliente decidiu pelo link do e-mail; atendente: um atendente registrou a decisão em nome do cliente."
+    },
+    "data_hora": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$",
+      "description": "Instante em UTC (RFC 3339 com Z ou +00:00)."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "if": {
+    "properties": {
+      "canal": {
+        "const": "atendente"
+      }
+    },
+    "required": [
+      "canal"
+    ]
+  },
+  "then": {
+    "required": [
+      "decidido_por"
+    ]
+  },
+  "else": {
+    "not": {
+      "required": [
+        "decidido_por"
+      ]
+    }
+  }
+}

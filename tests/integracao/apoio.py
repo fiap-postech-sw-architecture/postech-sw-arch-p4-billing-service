@@ -1,0 +1,187 @@
+"""Apoio dos testes de integracao: outbox, relogio controlavel e configuracao."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlsplit
+
+from pymongo import MongoClient, monitoring
+
+from src.configuracao import Configuracao
+from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
+from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
+from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
+from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+    from uuid import UUID
+
+    from pymongo.database import Database
+
+    from src.pagamento.aplicacao.ports import CobrancaCriada, ItemCobranca
+    from src.pagamento.dominio.cobranca import SituacaoNoProvedor
+    from src.pagamento.dominio.estados import MotivoEstorno
+
+URL_PUBLICA = "http://billing.teste"
+SEGREDO_WEBHOOK = "segredo-do-webhook-de-teste"
+# Valor de teste (ENVIRONMENT=test aceita qualquer segredo nao vazio).
+SEGREDO_LINK = "segredo-do-link-de-teste-32-bytes!!"
+
+
+LINK = LinkDeDecisao(segredo=SEGREDO_LINK, url_base=f"{URL_PUBLICA}{PREFIXO_DO_LINK}")
+
+
+def token_do_link(orcamento_id: UUID, valido_ate: datetime | None) -> str:
+    """Token do link de decisao que o ``OrcamentoGerado`` leva."""
+    assert valido_ate is not None, "a lapide nao tem link"
+    return LINK.gerar(orcamento_id, valido_ate).rsplit("/", 1)[1]
+
+
+def token_do_checkout(checkout_url: str | None) -> str:
+    """O ``?token=`` que o simulador pos no ``checkout_url``."""
+    assert checkout_url is not None, "a lapide nao tem checkout"
+    [token] = parse_qs(urlsplit(checkout_url).query)["token"]
+    return token
+
+
+def eventos_do_outbox(
+    banco: Database[dict[str, Any]], tipo: str | None = None
+) -> list[dict[str, Any]]:
+    """Envelopes gravados na outbox, na ordem do relay (``_id`` UUIDv7)."""
+    filtro = {"tipo": tipo} if tipo else {}
+    return [doc["envelope"] for doc in banco["outbox"].find(filtro).sort("_id")]
+
+
+class EscritasEspiadas(monitoring.CommandListener):
+    """Guarda colecao, sessao e transacao de cada insert/update enviado."""
+
+    def __init__(self) -> None:
+        self.escritas: list[tuple[str, Any, Any, Any]] = []
+
+    def started(self, event: monitoring.CommandStartedEvent) -> None:
+        if event.command_name in {"insert", "update"}:
+            comando = event.command
+            self.escritas.append(
+                (
+                    comando[event.command_name],
+                    comando.get("lsid"),
+                    comando.get("txnNumber"),
+                    comando.get("autocommit"),
+                )
+            )
+
+    def succeeded(self, event: monitoring.CommandSucceededEvent) -> None:
+        return None
+
+    def failed(self, event: monitoring.CommandFailedEvent) -> None:
+        return None
+
+
+@contextmanager
+def cliente_espiado(
+    mongo_uri: str,
+) -> Iterator[tuple[MongoClient[dict[str, Any]], EscritasEspiadas]]:
+    """Cliente do mesmo banco de teste que registra todo insert e update."""
+    espia = EscritasEspiadas()
+    cliente: MongoClient[dict[str, Any]] = MongoClient(
+        mongo_uri,
+        uuidRepresentation="standard",
+        tz_aware=True,
+        event_listeners=[espia],
+    )
+    try:
+        yield cliente, espia
+    finally:
+        cliente.close()
+
+
+class RelogioFixo:
+    """Relogio controlavel; ``avancar`` move o tempo dos casos de uso."""
+
+    def __init__(self, agora: datetime | None = None) -> None:
+        self.agora = agora or datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        return self.agora
+
+    def avancar(self, **delta: float) -> datetime:
+        self.agora += timedelta(**delta)
+        return self.agora
+
+
+def configuracao(**extra: str) -> Configuracao:
+    return Configuracao.do_ambiente(
+        {
+            "ENVIRONMENT": "test",
+            "MP_MODE": "simulado",
+            "BILLING_PUBLIC_URL": URL_PUBLICA,
+            "JWKS_URL": "http://os.teste/.well-known/jwks.json",
+            "ORCAMENTO_LINK_SECRET": SEGREDO_LINK,
+            "MP_WEBHOOK_SECRET": SEGREDO_WEBHOOK,
+            **extra,
+        }
+    )
+
+
+class MetricasEspia:
+    """``MetricasDePagamento`` que guarda as chamadas (sem Prometheus)."""
+
+    def __init__(self) -> None:
+        self.estornos: list[MotivoEstorno] = []
+        self.estornos_automaticos_recusados = 0
+        self.cancelamentos_recusados = 0
+
+    def estorno_concluido(self, motivo: MotivoEstorno) -> None:
+        self.estornos.append(motivo)
+
+    def estorno_automatico_falhou(self) -> None:
+        self.estornos_automaticos_recusados += 1
+
+    def cancelamento_de_cobranca_recusado(self) -> None:
+        self.cancelamentos_recusados += 1
+
+
+class GatewayRoteirizado(GatewayPagamentoSimulado):
+    """Simulador real com ganchos: falhas programadas, respostas fixas e espias."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            url_checkout=f"{URL_PUBLICA}{CAMINHO_CHECKOUT}", segredo=SEGREDO_LINK
+        )
+        self.cobrancas: list[UUID] = []
+        self.cancelamentos: list[str] = []
+        self.estornos: list[tuple[str, str]] = []
+        self.erro_na_cobranca: Exception | None = None
+        self.erro_no_cancelamento: Exception | None = None
+        self.erro_no_estorno: Exception | None = None
+        self.respostas: dict[str, SituacaoNoProvedor | None] = {}
+
+    def criar_cobranca(
+        self, *, pagamento_id: UUID, itens: Sequence[ItemCobranca], expira_em: datetime
+    ) -> CobrancaCriada:
+        self.cobrancas.append(pagamento_id)
+        if self.erro_na_cobranca:
+            raise self.erro_na_cobranca
+        return super().criar_cobranca(
+            pagamento_id=pagamento_id, itens=itens, expira_em=expira_em
+        )
+
+    def cancelar_cobranca(self, referencia_preferencia: str) -> None:
+        self.cancelamentos.append(referencia_preferencia)
+        if self.erro_no_cancelamento:
+            raise self.erro_no_cancelamento
+        super().cancelar_cobranca(referencia_preferencia)
+
+    def consultar_pagamento(self, referencia: str) -> SituacaoNoProvedor | None:
+        if referencia in self.respostas:
+            return self.respostas[referencia]
+        return super().consultar_pagamento(referencia)
+
+    def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
+        self.estornos.append((referencia, chave_idempotencia))
+        if self.erro_no_estorno:
+            raise self.erro_no_estorno
+        super().estornar(referencia, chave_idempotencia=chave_idempotencia)

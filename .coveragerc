@@ -1,0 +1,24 @@
+# Gate de cobertura do servico (ADR-041 e RFC-004, secao 10.2: fail_under =
+# 90; o enunciado pede 80). Mede ramos, nao so linhas: if/for exercitados de um lado so aparecem.
+# Herdado do p3 @ 08dcffe, sem os caminhos de UI e relay.
+
+[run]
+relative_files = True
+branch = True
+source = src
+omit =
+    */__init__.py
+    # Ports de repositorio e a UnitOfWork sao Protocols puros (sem logica).
+    src/*/dominio/repository.py
+    src/compartilhado/aplicacao/unit_of_work.py
+
+[report]
+fail_under = 90
+show_missing = True
+skip_covered = True
+exclude_also =
+    if TYPE_CHECKING:
+    class .*\bProtocol\):
+    # So a linha que e apenas "..." (corpo de Protocol/overload); sem a ancora o
+    # padrao casava `Callable[..., X]` e excluia a funcao inteira.
+    ^\s*\.\.\.\s*$

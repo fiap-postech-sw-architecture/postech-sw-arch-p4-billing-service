@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PagamentoSolicitado (dados)",
+  "description": "Campo dados da mensagem PagamentoSolicitado (evento, billing-service -> os-service). Cobrança criada, com o link de checkout; o OS guarda o resumo e avisa o cliente por e-mail (a OS já está em AGUARDANDO_PAGAMENTO desde PecasReservadas).",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "pagamento_id",
+    "valor",
+    "moeda",
+    "checkout_url",
+    "expira_em"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "pagamento_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "valor": {
+      "$ref": "#/$defs/dinheiro"
+    },
+    "moeda": {
+      "$ref": "#/$defs/moeda"
+    },
+    "checkout_url": {
+      "$ref": "#/$defs/uri",
+      "description": "Contém o token do link (HMAC); nunca vai para log nem para span."
+    },
+    "expira_em": {
+      "$ref": "#/$defs/data_hora"
+    }
+  },
+  "$defs": {
+    "data_hora": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$",
+      "description": "Instante em UTC (RFC 3339 com Z ou +00:00)."
+    },
+    "dinheiro": {
+      "type": "string",
+      "maxLength": 13,
+      "pattern": "^(0|[1-9][0-9]{0,9})\\.[0-9]{2}$",
+      "description": "Valor decimal em string, com duas casas e até 10 dígitos inteiros (nunca float)."
+    },
+    "moeda": {
+      "const": "BRL",
+      "description": "Código ISO 4217 da moeda."
+    },
+    "uri": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "pattern": "^https?://[^\\s/@]+(/\\S*)?$",
+      "description": "URL http ou https, sem usuário e senha na autoridade."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}
