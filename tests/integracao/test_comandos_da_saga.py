@@ -525,6 +525,57 @@ class TestConcorrencia:
         assert [c.confirmadas for _, c in resultados] == [[1], [1]]
         assert banco["pagamentos"].count_documents({"ordem_id": ordem_id}) == 1
 
+    def test_perdedor_da_corrida_no_indice_unico_nao_publica_pagamento_fantasma(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        aprovar_pelo_atendente(banco, relogio, ordem_id)
+        orcamento_id = _orcamento_id(banco, ordem_id)
+        perdedor, vencedor = (
+            solicitar(ordem_id, orcamento_id),
+            solicitar(ordem_id, orcamento_id),
+        )
+        # Outra instancia: o pool de uma thread do primeiro esta no perdedor.
+        concorrente = ConsumidorDeComandos(
+            banco,
+            criar_handlers(configuracao().comandos, gateway=gateway, relogio=relogio),
+            fila=FILA,
+            usuario="billing",
+            relogio=relogio,
+        )
+        canal_do_vencedor = CanalDeTeste()
+        # O perdedor ja leu que a ordem nao tem pagamento; o vencedor comita
+        # enquanto ele espera o provedor, e o indice unico por ordem recusa a
+        # gravacao do perdedor.
+        gateway.durante_a_cobranca = lambda: entregar(
+            concorrente, canal_do_vencedor, vencedor
+        )
+
+        try:
+            resultado = entregar(consumidor, canal, perdedor)
+        finally:
+            concorrente.fechar()
+
+        assert (resultado, canal_do_vencedor.confirmadas) == ("processada", [1])
+        # A cobranca do perdedor fica orfa no provedor e o link dela nunca sai:
+        # um pagamento e um evento por pedido, os dois com o id do que existe.
+        assert len(gateway.cobrancas) == 2
+        pagamento_id = str(_pagamento(banco, ordem_id)["_id"])
+        assert banco["pagamentos"].count_documents({"ordem_id": ordem_id}) == 1
+        solicitados = eventos_do_outbox(banco, "PagamentoSolicitado")
+        assert [
+            (e["causation_id"], e["dados"]["pagamento_id"]) for e in solicitados
+        ] == [
+            (vencedor["id"], pagamento_id),
+            (perdedor["id"], pagamento_id),
+        ]
+
 
 class TestEventosDoOrcamentoSemComando:
     def test_decisao_do_cliente_tem_como_causa_o_gerar_orcamento(

@@ -81,6 +81,12 @@ def _linha(banco: Banco, tipo: str) -> dict[str, Any]:
     return linha
 
 
+def _falha_de_geracao(motivo: str) -> GeracaoDeOrcamentoFalhouEvent:
+    return GeracaoDeOrcamentoFalhouEvent(
+        ordem_id=uuid4(), motivo=motivo, codigos_invalidos=()
+    )
+
+
 class TestDocumentoDaOutbox:
     def test_linha_pronta_para_o_relay(self, banco: Banco) -> None:
         relogio = RelogioFixo(AGORA + timedelta(minutes=3, microseconds=4567))
@@ -248,6 +254,29 @@ class TestTransacaoDaMensagem:
         processar_mensagem(banco, _comando(), handler)
 
         assert vistos == ["PENDENTE", "CANCELADO"]
+
+    def test_trabalho_que_falha_descarta_o_que_registrou_antes_de_falhar(
+        self, banco: Banco
+    ) -> None:
+        def handler(uow: UnidadeDaMensagem) -> None:
+            def falha() -> None:
+                MongoOrcamentoRepository(uow).salvar(orcamento())
+                uow.registrar_evento(_falha_de_geracao("da-tentativa-que-falhou"))
+                raise LookupError("conflito")
+
+            with pytest.raises(LookupError):
+                uow.executar(falha)
+            uow.executar(
+                lambda: uow.registrar_evento(_falha_de_geracao("da-repeticao"))
+            )
+
+        processar_mensagem(banco, _comando(), handler)
+
+        # O agregado e os eventos da tentativa que falhou nao saem na outbox.
+        assert [
+            (e["tipo"], e["dados"]["motivo"]) for e in eventos_do_outbox(banco)
+        ] == [("GeracaoDeOrcamentoFalhou", "da-repeticao")]
+        assert banco["orcamentos"].count_documents({}) == 0
 
     def test_falha_depois_de_um_trabalho_gravado_e_defeito_e_nada_grava(
         self, banco: Banco

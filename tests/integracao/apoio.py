@@ -24,7 +24,7 @@ from src.pagamento.infraestrutura.simulado import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from pymongo.database import Database
 
@@ -196,11 +196,17 @@ class GatewayRoteirizado(GatewayPagamentoSimulado):
         self.erro_no_cancelamento: Exception | None = None
         self.erro_no_estorno: Exception | None = None
         self.respostas: dict[str, SituacaoNoProvedor | None] = {}
+        # Roda uma vez, na proxima criacao de cobranca: o que outro consumidor
+        # faz enquanto este espera o provedor.
+        self.durante_a_cobranca: Callable[[], object] | None = None
 
     def criar_cobranca(
         self, *, pagamento_id: UUID, itens: Sequence[ItemCobranca], expira_em: datetime
     ) -> CobrancaCriada:
         self.cobrancas.append(pagamento_id)
+        if (concorrente := self.durante_a_cobranca) is not None:
+            self.durante_a_cobranca = None
+            concorrente()
         if self.erro_na_cobranca:
             raise self.erro_na_cobranca
         return super().criar_cobranca(
