@@ -34,6 +34,8 @@ from src.compartilhado.infraestrutura.processo import CONECTANDO, PRONTO
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
     MongoUnitOfWork,
+    UnidadeDaMensagem,
+    processar_mensagem,
 )
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.relay import rodar
@@ -162,9 +164,12 @@ class TestEntrega:
         comando = MensagemRecebida(
             id=uuid4(), tipo="GerarOrcamento", correlation_id=uuid4()
         )
-        uow = MongoUnitOfWork(banco, relogio=RelogioFixo(), mensagem=comando)
-        with _tracer.start_as_current_span("process GerarOrcamento") as consumidor:
+
+        def handler(uow: UnidadeDaMensagem) -> None:
             uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
+
+        with _tracer.start_as_current_span("process GerarOrcamento") as consumidor:
+            processar_mensagem(banco, comando, handler, relogio=RelogioFixo())
         publicador = PublicadorFalso()
 
         _relay(banco, publicador, RelogioFixo()).entregar_pendentes(1)

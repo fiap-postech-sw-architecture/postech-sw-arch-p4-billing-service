@@ -36,13 +36,14 @@ from src.compartilhado.infraestrutura.mensageria.consumidor import (
     Desfecho,
 )
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
-from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.consumidor import rodar as rodar_consumidor
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
+from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.aplicacao.ports import (
     GatewayPagamentoIndisponivelError,
     GatewayPagamentoRecusouError,
 )
+from tests.factories import orcamento
 from tests.integracao.apoio import (
     CanalDeTeste,
     RelogioFixo,
@@ -61,6 +62,8 @@ if TYPE_CHECKING:
     )
     from pymongo.database import Database
 
+    from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
+
     Banco = Database[dict[str, Any]]
 
 _tracer = trace.get_tracer("teste")
@@ -73,7 +76,7 @@ class HandlerDeTeste:
         self.chamadas = 0
         self.erro: Exception | None = None
 
-    def __call__(self, dados: Mapping[str, Any], uow: MongoUnitOfWork) -> Desfecho:
+    def __call__(self, dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
         self.chamadas += 1
         if self.erro is not None:
             raise self.erro
@@ -497,6 +500,71 @@ class TestRetry:
         assert (canal.confirmadas, canal.rejeitadas) == ([], [1])
 
 
+class TestTransacaoDaMensagem:
+    """O handler grava sem comitar: o consumidor comita efeito, outbox e
+    ``mensagens_processadas`` juntos, ou nada (RFC-004, secao 5.4)."""
+
+    @pytest.mark.parametrize(
+        ("erro", "resultado"),
+        [
+            (AutoReconnect("banco caiu depois do efeito"), "retry"),
+            (KeyError("bug"), "dlq"),
+        ],
+        ids=["transitorio-vai-para-o-retry", "defeito-vai-para-a-dlq"],
+    )
+    def test_falha_depois_do_efeito_nao_grava_nada_e_segue_a_escada(
+        self,
+        banco: Banco,
+        relogio: RelogioFixo,
+        erro: Exception,
+        resultado: str,
+    ) -> None:
+        def efeito_e_falha(
+            _dados: Mapping[str, Any], uow: UnidadeDaMensagem
+        ) -> Desfecho:
+            uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
+            raise erro
+
+        consumidor = ConsumidorDeComandos(
+            banco,
+            {"CancelarOrcamento": efeito_e_falha},
+            fila="billing.comandos",
+            usuario="billing",
+            relogio=relogio,
+        )
+        canal = CanalDeTeste()
+
+        assert entregar(consumidor, canal, _cancelar()) == resultado
+
+        assert banco["orcamentos"].count_documents({}) == 0
+        assert eventos_do_outbox(banco) == []
+        assert banco["mensagens_processadas"].count_documents({}) == 0
+        filas = [routing_key for _, routing_key, *_ in canal.publicadas]
+        assert filas == (["billing.comandos.retry.1s"] if resultado == "retry" else [])
+
+    def test_efeito_outbox_e_mensagem_comitam_juntos(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        def efeito(_dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
+            uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
+            return Desfecho.PROCESSADA
+
+        consumidor = ConsumidorDeComandos(
+            banco,
+            {"CancelarOrcamento": efeito},
+            fila="billing.comandos",
+            usuario="billing",
+            relogio=relogio,
+        )
+        envelope = _cancelar()
+
+        assert entregar(consumidor, CanalDeTeste(), envelope) == "processada"
+
+        assert banco["orcamentos"].count_documents({}) == 1
+        assert [e["causation_id"] for e in eventos_do_outbox(banco)] == [envelope["id"]]
+        assert banco["mensagens_processadas"].count_documents({}) == 1
+
+
 class TestIdempotencia:
     def test_mesmo_id_roda_o_handler_e_conta_como_duplicada(
         self, banco: Banco, consumidor: ConsumidorDeComandos, handler: HandlerDeTeste
@@ -526,7 +594,7 @@ class TestRastreamento:
         configurar_logging(saida)
         registros = logging.getLogger("teste.handler")
 
-        def com_log(dados: Mapping[str, Any], uow: MongoUnitOfWork) -> Desfecho:
+        def com_log(dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
             registros.info("handler_called")
             return handler(dados, uow)
 

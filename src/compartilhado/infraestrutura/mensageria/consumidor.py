@@ -6,10 +6,11 @@ produtor do tipo (comandos sao do ``os``; a copia de retry chega com o proprio
 usuario e ``x-tentativa`` maior que zero) e envelope no contrato. Qualquer
 falha nessa leitura, por qualquer motivo, vai para a DLQ: nenhuma excecao
 causada pela mensagem sai de ``tratar``. Depois, o span CONSUMER filho da
-publicacao e o handler do tipo com uma unidade de trabalho da mensagem, que
-grava ``mensagens_processadas`` na transacao do efeito. O handler roda mesmo
-para o ``id`` ja visto: os casos de uso sao idempotentes pela chave de negocio
-e republicam o desfecho registrado, sem repetir o efeito.
+publicacao e o handler do tipo na transacao da mensagem: o handler grava o
+efeito sem comitar, e o consumidor comita junto a outbox e
+``mensagens_processadas`` (ou nada, se algo falhar). O handler roda mesmo para
+o ``id`` ja visto: os casos de uso sao idempotentes pela chave de negocio e
+republicam o desfecho registrado, sem repetir o efeito.
 
 Erro transitorio (banco, provedor ou rede fora; erro que o MongoDB marca como
 repetivel): copia publicada no ``pytstop.retry`` com ``x-tentativa``
@@ -52,7 +53,7 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
 from src.compartilhado.infraestrutura.unit_of_work import (
     COLECAO_PROCESSADAS,
     MensagemRecebida,
-    MongoUnitOfWork,
+    processar_mensagem,
 )
 
 if TYPE_CHECKING:
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
 
     from src.compartilhado.dominio.relogio import Relogio
     from src.compartilhado.infraestrutura.mongo import Documento
+    from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
 
 _log = logging.getLogger(__name__)
 
@@ -89,7 +91,7 @@ class Desfecho(StrEnum):
     IGNORADA = "ignorada"
 
 
-type Handler = Callable[[Mapping[str, Any], MongoUnitOfWork], Desfecho]
+type Handler = Callable[[Mapping[str, Any], UnidadeDaMensagem], Desfecho]
 
 
 class Canal(Protocol):
@@ -230,9 +232,14 @@ class ConsumidorDeComandos:
             self._banco[COLECAO_PROCESSADAS].find_one({"_id": mensagem.id}, {"_id": 1})
             is not None
         )
-        uow = MongoUnitOfWork(self._banco, relogio=self._relogio, mensagem=mensagem)
-        desfecho = self._handlers[mensagem.tipo](envelope["dados"], uow)
-        uow.concluir_mensagem()
+        handler, dados = self._handlers[mensagem.tipo], envelope["dados"]
+        # O consumidor comita: efeito, outbox e mensagens_processadas juntos.
+        desfecho = processar_mensagem(
+            self._banco,
+            mensagem,
+            lambda uow: handler(dados, uow),
+            relogio=self._relogio,
+        )
         return "duplicada" if duplicada else desfecho.value
 
     def _repetir(self, canal: Canal, entrega: _Entrega, erro: Exception) -> str:

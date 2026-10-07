@@ -1,8 +1,9 @@
 """Outbox da mensageria na unidade de trabalho (ADR-036, ADR-043; RFC-004, 5.4).
 
 Envelope com ``causation_id`` e ``ocorrido_em`` do relogio injetado, contexto
-W3C capturado na gravacao, ``mensagens_processadas`` na transacao do efeito e
-``aberto_por`` para os eventos que o registro emite depois, sem comando.
+W3C capturado na gravacao, a transacao da mensagem (efeito, outbox e
+``mensagens_processadas`` comitados juntos pelo consumidor) e ``aberto_por``
+para os eventos que o registro emite depois, sem comando.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from src.compartilhado.infraestrutura.mensageria.contratos import (
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
     MongoUnitOfWork,
+    UnidadeDaMensagem,
+    processar_mensagem,
 )
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.orcamento import CanalDecisao
@@ -28,6 +31,8 @@ from tests.factories import AGORA, orcamento
 from tests.integracao.apoio import RelogioFixo, eventos_do_outbox
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
@@ -40,6 +45,20 @@ _tracer = trace.get_tracer("teste")
 
 def _comando(tipo: str = "GerarOrcamento") -> MensagemRecebida:
     return MensagemRecebida(id=uuid4(), tipo=tipo, correlation_id=uuid4())
+
+
+def _salvar_no_comando(
+    banco: Banco,
+    comando: MensagemRecebida,
+    salvar: Callable[[UnidadeDaMensagem], None],
+    relogio: RelogioFixo | None = None,
+) -> None:
+    """O que um handler faz: grava o efeito na transacao da mensagem."""
+
+    def handler(uow: UnidadeDaMensagem) -> None:
+        uow.executar(lambda: salvar(uow))
+
+    processar_mensagem(banco, comando, handler, relogio=relogio or RelogioFixo())
 
 
 def _traceparent(span: trace.Span) -> str:
@@ -96,10 +115,11 @@ class TestComandoEmProcessamento:
         self, banco: Banco, spans: InMemorySpanExporter
     ) -> None:
         comando = _comando()
-        uow = MongoUnitOfWork(banco, mensagem=comando)
         gerado = orcamento()
         with _tracer.start_as_current_span("process GerarOrcamento") as span:
-            uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(gerado))
+            _salvar_no_comando(
+                banco, comando, lambda uow: MongoOrcamentoRepository(uow).salvar(gerado)
+            )
 
         linha = _linha(banco, "OrcamentoGerado")
         assert linha["envelope"]["causation_id"] == str(comando.id)
@@ -114,10 +134,12 @@ class TestComandoEmProcessamento:
     def test_registra_a_mensagem_na_transacao_do_efeito(self, banco: Banco) -> None:
         comando = _comando()
         relogio = RelogioFixo()
-        uow = MongoUnitOfWork(banco, relogio=relogio, mensagem=comando)
-        uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
-        uow.executar(lambda: None)
-        uow.concluir_mensagem()
+        _salvar_no_comando(
+            banco,
+            comando,
+            lambda uow: MongoOrcamentoRepository(uow).salvar(orcamento()),
+            relogio,
+        )
 
         assert list(banco["mensagens_processadas"].find()) == [
             {
@@ -128,35 +150,112 @@ class TestComandoEmProcessamento:
             }
         ]
 
-    def test_efeito_desfeito_nao_registra_a_mensagem(self, banco: Banco) -> None:
-        uow = MongoUnitOfWork(banco, mensagem=_comando())
+    @pytest.mark.parametrize(
+        "falha",
+        ["no-handler", "na-gravacao-final"],
+    )
+    def test_falha_depois_do_efeito_nao_grava_nada(
+        self, banco: Banco, monkeypatch: pytest.MonkeyPatch, falha: str
+    ) -> None:
+        def defeito(*_args: object) -> None:
+            raise RuntimeError("falha depois do efeito")
 
-        def falha() -> None:
-            MongoOrcamentoRepository(uow).salvar(orcamento())
-            raise RuntimeError("falha no meio")
+        def handler(uow: UnidadeDaMensagem) -> None:
+            uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
+            if falha == "no-handler":
+                defeito()
 
-        with pytest.raises(RuntimeError, match="falha no meio"):
-            uow.executar(falha)
-        assert banco["mensagens_processadas"].count_documents({}) == 0
+        if falha == "na-gravacao-final":
+            monkeypatch.setattr(
+                UnidadeDaMensagem, "_gravar_mensagem_processada", defeito
+            )
+
+        with pytest.raises(RuntimeError, match="falha depois do efeito"):
+            processar_mensagem(banco, _comando(), handler)
+
         assert banco["orcamentos"].count_documents({}) == 0
+        assert eventos_do_outbox(banco) == []
+        assert banco["mensagens_processadas"].count_documents({}) == 0
 
-    def test_comando_sem_transacao_e_registrado_ao_concluir(self, banco: Banco) -> None:
+    def test_comando_sem_efeito_e_registrado(self, banco: Banco) -> None:
         comando = _comando("SolicitarPagamento")
-        MongoUnitOfWork(banco, mensagem=comando).concluir_mensagem()
+        processar_mensagem(banco, comando, lambda _uow: None)
         assert banco["mensagens_processadas"].find_one({"_id": comando.id})
 
-    def test_mesmo_id_de_novo_nao_duplica_o_registro(self, banco: Banco) -> None:
+    def test_reentrega_nao_reescreve_o_registro_da_mensagem(self, banco: Banco) -> None:
         comando = _comando()
-        for _ in range(2):
-            MongoUnitOfWork(banco, mensagem=comando).concluir_mensagem()
-        assert banco["mensagens_processadas"].count_documents({}) == 1
+        relogio = RelogioFixo()
+        processar_mensagem(banco, comando, lambda _uow: None, relogio=relogio)
+        primeiro = list(banco["mensagens_processadas"].find())
+        relogio.avancar(days=20)
+
+        processar_mensagem(banco, comando, lambda _uow: None, relogio=relogio)
+
+        # $setOnInsert: o prazo do TTL (30 dias) nao recomeca a cada reentrega.
+        assert list(banco["mensagens_processadas"].find()) == primeiro
 
     def test_sem_comando_nada_vai_para_mensagens_processadas(
         self, banco: Banco
     ) -> None:
         uow = MongoUnitOfWork(banco)
         uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
-        uow.concluir_mensagem()
+        assert banco["mensagens_processadas"].count_documents({}) == 0
+
+
+class TestTransacaoDaMensagem:
+    def test_trabalho_que_falha_recomeca_a_transacao_com_retrato_novo(
+        self, banco: Banco
+    ) -> None:
+        gerado = orcamento()
+        api = MongoUnitOfWork(banco)
+        api.executar(lambda: MongoOrcamentoRepository(api).salvar(gerado))
+        vistos: list[str] = []
+
+        def handler(uow: UnidadeDaMensagem) -> None:
+            repo = MongoOrcamentoRepository(uow)
+
+            def ler_e_falhar() -> None:
+                atual = repo.obter_por_id(gerado.id)
+                assert atual is not None
+                vistos.append(atual.status.value)
+                # Outra escrita comita no meio, como num conflito que o caso
+                # de uso trata relendo.
+                banco["orcamentos"].update_one(
+                    {"_id": gerado.id}, {"$set": {"status": "CANCELADO"}}
+                )
+                raise LookupError("conflito")
+
+            with pytest.raises(LookupError):
+                uow.executar(ler_e_falhar)
+
+            def reler() -> None:
+                documento = banco["orcamentos"].find_one(
+                    {"_id": gerado.id}, session=uow.sessao
+                )
+                assert documento is not None
+                vistos.append(documento["status"])
+
+            uow.executar(reler)
+
+        processar_mensagem(banco, _comando(), handler)
+
+        assert vistos == ["PENDENTE", "CANCELADO"]
+
+    def test_falha_depois_de_um_trabalho_gravado_e_defeito_e_nada_grava(
+        self, banco: Banco
+    ) -> None:
+        def handler(uow: UnidadeDaMensagem) -> None:
+            uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
+
+            def falha() -> None:
+                raise LookupError("segundo trabalho")
+
+            uow.executar(falha)
+
+        with pytest.raises(RuntimeError, match="depois de outro gravado"):
+            processar_mensagem(banco, _comando(), handler)
+
+        assert banco["orcamentos"].count_documents({}) == 0
         assert banco["mensagens_processadas"].count_documents({}) == 0
 
 
@@ -165,10 +264,11 @@ class TestEventoSemComando:
         self, banco: Banco, spans: InMemorySpanExporter
     ) -> None:
         comando = _comando()
-        aberto = MongoUnitOfWork(banco, mensagem=comando)
         gerado = orcamento()
         with _tracer.start_as_current_span("process GerarOrcamento") as span:
-            aberto.executar(lambda: MongoOrcamentoRepository(aberto).salvar(gerado))
+            _salvar_no_comando(
+                banco, comando, lambda uow: MongoOrcamentoRepository(uow).salvar(gerado)
+            )
 
         # Decisao do cliente (API sem span), dias depois.
         uow = MongoUnitOfWork(banco)
@@ -196,18 +296,18 @@ class TestEventoSemComando:
     ) -> None:
         primeiro, segundo = _comando(), _comando("CancelarOrcamento")
         gerado = orcamento()
-        uow = MongoUnitOfWork(banco, mensagem=primeiro)
-        uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(gerado))
-        outro = MongoUnitOfWork(banco, mensagem=segundo)
-        repo = MongoOrcamentoRepository(outro)
+        _salvar_no_comando(
+            banco, primeiro, lambda uow: MongoOrcamentoRepository(uow).salvar(gerado)
+        )
 
-        def cancelar() -> None:
+        def cancelar(uow: UnidadeDaMensagem) -> None:
+            repo = MongoOrcamentoRepository(uow)
             atual = repo.obter_por_id(gerado.id)
             assert atual is not None
             atual.cancelar(motivo="cancelamento")
             repo.salvar(atual)
 
-        outro.executar(cancelar)
+        _salvar_no_comando(banco, segundo, cancelar)
 
         linha = _linha(banco, "OrcamentoCancelado")
         assert linha["envelope"]["causation_id"] == str(segundo.id)

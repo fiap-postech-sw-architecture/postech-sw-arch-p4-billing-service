@@ -1,8 +1,9 @@
 """Comandos da saga do orcamento, chamados pelo consumidor de ``billing.comandos``.
 
 Traduzem o ``dados`` do contrato (ja validado) para os casos de uso, como os
-routers fazem com o HTTP. A unidade de trabalho e a da mensagem: o comando e a
-causa das respostas e entra em ``mensagens_processadas`` com o efeito.
+routers fazem com o HTTP. A unidade de trabalho e a da mensagem: o handler
+grava o efeito sem comitar, e o consumidor comita junto a outbox (o comando e
+a causa das respostas) e ``mensagens_processadas``.
 """
 
 from __future__ import annotations
@@ -22,13 +23,13 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from src.compartilhado.dominio.relogio import Relogio
-    from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
+    from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
     from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
 
 
 def gerar_orcamento(
     dados: Mapping[str, Any],
-    uow: MongoUnitOfWork,
+    uow: UnidadeDaMensagem,
     *,
     link: LinkDeDecisao,
     validade: timedelta,
@@ -60,7 +61,7 @@ def gerar_orcamento(
 
 
 def cancelar_orcamento(
-    dados: Mapping[str, Any], uow: MongoUnitOfWork, *, relogio: Relogio
+    dados: Mapping[str, Any], uow: UnidadeDaMensagem, *, relogio: Relogio
 ) -> Desfecho:
     """``OrcamentoCancelado`` sempre (lapide se o ``GerarOrcamento`` nao chegou)."""
     CancelarOrcamento(uow, MongoOrcamentoRepository(uow), relogio).executar(

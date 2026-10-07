@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from pymongo.database import Database
 
     from src.compartilhado.infraestrutura.mensageria.consumidor import Handler
+    from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
 
     Banco = Database[dict[str, Any]]
 
@@ -286,12 +287,11 @@ class FalhaTransitoria:
         self.vezes = vezes
         self.chamadas = 0
 
-    def __call__(self, dados: Mapping[str, Any], uow: MongoUnitOfWork) -> Desfecho:
+    def __call__(self, dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
         self.chamadas += 1
         if self.chamadas <= self.vezes:
             msg = "banco fora"
             raise AutoReconnect(msg)
-        uow.concluir_mensagem()
         return Desfecho.PROCESSADA
 
 
@@ -472,7 +472,7 @@ class Defeito:
     def __init__(self) -> None:
         self.chamadas = 0
 
-    def __call__(self, dados: Mapping[str, Any], uow: MongoUnitOfWork) -> Desfecho:
+    def __call__(self, dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
         self.chamadas += 1
         raise KeyError(dados["ordem_id"])
 

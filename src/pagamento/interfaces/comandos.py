@@ -1,8 +1,9 @@
 """Comandos da saga do pagamento, chamados pelo consumidor de ``billing.comandos``.
 
 Traduzem o ``dados`` do contrato (ja validado) para os casos de uso, como os
-routers fazem com o HTTP. A unidade de trabalho e a da mensagem: o comando e a
-causa das respostas e entra em ``mensagens_processadas`` com o efeito.
+routers fazem com o HTTP. A unidade de trabalho e a da mensagem: o handler
+grava o efeito sem comitar, e o consumidor comita junto a outbox (o comando e
+a causa das respostas) e ``mensagens_processadas``.
 
 ``SolicitarPagamento`` nao tem evento de falha no contrato: orcamento ausente,
 de outra ordem ou nao aprovado e recusa do provedor sao erro permanente (DLQ
@@ -25,13 +26,13 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from src.compartilhado.dominio.relogio import Relogio
-    from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
+    from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
     from src.pagamento.aplicacao.ports import GatewayPagamento, MetricasDePagamento
 
 
 def solicitar_pagamento(
     dados: Mapping[str, Any],
-    uow: MongoUnitOfWork,
+    uow: UnidadeDaMensagem,
     *,
     gateway: GatewayPagamento,
     validade: timedelta,
@@ -56,7 +57,7 @@ def solicitar_pagamento(
 
 def estornar_pagamento(
     dados: Mapping[str, Any],
-    uow: MongoUnitOfWork,
+    uow: UnidadeDaMensagem,
     *,
     gateway: GatewayPagamento,
     metricas: MetricasDePagamento,

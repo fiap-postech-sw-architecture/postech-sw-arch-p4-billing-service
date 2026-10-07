@@ -8,11 +8,13 @@ na segunda, e o ``with_transaction`` do PyMongo reexecuta o trabalho do zero.
 Mensageria (ADR-036; RFC-004, secao 5.4): cada evento vira um documento da
 outbox com o envelope validado no contrato, o exchange, a routing key e o
 contexto W3C (``traceparent``) de quem gravou, na mesma transacao do efeito.
-Durante um comando da saga (``mensagem``), o id dele e o ``causation_id`` das
-respostas e entra em ``mensagens_processadas`` na mesma transacao; o agregado
-criado guarda em ``aberto_por`` o comando e o contexto de trace que o abriram,
-de onde saem a causa e o trace dos eventos que ele emite depois, sem comando
-(decisao do cliente, webhook, prazo; ADR-043).
+Um comando da saga roda na transacao da propria mensagem
+(``processar_mensagem``): o handler grava o efeito sem comitar, e o consumidor
+comita junto o efeito, a outbox e ``mensagens_processadas``. O id do comando e
+o ``causation_id`` das respostas, e o agregado criado guarda em ``aberto_por``
+o comando e o contexto de trace que o abriram, de onde saem a causa e o trace
+dos eventos que ele emite depois, sem comando (decisao do cliente, webhook,
+prazo; ADR-043).
 """
 
 from __future__ import annotations
@@ -54,6 +56,11 @@ RETENCAO_PROCESSADAS: Final = timedelta(days=30)
 _CONTEXTO_W3C: Final = ("traceparent", "tracestate")
 
 
+# Concerns da transacao (a do with_transaction e a recomecada pela mensagem).
+_LEITURA: Final = ReadConcern("snapshot")
+_ESCRITA: Final = WriteConcern("majority")
+
+
 @dataclass(frozen=True, slots=True)
 class MensagemRecebida:
     """Comando da saga em processamento: causa das respostas e chave da
@@ -85,12 +92,10 @@ class MongoUnitOfWork:
         banco: Database[Documento],
         *,
         relogio: Relogio = agora_utc,
-        mensagem: MensagemRecebida | None = None,
     ) -> None:
         self.banco = banco
         self._relogio = relogio
-        self._mensagem = mensagem
-        self._mensagem_gravada = False
+        self._mensagem: MensagemRecebida | None = None
         self._sessao: ClientSession | None = None
         self._agregados: list[tuple[AggregateRoot, str | None]] = []
         self._eventos_avulsos: list[IntegrationEvent] = []
@@ -101,48 +106,40 @@ class MongoUnitOfWork:
         return self._sessao
 
     def executar[T](self, trabalho: Callable[[], T]) -> T:
-        """Roda ``trabalho`` numa transacao e devolve o resultado dele.
+        """Roda ``trabalho`` numa transacao propria e devolve o resultado dele.
 
         Conflito de escrita (``WriteConflict``) reexecuta o trabalho inteiro,
         do zero: ele precisa reler o que usa, sem efeito fora do banco (I/O
         com o provedor fica fora da transacao). Sem aninhamento.
         """
-        if self._sessao is not None:
-            msg = "Transacao aninhada nao suportada"
-            raise RuntimeError(msg)
+        self._sem_aninhamento()
 
         def tentativa(sessao: ClientSession) -> T:
             # Cada tentativa recomeca do zero: agregados de uma tentativa
             # abortada (e seus eventos) sao descartados com ela.
             self._sessao = sessao
-            self._agregados.clear()
-            self._eventos_avulsos.clear()
+            self._descartar_registros()
             resultado = trabalho()
             self._gravar_outbox(sessao)
-            self._gravar_mensagem_processada(sessao)
             return resultado
 
-        with self.banco.client.start_session() as sessao:
-            try:
-                resultado = sessao.with_transaction(
-                    tentativa,
-                    read_concern=ReadConcern("snapshot"),
-                    write_concern=WriteConcern("majority"),
-                    read_preference=ReadPreference.PRIMARY,
-                )
-            finally:
-                self._sessao = None
-        self._mensagem_gravada = self._mensagem is not None
+        try:
+            resultado = _na_transacao(self.banco, tentativa)
+        finally:
+            self._sessao = None
         for agregado, _colecao in self._agregados:
             agregado.limpar_eventos()
         self._agregados.clear()
         return resultado
 
-    def concluir_mensagem(self) -> None:
-        """Garante ``mensagens_processadas`` quando o comando nao abriu
-        transacao (ex.: o original atrasado, descartado sem efeito)."""
-        if self._mensagem is not None and not self._mensagem_gravada:
-            self.executar(lambda: None)
+    def _sem_aninhamento(self) -> None:
+        if self._sessao is not None:
+            msg = "Transacao aninhada nao suportada"
+            raise RuntimeError(msg)
+
+    def _descartar_registros(self) -> None:
+        self._agregados.clear()
+        self._eventos_avulsos.clear()
 
     def registrar(self, agregado: AggregateRoot, colecao: str | None = None) -> None:
         """Chamado pelos repositorios ao salvar: os eventos vao para a outbox."""
@@ -225,23 +222,107 @@ class MongoUnitOfWork:
         if documentos:
             self.banco[COLECAO_OUTBOX].insert_many(documentos, session=sessao)
 
+
+class UnidadeDaMensagem(MongoUnitOfWork):
+    """A unidade de trabalho que o handler de um comando recebe.
+
+    ``executar`` roda o trabalho na transacao da mensagem, que o consumidor
+    abre e comita (``processar_mensagem``): o handler nao comita nem abre
+    transacao propria, e o efeito, a outbox e ``mensagens_processadas`` comitam
+    juntos ou nada grava. A transacao so comeca no servidor no primeiro
+    ``executar``: o que o caso de uso le e pede ao provedor antes dele fica
+    fora dela, como na API. Trabalho que falha (conflito que o caso de uso
+    trata relendo) descarta a transacao e a recomeca, para a proxima leitura
+    ver um retrato novo.
+    """
+
+    def __init__(
+        self,
+        banco: Database[Documento],
+        sessao: ClientSession,
+        mensagem: MensagemRecebida,
+        *,
+        relogio: Relogio = agora_utc,
+    ) -> None:
+        super().__init__(banco, relogio=relogio)
+        self._mensagem = self._comando = mensagem
+        self._da_mensagem = sessao
+
+    def executar[T](self, trabalho: Callable[[], T]) -> T:
+        """Roda ``trabalho`` na transacao da mensagem, sem comitar."""
+        self._sem_aninhamento()
+        gravados_antes = len(self._agregados) + len(self._eventos_avulsos)
+        self._sessao = self._da_mensagem
+        try:
+            return trabalho()
+        except BaseException:
+            self._recomecar(gravados_antes)
+            raise
+        finally:
+            self._sessao = None
+
+    def _recomecar(self, gravados_antes: int) -> None:
+        # Os casos de uso so repetem o executar que falhou, nunca um que gravou:
+        # descartar um efeito ja gravado nesta mensagem seria perda silenciosa.
+        if gravados_antes:
+            msg = "Trabalho falhou depois de outro gravado na mesma mensagem"
+            raise RuntimeError(msg)
+        self._descartar_registros()
+        sessao = self._da_mensagem
+        if sessao.in_transaction:
+            sessao.abort_transaction()
+        sessao.start_transaction(_LEITURA, _ESCRITA, ReadPreference.PRIMARY)
+
     def _gravar_mensagem_processada(self, sessao: ClientSession) -> None:
-        # Upsert: o mesmo id de novo (reentrega) nao falha nem muda nada; a
-        # transacao do efeito leva o registro junto (RFC-004, secao 5.4).
-        mensagem = self._mensagem
-        if mensagem is None or self._mensagem_gravada:
-            return
+        # Upsert: o mesmo id de novo (reentrega) nao falha nem muda nada, e o
+        # $setOnInsert preserva o processada_em (o prazo do TTL nao recomeca).
         self.banco[COLECAO_PROCESSADAS].update_one(
-            {"_id": mensagem.id},
+            {"_id": self._comando.id},
             {
                 "$setOnInsert": {
-                    "tipo": mensagem.tipo,
-                    "correlation_id": mensagem.correlation_id,
+                    "tipo": self._comando.tipo,
+                    "correlation_id": self._comando.correlation_id,
                     "processada_em": self._relogio(),
                 }
             },
             upsert=True,
             session=sessao,
+        )
+
+
+def processar_mensagem[T](
+    banco: Database[Documento],
+    mensagem: MensagemRecebida,
+    handler: Callable[[UnidadeDaMensagem], T],
+    *,
+    relogio: Relogio = agora_utc,
+) -> T:
+    """Roda o handler do comando na transacao da mensagem e comita, juntos, o
+    efeito dele, a outbox e ``mensagens_processadas`` (RFC-004, secao 5.4).
+
+    Conflito transitorio repete o handler inteiro numa transacao nova; falha
+    do handler ou da gravacao final nao deixa nada no banco.
+    """
+
+    def tentativa(sessao: ClientSession) -> T:
+        uow = UnidadeDaMensagem(banco, sessao, mensagem, relogio=relogio)
+        resultado = handler(uow)
+        uow._gravar_outbox(sessao)
+        uow._gravar_mensagem_processada(sessao)
+        return resultado
+
+    return _na_transacao(banco, tentativa)
+
+
+def _na_transacao[T](
+    banco: Database[Documento], tentativa: Callable[[ClientSession], T]
+) -> T:
+    with banco.client.start_session() as sessao:
+        return sessao.with_transaction(
+            tentativa,
+            read_concern=_LEITURA,
+            write_concern=_ESCRITA,
+            read_preference=ReadPreference.PRIMARY,
         )
 
 
