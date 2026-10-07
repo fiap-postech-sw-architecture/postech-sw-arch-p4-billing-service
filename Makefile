@@ -1,6 +1,7 @@
 # Alvos espelham o CI. Ferramentas vem do grupo dev do uv (`uv sync`).
-# Os testes de integracao sobem o MongoDB por testcontainers: precisam de Docker
-# (no macOS com colima, tests/integracao/conftest.py aponta o DOCKER_HOST).
+# Os testes de integracao sobem o MongoDB e o RabbitMQ por testcontainers:
+# precisam de Docker (no macOS com colima, tests/integracao/conftest.py aponta o
+# DOCKER_HOST). Os de contrato baixam o platform do GitHub (marcador rede).
 PY := uv run
 GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)

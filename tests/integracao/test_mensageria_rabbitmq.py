@@ -819,7 +819,7 @@ class TestProcessos:
 
         assert evento["tipo"] == "OrcamentoGerado"
         assert not any(thread.is_alive() for thread in threads)
-        assert portas == [8000, 8000]
+        assert portas == [9100, 9100]
         assert len(sinais) == 2
         assert (tmp_path / "relay").read_text() == "conectando"
 

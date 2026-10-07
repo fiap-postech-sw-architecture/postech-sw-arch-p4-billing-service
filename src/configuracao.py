@@ -51,6 +51,10 @@ _PADROES_DE_DESENVOLVIMENTO = {
 _HEARTBEAT_PADRAO = "/tmp/prazos-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
 _HEARTBEAT_DO_RELAY = "/tmp/relay-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
 _HEARTBEAT_DO_CONSUMIDOR = "/tmp/consumidor-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
+# /metrics dos processos sem API (prazos, relay, consumidor): a mesma porta do
+# OS e da Execucao e do exemplo de descoberta do platform. A API serve o dela na
+# porta HTTP.
+_METRICAS = 9100
 
 
 class ModoMercadoPago(StrEnum):
@@ -214,7 +218,7 @@ class ConfiguracaoDosPrazos:
             mp_api_url=ambiente.mp_api_url(),
             mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
             heartbeat=Path(ambiente.opcional("PRAZOS_HEARTBEAT", _HEARTBEAT_PADRAO)),
-            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", 8000),
+            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", _METRICAS),
         )
 
 
@@ -237,7 +241,7 @@ class ConfiguracaoDoRelay:
             rabbitmq_url=url,
             rabbitmq_usuario=usuario,
             heartbeat=Path(ambiente.opcional("RELAY_HEARTBEAT", _HEARTBEAT_DO_RELAY)),
-            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", 8000),
+            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", _METRICAS),
         )
 
 
@@ -318,7 +322,7 @@ class ConfiguracaoDoConsumidor:
             heartbeat=Path(
                 ambiente.opcional("CONSUMIDOR_HEARTBEAT", _HEARTBEAT_DO_CONSUMIDOR)
             ),
-            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", 8000),
+            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", _METRICAS),
             comandos=ConfiguracaoDosComandos._de(ambiente),
         )
 

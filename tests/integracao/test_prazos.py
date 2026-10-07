@@ -404,7 +404,7 @@ class TestBoot:
             prazos.main(parar)
         finally:
             cliente_mongo.drop_database(ambiente["MONGODB_DB"])
-        assert portas == [8000]
+        assert portas == [9100]
 
     def test_main_instala_os_sinais_quando_nao_recebe_o_evento(
         self,

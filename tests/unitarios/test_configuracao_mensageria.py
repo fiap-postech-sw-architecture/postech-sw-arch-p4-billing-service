@@ -37,15 +37,15 @@ class TestRelay:
         config = ConfiguracaoDoRelay.do_ambiente(_env())
         assert config.rabbitmq_usuario == "billing"
         assert config.heartbeat == Path("/tmp/relay-heartbeat")  # noqa: S108 - padrao do container
-        assert config.porta_metricas == 8000
+        assert config.porta_metricas == 9100
         assert config.banco.mongodb_banco == "billing"
         assert "senha-de-teste" not in repr(config)
 
     def test_heartbeat_e_porta_pelo_ambiente(self) -> None:
         config = ConfiguracaoDoRelay.do_ambiente(
-            _env(RELAY_HEARTBEAT="/tmp/x", METRICS_PORT="9100")  # noqa: S108
+            _env(RELAY_HEARTBEAT="/tmp/x", METRICS_PORT="9200")  # noqa: S108
         )
-        assert (config.heartbeat, config.porta_metricas) == (Path("/tmp/x"), 9100)  # noqa: S108
+        assert (config.heartbeat, config.porta_metricas) == (Path("/tmp/x"), 9200)  # noqa: S108
 
     @pytest.mark.parametrize(
         ("url", "erro"),

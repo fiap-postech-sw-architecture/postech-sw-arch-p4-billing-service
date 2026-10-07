@@ -66,12 +66,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTSTOP_GIT_DATE="${GIT_DATE}" \
     CONTRATOS_DIR=/app/contratos
 
-# Imagem slim sem curl: probe em Python na readiness (banco no ar e preparado).
-# Vale para o processo `api`; o compose da ao `prazos` o heartbeat, e o
-# Kubernetes usa as proprias probes.
-HEALTHCHECK --interval=30s --timeout=4s --start-period=20s --start-interval=2s --retries=3 \
-  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude/pronto', timeout=3).status==200 else 1)"]
-
+# Sem HEALTHCHECK na imagem: cada processo prova vida de um jeito (a API pela
+# readiness HTTP; prazos, relay e consumidor pelo arquivo de vida), entao a
+# sonda fica com quem sobe o processo (compose e probes do Kubernetes). Um
+# HTTP fixo daria saudavel ao consumidor sem broker, pelo servidor de metricas.
 USER 1001:1001
 EXPOSE 8000
 ENTRYPOINT ["./entrypoint.sh"]

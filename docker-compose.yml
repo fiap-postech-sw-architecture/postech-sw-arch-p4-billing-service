@@ -17,30 +17,34 @@ x-endurecimento: &endurecimento
   security_opt:
     - no-new-privileges:true
 
-x-ambiente: &ambiente
+# Ambiente por processo: cada um recebe so o que le (a API nao ve a senha do
+# broker, o relay nao ve os segredos do pagamento e do link).
+x-banco: &banco
   ENVIRONMENT: development
   MONGODB_URI: mongodb://mongo:27017/?replicaSet=rs0
   MONGODB_DB: billing
+
+# Casos de uso dos comandos da saga (API e consumidor): link de decisao,
+# prazos de orcamento e pagamento e o provedor de pagamento.
+x-comandos: &comandos
   BILLING_PUBLIC_URL: ${BILLING_PUBLIC_URL:-http://localhost:8002}
-  # JWKS do OS Service rodando no host (porta 8000, a do compose dele); sem
-  # ele as rotas internas respondem 503 e as publicas (link do cliente,
-  # webhook, simulador) seguem.
-  JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8000/.well-known/jwks.json}
   # Valor de demonstracao (recusado fora de development/test).
   ORCAMENTO_LINK_SECRET: ${ORCAMENTO_LINK_SECRET:-demo-link-orcamento-pytstop-nao-usar-em-producao}
   ORCAMENTO_VALIDADE_HORAS: ${ORCAMENTO_VALIDADE_HORAS:-72}
   PAGAMENTO_VALIDADE_MINUTOS: ${PAGAMENTO_VALIDADE_MINUTOS:-60}
-  PAGAMENTO_MAX_RECUSAS: ${PAGAMENTO_MAX_RECUSAS:-3}
   MP_MODE: ${MP_MODE:-simulado}
   MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-}
-  MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
   MP_API_URL: ${MP_API_URL:-https://api.mercadopago.com}
   # Vazio: <BILLING_PUBLIC_URL>/api/v1/webhooks/mercadopago.
   MP_NOTIFICATION_URL: ${MP_NOTIFICATION_URL:-}
   MP_TIMEOUT_SEGUNDOS: ${MP_TIMEOUT_SEGUNDOS:-5}
-  PRAZOS_INTERVALO_SEGUNDOS: ${PRAZOS_INTERVALO_SEGUNDOS:-30}
-  # Usuario billing do broker (senha de demonstracao, a mesma do platform).
+
+# Usuario billing do broker (senha de demonstracao, a mesma do platform).
+x-broker: &broker
   RABBITMQ_URL: amqp://billing:${RABBITMQ_BILLING_PASSWORD:-pytstop-billing-demo-2026}@rabbitmq:5672/%2F  # gitleaks:allow
+
+# Traces dos processos com o SDK do OpenTelemetry (relay, consumidor, prazos).
+x-traces: &traces
   OTEL_ENABLED: ${OTEL_ENABLED:-false}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
   OTEL_SERVICE_NAME: billing-service
@@ -61,12 +65,10 @@ services:
     <<: *endurecimento
     image: ${BILLING_IMAGE:-pytstop-billing:dev}
     command: ["banco"]
-    environment: *ambiente
+    environment: *banco
     depends_on:
       mongo:
         condition: service_healthy
-    healthcheck:
-      disable: true
     restart: "no"
 
   api:
@@ -84,25 +86,53 @@ services:
     ports:
       - "127.0.0.1:${API_PORT:-8002}:8000"
     environment:
-      <<: *ambiente
+      <<: [*banco, *comandos]
+      # JWKS do OS Service rodando no host (porta 8000, a do compose dele); sem
+      # ele as rotas internas respondem 503 e as publicas (link do cliente,
+      # webhook, simulador) seguem.
+      JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8000/.well-known/jwks.json}
+      PAGAMENTO_MAX_RECUSAS: ${PAGAMENTO_MAX_RECUSAS:-3}
+      MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
       RUN_SEED_ON_STARTUP: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       init:
         condition: service_completed_successfully
+    # Readiness da API (MongoDB no ar e preparado); a imagem nao declara
+    # HEALTHCHECK, porque cada processo prova vida de um jeito.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude/pronto', timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 4s
+      start_period: 20s
+      start_interval: 2s
+      retries: 3
     restart: unless-stopped
 
   prazos:
     <<: *endurecimento
     image: ${BILLING_IMAGE:-pytstop-billing:dev}
     command: ["prazos"]
-    environment: *ambiente
+    environment:
+      <<: [*banco, *traces]
+      MP_MODE: ${MP_MODE:-simulado}
+      MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-}
+      MP_API_URL: ${MP_API_URL:-https://api.mercadopago.com}
+      MP_TIMEOUT_SEGUNDOS: ${MP_TIMEOUT_SEGUNDOS:-5}
+      PAGAMENTO_MAX_RECUSAS: ${PAGAMENTO_MAX_RECUSAS:-3}
+      PRAZOS_INTERVALO_SEGUNDOS: ${PRAZOS_INTERVALO_SEGUNDOS:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       init:
         condition: service_completed_successfully
-    # O HEALTHCHECK da imagem e o HTTP da API; este processo prova vida pelo
-    # heartbeat em arquivo, tocado a cada ciclo (vale 3 intervalos).
+    # Prova vida pelo heartbeat em arquivo, tocado a cada ciclo (vale 3
+    # intervalos).
     healthcheck:
       test:
         - CMD
@@ -121,7 +151,8 @@ services:
     <<: *endurecimento
     image: ${BILLING_IMAGE:-pytstop-billing:dev}
     command: ["relay"]
-    environment: *ambiente
+    environment:
+      <<: [*banco, *broker, *traces]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -143,7 +174,8 @@ services:
     <<: *endurecimento
     image: ${BILLING_IMAGE:-pytstop-billing:dev}
     command: ["consumidor"]
-    environment: *ambiente
+    environment:
+      <<: [*banco, *comandos, *broker, *traces]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
