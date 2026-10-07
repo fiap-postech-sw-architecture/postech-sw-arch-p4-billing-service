@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,6 +21,8 @@ import pytest
 import yaml
 
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.main import criar_app
+from tests.integracao.apoio import configuracao
 
 RAIZ = contratos.diretorio()
 ORIGEM = (RAIZ / "ORIGEM").read_text(encoding="utf-8").strip()
@@ -65,7 +68,12 @@ def test_origem_e_um_sha_completo(origem: str) -> None:
 def _divergentes(pares: dict[str, tuple[str, bytes]]) -> list[str]:
     """Arquivos cuja copia local difere do platform (sha256 do conteudo)."""
     divergentes = []
-    with httpx.Client(timeout=15, follow_redirects=True) as cliente:
+    # Retentativas de conexao: um reset do raw.githubusercontent.com nao e
+    # divergencia da copia (aconteceu no CI).
+    transporte = httpx.HTTPTransport(retries=3)
+    with httpx.Client(
+        transport=transporte, timeout=15, follow_redirects=True
+    ) as cliente:
         for nome, (url, local) in pares.items():
             resposta = cliente.get(url)
             resposta.raise_for_status()
@@ -186,6 +194,21 @@ class TestValidacao:
         exemplo["ocorrido_em"] = "ontem as 10h"
         with pytest.raises(contratos.MensagemForaDoContratoError):
             contratos.validar(exemplo)
+
+
+def test_sem_os_schemas_a_api_nao_sobe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CONTRATOS_DIR", str(tmp_path))
+    # Os schemas ficam em cache: limpa para recarregar do diretorio novo.
+    contratos._validadores.cache_clear()
+    try:
+        with pytest.raises(contratos.ContratosAusentesError, match="CONTRATOS_DIR"):
+            criar_app(configuracao())
+    finally:
+        monkeypatch.delenv("CONTRATOS_DIR")
+        contratos._validadores.cache_clear()
+    assert "envelope" not in contratos.tipos_com_contrato()
 
 
 def test_diretorio_dos_contratos_vem_da_variavel_na_imagem(

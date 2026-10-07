@@ -41,21 +41,32 @@ def diretorio() -> Path:
     return Path(os.environ.get("CONTRATOS_DIR") or _PADRAO)
 
 
+class ContratosAusentesError(RuntimeError):
+    """Diretorio dos contratos sem o schema do envelope: configuracao errada."""
+
+
 @cache
 def _validadores() -> dict[str, Draft202012Validator]:
     # Indexados pelo nome do arquivo: o tipo recebido so escolhe uma chave do
     # dicionario, nunca monta um caminho de arquivo.
-    return {
+    validadores = {
         caminho.name.removesuffix(".schema.json"): Draft202012Validator(
             json.loads(caminho.read_text(encoding="utf-8")),
             format_checker=FormatChecker(),
         )
         for caminho in (diretorio() / "schemas").glob("*.schema.json")
     }
+    if _ENVELOPE not in validadores:
+        # Sem schema nada valida: cada comando iria para a DLQ e cada evento
+        # abortaria a transacao, com o processo pronto. Falha no boot.
+        msg = f"Contratos ausentes em {diretorio()}: confira CONTRATOS_DIR"
+        raise ContratosAusentesError(msg)
+    return validadores
 
 
 def tipos_com_contrato() -> frozenset[str]:
-    """Tipos de mensagem com schema copiado (sem o do envelope)."""
+    """Tipos de mensagem com schema copiado (sem o do envelope); carrega os
+    schemas, entao serve de conferencia no boot dos processos."""
     return frozenset(_validadores()) - {_ENVELOPE}
 
 

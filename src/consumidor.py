@@ -20,6 +20,7 @@ from prometheus_client import start_http_server
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
+from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mensageria.amqp import (
     ESPERA_MAXIMA_SEGUNDOS,
     CanalAmqp,
@@ -139,6 +140,7 @@ def _consumir_enquanto_conectado(
 def main(parar: threading.Event | None = None) -> None:
     configurar_logging()
     config = ConfiguracaoDoConsumidor.do_ambiente()
+    contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
     provedor = configurar_telemetria("consumidor")
     if parar is None:
         parar = threading.Event()

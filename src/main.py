@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
+from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
@@ -86,6 +87,7 @@ def criar_app(
     """
     configurar_logging()
     config = config or Configuracao.do_ambiente()
+    contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
     gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
 

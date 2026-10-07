@@ -21,6 +21,7 @@ from prometheus_client import Gauge, start_http_server
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
+from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
 from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
@@ -165,6 +166,7 @@ def criar_gateway(config: ConfiguracaoDosPrazos) -> MercadoPagoGateway | None:
 def main(parar: threading.Event | None = None) -> None:
     configurar_logging()
     config = ConfiguracaoDosPrazos.do_ambiente()
+    contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
     if parar is None:
         parar = threading.Event()
         instalar_sinais(parar)
