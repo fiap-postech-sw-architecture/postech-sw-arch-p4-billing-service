@@ -5,6 +5,9 @@ from __future__ import annotations
 from bson import UuidRepresentation
 
 from src.compartilhado.infraestrutura.mongo import criar_cliente
+from src.compartilhado.infraestrutura.unit_of_work import (
+    LIMITE_DA_TRANSACAO_SEGUNDOS,
+)
 
 
 def test_cliente_fala_uuid_padrao_em_utc_e_tem_limites_explicitos() -> None:
@@ -24,3 +27,11 @@ def test_cliente_fala_uuid_padrao_em_utc_e_tem_limites_explicitos() -> None:
         assert opcoes.codec_options.tz_aware
     finally:
         cliente.close()
+
+
+def test_teto_da_transacao_e_de_10_segundos() -> None:
+    # O with_transaction do driver repete conflito e falha transitoria por ate
+    # 120 s, fora do timeoutMS do cliente; o servico limita a transacao inteira
+    # a 10 s (README e MEMORY), e o estouro vira ExecutionTimeout, que o
+    # consumidor manda para a fila de retry.
+    assert LIMITE_DA_TRANSACAO_SEGUNDOS == 10.0

@@ -16,7 +16,11 @@ from pymongo.errors import WriteError
 
 from src import banco as init_do_banco
 from src import seed
-from src.compartilhado.infraestrutura.mongo import BancoNaoPreparadoError, criar_cliente
+from src.compartilhado.infraestrutura.mongo import (
+    BancoNaoPreparadoError,
+    conferir_versao,
+    criar_cliente,
+)
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
 from src.precos.aplicacao.use_cases import PrecosDeServicos
@@ -149,6 +153,22 @@ class TestBancoEProntidao:
     def test_validador_recusa_documento_fora_do_esquema(self, banco: Banco) -> None:
         with pytest.raises(WriteError, match="validation"):
             banco["pagamentos"].insert_one({"_id": uuid4(), "status": "PENDENTE"})
+
+    @pytest.mark.parametrize(
+        ("versao", "aceita"),
+        [(2, False), (3, True)],
+        ids=["anterior-ao-indice-ttl-das-mortas", "atual"],
+    )
+    def test_banco_na_versao_anterior_e_recusado(
+        self, banco: Banco, versao: int, aceita: bool
+    ) -> None:
+        banco["versao_do_banco"].insert_one({"_id": "billing", "versao": versao})
+
+        if aceita:
+            conferir_versao(banco)
+        else:
+            with pytest.raises(BancoNaoPreparadoError, match=r"src\.banco"):
+                conferir_versao(banco)
 
 
 PRODUCAO = {
