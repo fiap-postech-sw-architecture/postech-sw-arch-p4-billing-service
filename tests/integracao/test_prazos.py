@@ -332,7 +332,9 @@ class TestLaco:
         ciclos: list[ResultadoDoCiclo] = []
 
         def ciclo() -> ResultadoDoCiclo:
-            ciclos.append(resultados[len(ciclos)])
+            ciclos.append(resultados[min(len(ciclos), 1)])
+            if len(ciclos) == 10:  # rede de seguranca: laco ocupado nao trava a suite
+                parar.set()
             return ciclos[-1]
 
         rodar(ciclo, intervalo=3600, parar=parar, heartbeat=tmp_path / "hb")
