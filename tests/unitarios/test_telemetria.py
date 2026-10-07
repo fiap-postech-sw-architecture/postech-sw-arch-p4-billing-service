@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
@@ -39,7 +40,7 @@ def test_exportacao_otlp_so_com_otel_enabled(monkeypatch: pytest.MonkeyPatch) ->
         exportadores.append(opcoes)
         return InMemorySpanExporter()
 
-    monkeypatch.setattr(telemetria, "OTLPSpanExporter", exportador)
+    monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", exportador)
     telemetria.criar_provedor({}, processo="relay").shutdown()
     assert exportadores == []
     telemetria.criar_provedor(

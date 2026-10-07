@@ -14,16 +14,13 @@ import os
 from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from opentelemetry.context import Context
+    from opentelemetry.sdk.trace import TracerProvider
 
 # So traceparent/tracestate: o que o envelope do contrato carrega (sem baggage).
 _PROPAGADOR: Final = TraceContextTextMapPropagator()
@@ -60,7 +57,14 @@ def contexto_de(portador: Mapping[str, object]) -> Context:
 
 
 def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvider:
-    """``TracerProvider`` do processo; com ``OTEL_ENABLED``, exporta por OTLP."""
+    """``TracerProvider`` do processo; com ``OTEL_ENABLED``, exporta por OTLP.
+
+    Imports aqui dentro: a API e o ``prazos`` so leem e gravam o contexto W3C
+    (pacote da API do OpenTelemetry) e nao carregam o SDK nem o gRPC.
+    """
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+
     provedor = TracerProvider(
         resource=Resource.create(
             {
@@ -71,6 +75,11 @@ def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvi
         )
     )
     if ambiente.get("OTEL_ENABLED", "").strip().lower() in _VERDADEIROS:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
         endpoint = ambiente.get("OTEL_EXPORTER_OTLP_ENDPOINT") or _ENDPOINT_PADRAO
         provedor.add_span_processor(
             BatchSpanProcessor(
