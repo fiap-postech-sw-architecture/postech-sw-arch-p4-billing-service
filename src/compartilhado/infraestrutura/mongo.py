@@ -37,7 +37,8 @@ _MAX_CONEXOES: Final = 50
 
 COLECAO_VERSAO: Final = "versao_do_banco"
 # 2: outbox com exchange, routing key e indice de claim; mensagens_processadas.
-VERSAO_DO_BANCO: Final = 2
+# 3: retencao das linhas mortas da outbox (morta_em, indice TTL).
+VERSAO_DO_BANCO: Final = 3
 
 # Dinheiro como subdocumento {valor: Decimal128, moeda} (nunca double).
 ESQUEMA_DINHEIRO: Final[Documento] = {

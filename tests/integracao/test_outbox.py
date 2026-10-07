@@ -349,6 +349,9 @@ class TestIndices:
         outbox = banco["outbox"].index_information()["entregue_em_1"]
         assert outbox["expireAfterSeconds"] == 7 * 24 * 3600
         assert outbox["partialFilterExpression"] == {"status": "entregue"}
+        mortas = banco["outbox"].index_information()["morta_em_1"]
+        assert mortas["expireAfterSeconds"] == 30 * 24 * 3600
+        assert mortas["partialFilterExpression"] == {"status": "dead"}
         processadas = banco["mensagens_processadas"].index_information()
         assert processadas["processada_em_1"]["expireAfterSeconds"] == 30 * 24 * 3600
 

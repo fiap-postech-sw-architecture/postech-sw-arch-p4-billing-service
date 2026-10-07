@@ -228,7 +228,8 @@ class RelayDaOutbox:
         tentativas = linha.tentativas + 1
         mudanca: Documento = {"tentativas": tentativas, "ultimo_erro": erro}
         if tentativas >= MAX_TENTATIVAS:
-            mudanca["status"] = "dead"
+            # morta_em comeca a contar a retencao da linha morta (indice TTL).
+            mudanca |= {"status": "dead", "morta_em": self._relogio()}
         else:
             atraso = timedelta(seconds=ATRASOS_SEGUNDOS[tentativas - 1])
             mudanca |= {

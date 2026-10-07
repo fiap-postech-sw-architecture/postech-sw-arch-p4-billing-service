@@ -53,9 +53,12 @@ if TYPE_CHECKING:
 COLECAO_OUTBOX: Final = "outbox"
 COLECAO_PROCESSADAS: Final = "mensagens_processadas"
 # Retencao (RFC-004, secao 10.3): entregue some em 7 dias; a janela de
-# idempotencia (30 dias) passa da DLQ (7 dias) e da janela de reenvio.
+# idempotencia (30 dias) passa da DLQ (7 dias) e da janela de reenvio. A linha
+# morta (dead, com alerta) fica 30 dias para investigacao e reenvio manual: o
+# envelope dela traz valores, ids e os links com token.
 RETENCAO_OUTBOX: Final = timedelta(days=7)
 RETENCAO_PROCESSADAS: Final = timedelta(days=30)
+RETENCAO_MORTAS: Final = timedelta(days=30)
 _CONTEXTO_W3C: Final = ("traceparent", "tracestate")
 
 
@@ -395,6 +398,7 @@ ESQUEMA_OUTBOX: Documento = {
         # Contexto W3C de quem retomou o passo: span link na publicacao.
         "retomado_por": {"bsonType": "object"},
         "entregue_em": {"bsonType": "date"},
+        "morta_em": {"bsonType": "date"},
         # Token do relay que detem a linha em entrega (fencing do lease).
         "reivindicacao": {"bsonType": "binData"},
         "ultimo_erro": {"bsonType": "string"},
@@ -424,6 +428,11 @@ def preparar_outbox(banco: Database[Documento]) -> None:
         "entregue_em",
         expireAfterSeconds=int(RETENCAO_OUTBOX.total_seconds()),
         partialFilterExpression={"status": "entregue"},
+    )
+    outbox.create_index(
+        "morta_em",
+        expireAfterSeconds=int(RETENCAO_MORTAS.total_seconds()),
+        partialFilterExpression={"status": "dead"},
     )
     aplicar_validador(banco, COLECAO_PROCESSADAS, ESQUEMA_PROCESSADAS)
     banco[COLECAO_PROCESSADAS].create_index(

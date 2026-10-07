@@ -252,6 +252,7 @@ class TestFalhas:
         assert relay.entregar_pendentes(1) == 1
         [morta] = _linhas(banco)
         assert (morta["status"], morta["tentativas"]) == ("dead", 5)
+        assert morta["morta_em"] == relogio.agora
         relogio.avancar(hours=1)
         assert relay.entregar_pendentes(1) == 0
 
