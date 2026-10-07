@@ -132,15 +132,15 @@ make audit   # pip-audit nas dependencias de runtime
 
 Unitários (domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens) e integração com MongoDB 7.0.43 real em replica set via testcontainers (casos de uso, API, matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência, corridas reais entre decisão, webhook e expiração). O gate exige 90% de linhas e ramos (`.coveragerc`); o CI publica o resumo por pacote no summary do job `test` e o SonarQube aplica o quality gate (ADR-041).
 
-Cobertura na versão atual (808 testes; `make test` e `python scripts/cobertura_resumo.py coverage.xml`):
+Cobertura na versão atual (852 testes; `make test` e `python scripts/cobertura_resumo.py coverage.xml`):
 
 | Pacote | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
-| `src` (composição, configuração, processos) | 374 | 374 | 100,0% |
+| `src` (composição, configuração, processos) | 372 | 372 | 100,0% |
 | `src/compartilhado` | 789 | 789 | 100,0% |
-| `src/precos` | 438 | 438 | 100,0% |
-| `src/orcamento` | 629 | 629 | 100,0% |
-| `src/pagamento` | 1156 | 1156 | 100,0% |
-| **total** | 3386 | 3386 | 100,0% (ramos: 100,0%) |
+| `src/precos` | 437 | 437 | 100,0% |
+| `src/orcamento` | 628 | 628 | 100,0% |
+| `src/pagamento` | 1183 | 1183 | 100,0% |
+| **total** | 3409 | 3409 | 100,0% (ramos: 100,0%) |
 
 O mesmo resumo sai no summary do job `test` de cada run do CI ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)); o [run do commit `f1f5d30`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/37532957859), com o código desta versão, passou nos 9 checks, inclusive o quality gate do SonarQube.
