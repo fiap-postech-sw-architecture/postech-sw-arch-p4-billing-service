@@ -186,7 +186,7 @@ def _broker_da_sessao() -> Iterator[BrokerDeTeste]:
 
 @pytest.fixture
 def broker(_broker_da_sessao: BrokerDeTeste) -> BrokerDeTeste:
-    """Filas do Billing e a do OS vazias a cada teste (D40)."""
+    """Filas do Billing e a do OS vazias a cada teste (isolamento)."""
     with _broker_da_sessao.conectar() as conexao:
         canal = conexao.channel()
         for fila in FILAS_DO_BILLING:

@@ -4,9 +4,9 @@ Serviço de orçamento e pagamento da oficina: tabela de preços de serviços e 
 
 Parte da fase 4 do Tech Challenge (FIAP Pós Tech, Software Architecture, 15SOAT): o PytStop, sistema de gestão de oficina mecânica das fases anteriores, refatorado em microsserviços com Saga Pattern, mensageria assíncrona, CI/CD por serviço e deploy automatizado em Kubernetes.
 
-O serviço participa da saga de atendimento orquestrada pelo OS Service pelos casos de uso dos comandos da saga (`GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento`, `EstornarPagamento`), que gravam cada resposta na outbox transacional (coleção `outbox`), na mesma transação do estado, já no formato do envelope das mensagens. O consumidor desses comandos e o relay da outbox para o RabbitMQ (ADR-036) não fazem parte desta versão da imagem; os testes exercitam os casos de uso diretamente.
+O serviço participa da saga de atendimento orquestrada pelo OS Service: o processo `consumidor` recebe pela fila `billing.comandos` do RabbitMQ os comandos da saga (`GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento`, `EstornarPagamento`), cada caso de uso grava a resposta na outbox transacional (coleção `outbox`) na mesma transação do estado, e o processo `relay` a publica no exchange `pytstop.eventos` (seção [Mensageria](#mensageria)).
 
-Arquitetura da fase 4: [RFC-004 e ADRs 034 a 043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/tree/main/docs/arquitetura) no repositório `platform` (divisão dos serviços, saga, catálogo de mensagens, rotas, dados e segurança). Este serviço segue em especial o ADR-037 (banco por serviço), o ADR-039 (autenticação entre serviços), o ADR-040 (Mercado Pago), o ADR-041 (testes e qualidade) e o ADR-042 (CI/CD).
+Arquitetura da fase 4: [RFC-004 e ADRs 034 a 043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/tree/main/docs/arquitetura) no repositório `platform` (divisão dos serviços, saga, catálogo de mensagens, rotas, dados e segurança). Este serviço segue em especial o ADR-036 (mensageria), o ADR-037 (banco por serviço), o ADR-039 (autenticação entre serviços), o ADR-040 (Mercado Pago), o ADR-041 (testes e qualidade), o ADR-042 (CI/CD) e o ADR-043 (observabilidade).
 
 ## Repositórios da fase 4
 
@@ -29,7 +29,7 @@ DDD + arquitetura em camadas (`dominio` ← `aplicacao` ← `infraestrutura` ←
 | `orcamento` | `Orcamento` (um por ordem) | Preço congelado nas linhas na geração; `PENDENTE → APROVADO \| RECUSADO \| EXPIRADO \| CANCELADO` e `APROVADO → CANCELADO`; decisão única, pelo link público ou pelo atendente |
 | `pagamento` | `Pagamento` (um por ordem e por orçamento) | Cobrança no provedor; `SOLICITADO → CONFIRMADO \| RECUSADO \| EXPIRADO \| CANCELADO`, e qualquer um deles `→ ESTORNADO`; status sempre confirmado na consulta ao provedor |
 
-- **Transações e outbox:** cada caso de uso roda numa transação do MongoDB (`snapshot` + `majority`) que grava o agregado e os eventos na outbox juntos; o `_id` da mensagem é UUIDv7, a ordem de publicação do relay. Conflito de escrita (`WriteConflict`) repete o trabalho do zero relendo o estado, então decisão e expiração concorrentes nunca gravam os dois resultados.
+- **Transações e outbox:** cada caso de uso roda numa transação do MongoDB (`snapshot` + `majority`) que grava o agregado e os eventos na outbox juntos, com o envelope validado no contrato; o `_id` da mensagem é UUIDv7, a ordem de publicação do relay. Conflito de escrita (`WriteConflict`) repete o trabalho do zero relendo o estado, então decisão e expiração concorrentes nunca gravam os dois resultados.
 - **Dinheiro:** `Decimal` no domínio (VO `Dinheiro`, duas casas, até 10 dígitos inteiros, o teto do contrato das mensagens), `Decimal128` no banco e string decimal nas mensagens; nunca `float`.
 - **Banco:** `python -m src.banco` (serviço `init` no compose, Job no Kubernetes) cria os índices (únicos por `ordem_id`, por orçamento e pela tentativa do provedor) e os validadores `$jsonSchema` (`moderate`) e marca a versão; API e `prazos` só conferem. Leitura tolerante a campo novo (expand/contract) e com coerência status × campos na reidratação.
 - **Mercado Pago (ADR-040):** porta `GatewayPagamento` com dois adapters, escolhidos por `MP_MODE` (obrigatório, sem padrão). `MercadoPagoGateway`: Checkout Pro via httpx com timeout, retry com backoff e jitter só nas operações idempotentes, circuit breaker (5 falhas seguidas abrem por 30 s; depois, uma chamada de prova) e leitura do corpo dentro da chamada protegida (resposta fora do contrato é falha transitória). `GatewayPagamentoSimulado`: checkout próprio, só em development/test ou com `SIMULADOR_PERMITIDO=true`; o `checkout_url` leva um token assinado (HMAC, separado do link do orçamento) que as rotas do simulador exigem, com o mesmo 404 para token ausente, inválido ou expirado.
@@ -39,7 +39,7 @@ DDD + arquitetura em camadas (`dominio` ← `aplicacao` ← `infraestrutura` ←
 - **Autenticação (ADR-039):** JWT RS256 emitido pelo OS Service, validado pela chave pública do JWKS (`JWKS_URL`, timeout de 2 s, cópia fresca por 10 min; com o OS fora, a última cópia boa vale por até 1 h e 3 falhas seguidas abrem um circuit breaker por 30 s), conferindo assinatura, `iss` (`pytstop-os-service`), `aud` (`pytstop`), `exp`, `sub` (UUID do usuário), `type=access` e `papel`, com 10 s de tolerância de relógio. Toda falha de credencial responde o mesmo 401; papel válido sem permissão, 403; JWKS indisponível e sem cópia, 503 com `Retry-After`.
 - **Link de decisão:** token HMAC do orçamento e do prazo (segundo cheio, igual ao `valido_ate`), sem login. Token inválido ou expirado, orçamento inexistente ou já decidido: o mesmo 404, na consulta e na decisão.
 
-Proveniência: `src/compartilhado` parte do p3 (o PytStop da fase 3) [em `08dcffe`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p3/tree/08dcffe6365ece594f438cdbc4c5eef1d88ebfb1): base de entidades e eventos, unidade de trabalho, outbox, logging JSON com mascaramento de PII, envelope de erro, middleware de cabeçalhos, métricas, padrões de teste, Dockerfile e Makefile. Ficaram de fora o SQLAlchemy (o Billing usa MongoDB), a UI, o relay e o rate limiting da aplicação (no cluster ele fica no Kong). O `catalogo_servicos` do p3 virou a tabela de preços, com código de negócio estável e preço comercial de peça.
+Proveniência: `src/compartilhado` parte do p3 (o PytStop da fase 3) [em `08dcffe`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p3/tree/08dcffe6365ece594f438cdbc4c5eef1d88ebfb1): base de entidades e eventos, unidade de trabalho, outbox, logging JSON com mascaramento de PII, envelope de erro, middleware de cabeçalhos, métricas, padrões de teste, Dockerfile e Makefile. Do relay do p3 vieram os atrasos entre tentativas (1, 4, 16 e 64 s, `dead` na quinta), o lease, o fencing e o heartbeat em arquivo; o relay em si foi reescrito para MongoDB e RabbitMQ. Ficaram de fora o SQLAlchemy (o Billing usa MongoDB), a UI e o rate limiting da aplicação (no cluster ele fica no Kong). O `catalogo_servicos` do p3 virou a tabela de preços, com código de negócio estável e preço comercial de peça.
 
 ## Participação na saga
 
@@ -50,9 +50,9 @@ Proveniência: `src/compartilhado` parte do p3 (o PytStop da fase 3) [em `08dcff
 | `SolicitarPagamento` | `PagamentoSolicitado{valor, checkout_url, expira_em}` (só orçamento aprovado) | republica o registrado, sem nova cobrança |
 | `EstornarPagamento` | cobrança aberta: fecha o checkout no provedor e responde `PagamentoCancelado` (se o provedor recusar fechar, o cancelamento conclui do mesmo jeito, com métrica e log, e a aprovação tardia é estornada); paga: estorna (`X-Idempotency-Key = estorno-{pagamento_id}`) e responde `PagamentoEstornado{motivo=compensacao}`, ou `EstornoDePagamentoFalhou` se o provedor recusar o estorno; recusada, expirada ou cancelada: `PagamentoCancelado` (nada a devolver) | republica o desfecho registrado, sem chamar o provedor |
 
-As compensações acham o recurso pelo `ordem_id` (os ids são opcionais). **Lápide:** a compensação que chega antes do comando original (passo em voo, RFC-004 seção 4.5) grava o agregado já encerrado (orçamento `CANCELADO` sem linhas, pagamento `CANCELADO` sem cobrança) e responde; o original, quando chegar, encontra a lápide pelo índice único de `ordem_id` e é descartado.
+Toda resposta leva como `causation_id` o `id` do comando respondido, inclusive o desfecho republicado para o comando repetido (pelo mesmo `id` ou por `id` novo com a mesma ordem, como no reenvio do orquestrador). `SolicitarPagamento` não tem evento de falha no contrato: orçamento ausente, de outra ordem ou não aprovado e recusa do provedor ao criar a cobrança vão para a DLQ (erro permanente, com alerta, e o orquestrador compensa pelo prazo técnico); provedor fora do ar passa pela fila de retry. As compensações acham o recurso pelo `ordem_id` (os ids são opcionais). **Lápide:** a compensação que chega antes do comando original (passo em voo, RFC-004 seção 4.5) grava o agregado já encerrado (orçamento `CANCELADO` sem linhas, pagamento `CANCELADO` sem cobrança) e responde; o original, quando chegar, encontra a lápide pelo índice único de `ordem_id` e é descartado.
 
-Fatos que não vêm de comando: `OrcamentoAprovado`/`OrcamentoRecusado` (pelo link ou pelo atendente, com `decidido_por` = `sub` do atendente), `OrcamentoExpirado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado` e o `PagamentoEstornado` do estorno automático.
+Fatos que não vêm de comando: `OrcamentoAprovado`/`OrcamentoRecusado` (pelo link ou pelo atendente, com `decidido_por` = `sub` do atendente), `OrcamentoExpirado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado` e o `PagamentoEstornado` do estorno automático. O `causation_id` deles é o comando que abriu o fluxo (`GerarOrcamento` para os do orçamento, `SolicitarPagamento` para os do pagamento), guardado no documento em `aberto_por` com o contexto de trace, e o evento sai como filho desse contexto: a saga segue num trace só (ADR-043).
 
 O `PagamentoEstornado` com `motivo=pagamento_apos_encerramento` (aprovação tardia, de valor ou moeda diferentes, ou segunda tentativa paga do mesmo checkout) não responde a comando algum e pode sair com o pagamento em qualquer estado: `RECUSADO`, `EXPIRADO` e `CANCELADO` passam a `ESTORNADO`, enquanto `SOLICITADO`, `CONFIRMADO` e `ESTORNADO` ficam como estão. Quem filtra é o OS Service: a saga o ignora fora da compensação, olhando o `motivo` (ADR-040, passo 7); o Billing só garante o `motivo` no evento.
 
@@ -61,11 +61,12 @@ O `PagamentoEstornado` com `motivo=pagamento_apos_encerramento` (aprovação tar
 Requisitos: Python 3.14 com [uv](https://docs.astral.sh/uv/) e Docker.
 
 ```bash
-make compose-up      # init do banco, API (porta 8002), prazos e MongoDB em replica set; seed de precos
+make compose-up      # init do banco, API (porta 8002), prazos, relay, consumidor, MongoDB e RabbitMQ; seed de precos
 curl localhost:8002/api/v1/saude          # liveness: {"status": "ok", "modo": "simulado"}
 curl localhost:8002/api/v1/saude/pronto   # readiness: MongoDB respondendo e preparado
-make compose-down    # derruba e apaga o volume
-make smoke           # o mesmo smoke do CI, em projeto e portas proprios
+make compose-logs    # logs da API, do prazos, do relay e do consumidor
+make compose-down    # derruba e apaga os volumes
+make smoke           # o mesmo smoke do CI, em projeto e portas proprios (inclui um comando de ponta a ponta)
 ```
 
 Swagger em `http://localhost:8002/docs` (e ReDoc em `/redoc`), em todo ambiente. As rotas internas validam o JWT do OS Service (`JWKS_URL`); sem ele no ar elas respondem 503, enquanto o link público, o webhook e o simulador seguem. O rate limit das rotas públicas (link do cliente, webhook, simulador) é aplicado pelo Kong (RFC-004, seção 6); a porta do compose é só para desenvolvimento.
@@ -84,10 +85,43 @@ Variáveis (lista completa com valores de demonstração em [`.env.example`](.en
 | `MP_MODE` | sem padrão | `simulado` ou `mercadopago` (este exige `MP_ACCESS_TOKEN` e `MP_WEBHOOK_SECRET`) |
 | `SIMULADOR_PERMITIDO` | `false` | libera o simulador com `ENVIRONMENT=production` (só demonstração) |
 | `MP_API_URL`, `MP_NOTIFICATION_URL`, `MP_TIMEOUT_SEGUNDOS` | API pública, `<BILLING_PUBLIC_URL>/api/v1/webhooks/mercadopago`, `5` | adapter real (https fora de development/test) |
-| `PRAZOS_INTERVALO_SEGUNDOS`, `PRAZOS_HEARTBEAT`, `METRICS_PORT` | `30`, `/tmp/prazos-heartbeat`, `8000` | processo `prazos` |
+| `PRAZOS_INTERVALO_SEGUNDOS`, `PRAZOS_HEARTBEAT`, `METRICS_PORT` | `30`, `/tmp/prazos-heartbeat`, `8000` | processo `prazos` (`METRICS_PORT` vale para os três processos sem API) |
+| `RABBITMQ_URL` | sem padrão | broker com o usuário do serviço (`amqp://billing:<senha>@<host>:5672/%2F`), exigido pelo relay e pelo consumidor; o usuário vai no `user_id` de toda publicação |
+| `RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT` | `/tmp/relay-heartbeat`, `/tmp/consumidor-heartbeat` | arquivo de vida do relay e do consumidor |
+| `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | `false`, `http://jaeger:4317`, `billing-service` | exportação dos traces do relay e do consumidor por OTLP/gRPC (desligada, o contexto W3C segue nas mensagens do mesmo jeito) |
+| `CONTRATOS_DIR` | `contratos/` do repositório (`/app/contratos` na imagem) | schemas das mensagens |
 | `RUN_SEED_ON_STARTUP` | `false` (o compose liga) | seed idempotente da tabela de preços no boot da API |
 
-Processos da imagem (`entrypoint.sh`): `api` (padrão), `prazos` e `banco` (preparação idempotente do MongoDB, antes dos outros). A imagem roda como o usuário 1001, sem shell de login, com o sistema de arquivos só leitura no compose.
+Processos da imagem (`entrypoint.sh`): `api` (padrão), `prazos`, `relay`, `consumidor` e `banco` (preparação idempotente do MongoDB, antes dos outros). A imagem roda como o usuário 1001, sem shell de login, com o sistema de arquivos só leitura no compose.
+
+## Mensageria
+
+RabbitMQ 4.3.6 com a topologia da plataforma (ADR-036; RFC-004, seções 5.1 a 5.5): o serviço só faz declaração passiva, e cada processo confere apenas o que o usuário `billing` alcança.
+
+| | Fila ou exchange | Mensagens |
+|---|---|---|
+| Consome | `billing.comandos` (ligada a `comando.billing.#` no `pytstop.comandos`) | `GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento` e `EstornarPagamento`, publicados pelo usuário `os` |
+| Publica | `pytstop.eventos`, routing key `evento.billing.<tipo em snake_case>` | os 13 eventos da seção [Eventos](#eventos), com o usuário `billing` |
+| Retry | `pytstop.retry`, routing key `billing.comandos.retry.<1s\|5s\|15s\|60s\|300s>` | cópia do comando com `x-tentativa` de 1 a 5 |
+
+- **Envelope:** `id`, `tipo`, `versao` (1), `origem` (`billing-service`), `correlation_id` (a ordem de serviço), `causation_id`, `ocorrido_em` (UTC, do relógio injetado nos casos de uso) e `dados`; propriedades AMQP `message_id`, `correlation_id`, `type`, `user_id`, `content_type` e `delivery_mode=2`, com os headers `traceparent`/`tracestate`. O envelope é validado no JSON Schema do contrato ao gravar na outbox (fora do contrato é defeito deste serviço e aborta a transação) e ao consumir (erro permanente).
+- **Outbox e relay** (`python -m src.relay`): cada documento da outbox leva o envelope, o exchange, a routing key e o `traceparent` de quem gravou. O relay reivindica uma linha por vez com `find_one_and_update` (pendente, ou em entrega com lease vencido, passa a em entrega por 30 s com um token de reivindicação novo) e publica com publisher confirms e `mandatory`; toda marcação exige o token, então um relay atrasado não marca como entregue o que outro retomou. Devolução sem rota, nack ou canal fechado pelo broker (permissão) contam tentativa, com os atrasos do p3 até `dead` na quinta; queda do broker devolve a linha sem gastar tentativa, e sem conexão o relay não reivindica nada (reconecta com backoff até 30 s). Mais de um relay pode rodar ao mesmo tempo. O relay não segura as linhas seguintes da mesma OS atrás de uma em backoff: a ordem de consumo não é garantida de qualquer forma, e quem decide é a etapa da saga (ADR-036).
+- **Consumidor** (`python -m src.consumidor`): prefetch 10, ack manual. Confere o `user_id` contra o produtor do tipo (comandos são do `os`; a cópia de retry chega com o próprio `billing` e `x-tentativa` maior que zero), valida o envelope e chama o caso de uso numa unidade de trabalho que grava o `id` da mensagem em `mensagens_processadas` na transação do efeito. O mesmo `id` de novo passa pelo caso de uso, que é idempotente pela ordem e republica o desfecho registrado (conta como `duplicada`); o original atrasado depois da lápide é descartado sem resposta (`ignorada`). Erro transitório (banco, provedor ou rede fora) publica a cópia na fila de retry do nível da nova tentativa, sem `expiration` (o atraso é o TTL da própria fila, que a devolve a `billing.comandos`), espera o confirm e só então dá ack na original; a sexta falha, a cópia recusada e o erro permanente (contrato, tipo, versão, `user_id`, regra de negócio) vão para `billing.comandos.dlq` (`reject` sem requeue).
+- **Retenção por índice TTL:** linhas entregues da outbox somem 7 dias depois (`entregue_em`, só com `status: entregue`) e `mensagens_processadas`, 30 dias depois; as `dead` ficam para investigação.
+- **Rastreamento (ADR-043):** o relay publica num span PRODUCER filho do contexto gravado na outbox e injeta o seu no header; o consumidor abre o span CONSUMER filho da publicação, e a outbox gravada nele leva esse contexto adiante. Os logs JSON levam `correlation_id`, `trace_id` e `span_id`. Laço ocioso não abre span.
+- **Métricas** (porta `METRICS_PORT` de cada processo): `pytstop_mensagens_publicadas_total{tipo}`, `pytstop_mensagens_consumidas_total{tipo,resultado}` (`processada`, `duplicada`, `ignorada`, `retry`, `dlq`) e, no relay, `outbox_pendentes` e `outbox_dead`, os nomes do p3.
+- **Saúde e encerramento:** relay e consumidor tocam um arquivo a cada volta do laço (`RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT`), com `pronto` só enquanto a conexão com o broker está de pé: a liveness confere a idade do arquivo, a readiness também o conteúdo. SIGTERM termina a mensagem em curso, cancela o consumo (as mensagens pré-buscadas voltam à fila) e fecha as conexões.
+- **Contratos:** `contratos/` é cópia do `contratos/` do `platform` (schemas e exemplos das mensagens do Billing e o `asyncapi.yaml`), com o SHA de origem em `contratos/ORIGEM`; um teste baixa cada arquivo nesse SHA pelo GitHub e compara o checksum, e outro valida os exemplos do `platform`. `rabbitmq/` é cópia da topologia do `platform` (definitions, permissões, conf, plugins e o init de usuários) para o compose e os testes, já com uma fila de retry por atraso.
+
+Como rodar:
+
+```bash
+make compose-up          # relay e consumidor sobem com o resto (RabbitMQ na 5672, console em 15672, usuario admin)
+docker compose ps relay consumidor   # saudaveis = conectados ao broker
+# fora do compose, com o MongoDB e o RabbitMQ do compose no ar e o .env carregado
+ENVIRONMENT=development MP_MODE=simulado uv run python -m src.relay
+ENVIRONMENT=development MP_MODE=simulado uv run python -m src.consumidor
+```
 
 ## API
 
@@ -119,9 +153,9 @@ curl -X POST localhost:8002/api/v1/precos/validacao -H "Authorization: Bearer $T
 
 ## Eventos
 
-Os 13 eventos do catálogo do Billing (RFC-004, seção 5.3), no envelope da seção 5.2 (`id`, `tipo`, `versao`, `origem`, `correlation_id` = ordem de serviço, `causation_id`, `ocorrido_em`, `dados`): `OrcamentoGerado`, `GeracaoDeOrcamentoFalhou`, `OrcamentoAprovado`, `OrcamentoRecusado`, `OrcamentoExpirado`, `OrcamentoCancelado`, `PagamentoSolicitado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado`, `PagamentoCancelado`, `PagamentoEstornado` e `EstornoDePagamentoFalhou`. Os testes validam um exemplo de cada contra os JSON Schemas da plataforma (cópia em `tests/contratos`). `link_decisao` e `checkout_url` carregam token e nunca vão para log.
+Os 13 eventos do catálogo do Billing (RFC-004, seção 5.3), no envelope da seção 5.2 (`id`, `tipo`, `versao`, `origem`, `correlation_id` = ordem de serviço, `causation_id`, `ocorrido_em`, `dados`): `OrcamentoGerado`, `GeracaoDeOrcamentoFalhou`, `OrcamentoAprovado`, `OrcamentoRecusado`, `OrcamentoExpirado`, `OrcamentoCancelado`, `PagamentoSolicitado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado`, `PagamentoCancelado`, `PagamentoEstornado` e `EstornoDePagamentoFalhou`. Todo evento é validado contra os JSON Schemas da plataforma (cópia em `contratos/`) ao entrar na outbox, e os testes conferem um exemplo de cada. `link_decisao` e `checkout_url` carregam token e nunca vão para log.
 
-Métricas próprias: `pytstop_mercadopago_requisicoes_total{operacao,resultado}`, `pytstop_circuit_breaker_aberto{dependencia}`, `pytstop_pagamentos_estornados_total{motivo}`, `pytstop_estornos_automaticos_recusados_total`, `pytstop_cancelamentos_de_cobranca_recusados_total`, `pytstop_webhook_assinatura_invalida_total`, `pytstop_jwks_falhas_total` e `pytstop_prazos_ultimo_ciclo_timestamp_seconds`, além de `http_request_duration_seconds{method,rota,status}`.
+Métricas próprias: `pytstop_mercadopago_requisicoes_total{operacao,resultado}`, `pytstop_circuit_breaker_aberto{dependencia}`, `pytstop_pagamentos_estornados_total{motivo}`, `pytstop_estornos_automaticos_recusados_total`, `pytstop_cancelamentos_de_cobranca_recusados_total`, `pytstop_webhook_assinatura_invalida_total`, `pytstop_jwks_falhas_total` e `pytstop_prazos_ultimo_ciclo_timestamp_seconds`, além de `http_request_duration_seconds{method,rota,status}` e das métricas de mensageria (seção [Mensageria](#mensageria)).
 
 ## Testes e qualidade
 
@@ -130,7 +164,7 @@ make check   # uv.lock em dia, ruff (lint + format), import-linter, mypy strict 
 make audit   # pip-audit nas dependencias de runtime
 ```
 
-Unitários (domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens) e integração com MongoDB 7.0.43 real em replica set via testcontainers (casos de uso, API, matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência, corridas reais entre decisão, webhook e expiração). O gate exige 90% de linhas e ramos (`.coveragerc`); o CI publica o resumo por pacote no summary do job `test` e o SonarQube aplica o quality gate (ADR-041).
+Unitários (domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração e OpenTelemetry), testes de contrato (`tests/contratos`: a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam) e integração via testcontainers com MongoDB 7.0.43 real em replica set e RabbitMQ 4.3.6 com as definitions da plataforma (casos de uso, API, matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência, corridas reais entre decisão, webhook e expiração; relay com dois relays concorrentes e lease retomado, consumidor com origem, contrato, retry por nível e DLQ, os quatro comandos com a causa de cada resposta e o fluxo de ponta a ponta do comando publicado ao evento em `pytstop.eventos`, com o trace encadeado, a mensagem sem rota e o broker parado). O gate exige 90% de linhas e ramos (`.coveragerc`); o CI publica o resumo por pacote no summary do job `test` e o SonarQube aplica o quality gate (ADR-041).
 
 Cobertura na versão atual (852 testes; `make test` e `python scripts/cobertura_resumo.py coverage.xml`):
 

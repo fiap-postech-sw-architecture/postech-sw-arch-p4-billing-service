@@ -1,7 +1,7 @@
 """Relay e consumidor contra RabbitMQ 4.3.6 real com a topologia do platform.
 
 As definitions copiadas em ``rabbitmq/`` sobem com TTL de 100 ms nas filas de
-retry; cada teste comeca com as filas vazias e o banco limpo (D40).
+retry; cada teste comeca com as filas vazias e o banco limpo.
 """
 
 from __future__ import annotations
