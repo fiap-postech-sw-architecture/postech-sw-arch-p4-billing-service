@@ -9,20 +9,28 @@ entao cada processo confere so o que o usuario do servico alcanca (ADR-036).
 
 from __future__ import annotations
 
+import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final
 
 import pika
 from pika.exceptions import AMQPError, ChannelClosedByBroker, NackError, UnroutableError
 
+from src.compartilhado.infraestrutura.processo import sinalizar
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    import threading
+    from collections.abc import Callable, Iterable
+    from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 # Heartbeat curto acha conexao morta sem esperar o TCP; o bloqueio do broker
 # (alarme de memoria ou disco) vira erro em vez de pendurar o processo.
 _HEARTBEAT_SEGUNDOS: Final = 30
 _BLOQUEIO_MAXIMO_SEGUNDOS: Final = 30
 _TIMEOUT_SOCKET_SEGUNDOS: Final = 5
+ESPERA_MAXIMA_SEGUNDOS: Final = 30.0
 
 
 class MensagemRecusadaError(Exception):
@@ -122,3 +130,43 @@ class CanalAmqp:
         if conexao is not None and conexao.is_open:
             with suppress(AMQPError):
                 conexao.close()
+
+
+def manter_conectado(
+    canal: CanalAmqp,
+    trabalho: Callable[[], None],
+    *,
+    parar: threading.Event,
+    heartbeat: Path,
+    processo: str,
+    espera_maxima: float = ESPERA_MAXIMA_SEGUNDOS,
+) -> None:
+    """Laco do relay e do consumidor: conecta, roda ``trabalho`` enquanto a
+    conexao durar e reconecta com backoff dobrado ate ``espera_maxima``.
+
+    Sem conexao o ``trabalho`` nao roda (o relay nao reivindica linhas). O
+    arquivo de vida fica ``conectando`` fora dele; o ``trabalho`` o marca
+    ``pronto`` a cada volta.
+    """
+    espera = min(1.0, espera_maxima)
+    while not parar.is_set():
+        sinalizar(heartbeat, pronto=False)
+        try:
+            canal.abrir()
+        except AMQPError:
+            _log.warning(
+                "broker_unavailable",
+                extra={"processo": processo, "espera_segundos": espera},
+            )
+            parar.wait(espera)
+            espera = min(espera * 2, espera_maxima)
+            continue
+        espera = min(1.0, espera_maxima)
+        _log.info("broker_connected", extra={"processo": processo})
+        try:
+            trabalho()
+        except AMQPError:
+            _log.warning("broker_connection_lost", extra={"processo": processo})
+        finally:
+            canal.fechar()
+    sinalizar(heartbeat, pronto=False)

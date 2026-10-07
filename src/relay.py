@@ -13,12 +13,16 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Final
 
-from pika.exceptions import AMQPError
 from prometheus_client import REGISTRY, start_http_server
 from pymongo.errors import PyMongoError
 
 from src.compartilhado.infraestrutura.logging import configurar_logging
-from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, parametros
+from src.compartilhado.infraestrutura.mensageria.amqp import (
+    ESPERA_MAXIMA_SEGUNDOS,
+    CanalAmqp,
+    manter_conectado,
+    parametros,
+)
 from src.compartilhado.infraestrutura.mensageria.contratos import EXCHANGE_EVENTOS
 from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
@@ -37,7 +41,6 @@ _log = logging.getLogger(__name__)
 
 LOTE: Final = 50
 INTERVALO_SEGUNDOS: Final = 1.0
-ESPERA_MAXIMA_SEGUNDOS: Final = 30.0
 
 
 def rodar(
@@ -50,25 +53,14 @@ def rodar(
     espera_maxima: float = ESPERA_MAXIMA_SEGUNDOS,
 ) -> None:
     """Laco do processo: conecta, entrega enquanto conectado, reconecta."""
-    espera = min(1.0, espera_maxima)
-    while not parar.is_set():
-        sinalizar(heartbeat, pronto=False)
-        try:
-            canal.abrir()
-        except AMQPError:
-            _log.warning("relay_broker_unavailable", extra={"espera_segundos": espera})
-            parar.wait(espera)
-            espera = min(espera * 2, espera_maxima)
-            continue
-        espera = min(1.0, espera_maxima)
-        _log.info("relay_connected")
-        try:
-            _entregar_enquanto_conectado(relay, canal, parar, heartbeat, intervalo)
-        except AMQPError:
-            _log.warning("relay_connection_lost")
-        finally:
-            canal.fechar()
-    sinalizar(heartbeat, pronto=False)
+    manter_conectado(
+        canal,
+        lambda: _entregar_enquanto_conectado(relay, canal, parar, heartbeat, intervalo),
+        parar=parar,
+        heartbeat=heartbeat,
+        processo="relay",
+        espera_maxima=espera_maxima,
+    )
 
 
 def _entregar_enquanto_conectado(
