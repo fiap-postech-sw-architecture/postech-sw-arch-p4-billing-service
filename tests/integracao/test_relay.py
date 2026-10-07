@@ -380,9 +380,9 @@ class PublicadorQueEspera(PublicadorFalso):
 
 
 class TestDoisRelays:
-    @pytest.mark.parametrize("rodada", range(25))
+    @pytest.mark.parametrize("repeticao", range(25))
     def test_concorrentes_nunca_reivindicam_a_mesma_linha(
-        self, banco: Banco, rodada: int
+        self, banco: Banco, repeticao: int
     ) -> None:
         """Quatro relays largam juntos, cada um reivindica uma linha e so
         publica quando todos reivindicaram: a janela do claim fica aberta para

@@ -464,14 +464,14 @@ class TestConcorrencia:
             thread.join(timeout=60)
         return list(zip(resultados, canais, strict=True))
 
-    @pytest.mark.parametrize("rodada", range(5))
+    @pytest.mark.parametrize("repeticao", range(5))
     def test_mesmo_gerar_em_dois_consumidores_gera_um_orcamento(
         self,
         banco: Banco,
         consumidor: ConsumidorDeComandos,
         gateway: GatewayRoteirizado,
         relogio: RelogioFixo,
-        rodada: int,
+        repeticao: int,
     ) -> None:
         mensagem = gerar(uuid4())
 
@@ -482,14 +482,14 @@ class TestConcorrencia:
         assert banco["orcamentos"].count_documents({}) == 1
         assert banco["mensagens_processadas"].count_documents({}) == 1
 
-    @pytest.mark.parametrize("rodada", range(5))
+    @pytest.mark.parametrize("repeticao", range(5))
     def test_ids_novos_da_mesma_ordem_respondem_cada_um_com_a_propria_causa(
         self,
         banco: Banco,
         consumidor: ConsumidorDeComandos,
         gateway: GatewayRoteirizado,
         relogio: RelogioFixo,
-        rodada: int,
+        repeticao: int,
     ) -> None:
         ordem_id = uuid4()
         original, reenvio = gerar(ordem_id), gerar(ordem_id)
@@ -504,7 +504,7 @@ class TestConcorrencia:
         }
         assert len(respostas(banco)) == 2
 
-    @pytest.mark.parametrize("rodada", range(5))
+    @pytest.mark.parametrize("repeticao", range(5))
     def test_mesmo_solicitar_em_dois_consumidores_grava_um_pagamento(
         self,
         banco: Banco,
@@ -512,7 +512,7 @@ class TestConcorrencia:
         canal: CanalDeTeste,
         gateway: GatewayRoteirizado,
         relogio: RelogioFixo,
-        rodada: int,
+        repeticao: int,
     ) -> None:
         ordem_id = uuid4()
         entregar(consumidor, canal, gerar(ordem_id))
