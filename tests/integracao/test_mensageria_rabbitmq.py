@@ -59,6 +59,7 @@ from tests.integracao.apoio import (
     comando,
     configuracao,
     definicoes_de_teste,
+    eventos_do_outbox,
 )
 
 if TYPE_CHECKING:
@@ -155,9 +156,16 @@ def processos(
     relay: bool = True,
     heartbeat: int | None = None,
     bloqueio_maximo: float | None = None,
+    parar: threading.Event | None = None,
+    tipo_do_canal: type[CanalAmqp] = CanalAmqp,
 ) -> Iterator[ConsumidorAnotado]:
-    """Consumidor e relay do Billing em threads, com o usuario billing."""
-    parar = threading.Event()
+    """Consumidor e relay do Billing em threads, com o usuario billing.
+
+    ``parar`` e o SIGTERM dos dois (o teste o aciona no meio de uma mensagem) e
+    ``tipo_do_canal`` o canal do consumidor, para anotar ou derrubar a conexao.
+    """
+    if parar is None:
+        parar = threading.Event()
     handlers = handlers or criar_handlers(
         configuracao().comandos, gateway=GatewayRoteirizado(), relogio=agora_utc
     )
@@ -167,7 +175,7 @@ def processos(
     )
     if heartbeat is not None:
         parametros_do_consumidor.heartbeat = heartbeat
-    canal_do_consumidor = CanalAmqp(
+    canal_do_consumidor = tipo_do_canal(
         parametros_do_consumidor, filas=(FILA,), exchanges=(EXCHANGE_RETRY,)
     )
     threads = [
@@ -478,6 +486,101 @@ def test_handler_mais_lento_que_o_heartbeat_nao_derruba_a_conexao(
     with broker.conectar() as conexao:
         fila = conexao.channel().queue_declare(FILA, passive=True)
     assert fila.method.message_count == 0
+
+
+def _mensagens_na_fila(broker: BrokerDeTeste, fila: str) -> int:
+    with broker.conectar() as conexao:
+        contagem = conexao.channel().queue_declare(fila, passive=True)
+    return int(contagem.method.message_count)
+
+
+def test_sigterm_com_o_handler_em_curso_conclui_a_mensagem_antes_de_parar(
+    banco: Banco,
+    broker: BrokerDeTeste,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    passos: list[str] = []
+
+    class CanalAnotado(CanalAmqp):
+        def confirmar(self, entrega: int) -> None:
+            passos.append("ack")
+            super().confirmar(entrega)
+
+        def cancelar_consumo(self) -> None:
+            passos.append("cancelar o consumo")
+            super().cancelar_consumo()
+
+    def handler(dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
+        passos.append("handler")
+        time.sleep(2)
+        passos.append("fim do handler")
+        return Desfecho.PROCESSADA
+
+    parar = threading.Event()
+    with (
+        caplog.at_level(logging.WARNING),
+        processos(
+            banco,
+            broker,
+            tmp_path,
+            handlers={"CancelarOrcamento": handler},
+            relay=False,
+            parar=parar,
+            tipo_do_canal=CanalAnotado,
+        ),
+    ):
+        publicar_comando(broker, _cancelar())
+        esperar(lambda: "handler" in passos)
+        parar.set()  # o SIGTERM chega com o handler no meio
+
+    # O with so sai com o consumidor parado: a mensagem em curso termina e leva o
+    # ack, so depois o consumo e cancelado, e a conexao nao cai no caminho.
+    assert passos == ["handler", "fim do handler", "ack", "cancelar o consumo"]
+    assert banco["mensagens_processadas"].count_documents({}) == 1
+    assert "broker_connection_lost" not in [r.getMessage() for r in caplog.records]
+    assert _mensagens_na_fila(broker, FILA) == 0
+
+
+def test_queda_entre_o_handler_e_o_ack_duplica_o_desfecho_e_nao_o_efeito(
+    banco: Banco,
+    broker: BrokerDeTeste,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    quedas: list[int] = []
+
+    class CaiAntesDoAck(CanalAmqp):
+        def confirmar(self, entrega: int) -> None:
+            if not quedas:
+                quedas.append(entrega)
+                self._conexao.close()
+            super().confirmar(entrega)
+
+    mensagem = _cancelar()
+    with (
+        caplog.at_level(logging.WARNING),
+        processos(
+            banco, broker, tmp_path, relay=False, tipo_do_canal=CaiAntesDoAck
+        ) as consumidor,
+    ):
+        publicar_comando(broker, mensagem)
+        esperar(lambda: banco["outbox"].count_documents({}) == 2)
+
+    # O efeito gravou uma vez; a mensagem voltou pelo broker (x-delivery-count,
+    # sem x-tentativa: nao passou pela escada de retry) e o caso de uso, que e
+    # idempotente, republicou o desfecho com a mesma causa.
+    assert banco["mensagens_processadas"].count_documents({}) == 1
+    assert banco["orcamentos"].count_documents({}) == 1
+    assert [(e["tipo"], e["causation_id"]) for e in eventos_do_outbox(banco)] == [
+        ("OrcamentoCancelado", mensagem["id"])
+    ] * 2
+    assert [
+        ("x-tentativa" in entrega, entrega.get("x-delivery-count"))
+        for entrega in consumidor.entregas
+    ] == [(False, None), (False, 1)]
+    assert "broker_connection_lost" in [r.getMessage() for r in caplog.records]
+    assert _mensagens_na_fila(broker, "billing.comandos.dlq") == 0
 
 
 def _propriedades_com_timestamp_em_ms(envelope: dict[str, Any]) -> Any:
