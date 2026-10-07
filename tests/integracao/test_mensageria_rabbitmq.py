@@ -953,8 +953,10 @@ class TestRelayNoBroker:
                 esperar(lambda: sem_resolucao("consumidor") >= 2)
                 [parada] = banco["outbox"].find()
                 assert (parada["status"], parada["tentativas"]) == ("pendente", 0)
-                assert (tmp_path / "relay").read_text() == "conectando"
-                assert (tmp_path / "consumidor").read_text() == "conectando"
+                # Esperar o conteudo, e nao ler uma vez: os processos regravam o
+                # arquivo (truncar e escrever), e a leitura no meio devolve vazio.
+                esperar(lambda: (tmp_path / "relay").read_text() == "conectando")
+                esperar(lambda: (tmp_path / "consumidor").read_text() == "conectando")
             finally:
                 codigo, saida = broker.container.exec(["rabbitmqctl", "start_app"])
                 assert codigo == 0, saida
