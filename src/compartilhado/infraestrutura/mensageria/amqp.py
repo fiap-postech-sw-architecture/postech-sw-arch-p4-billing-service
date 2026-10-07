@@ -20,6 +20,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import pika
+from pika.adapters.utils.connection_workflow import AMQPConnectorStackTimeout
 from pika.exceptions import AMQPError, ChannelClosedByBroker, NackError, UnroutableError
 
 from src.compartilhado.infraestrutura.processo import sinalizar
@@ -101,9 +102,11 @@ class CanalAmqp:
 
     ``abrir`` (re)conecta e confere por declaracao passiva as filas e os
     exchanges informados; erro de conexao (``AMQPConnectionError``) sobe para
-    o laco do processo, que reconecta com backoff. O nome do broker sem
-    resolucao no DNS sobe como ``socket.gaierror`` (um ``OSError``), que o pika
-    nao embrulha em ``AMQPError``; o laco o trata do mesmo jeito.
+    o laco do processo, que reconecta com backoff. O pika nao embrulha em
+    ``AMQPError`` dois erros que tambem sao broker fora, e o laco os trata do
+    mesmo jeito: o nome do broker sem resolucao no DNS (``socket.gaierror``, um
+    ``OSError``) e o prazo da pilha vencido (``AMQPConnectorStackTimeout``: o
+    broker aceitou o TCP e nao respondeu o AMQP).
     """
 
     def __init__(
@@ -274,22 +277,24 @@ def _conectar_e_trabalhar(
     diz ``pronto`` dentro do ``trabalho``: fora dele, inclusive na espera antes
     da proxima tentativa, diz ``conectando`` (readiness falsa, liveness pela
     idade do arquivo). So a abertura trata erro fora de ``AMQPError`` como broker
-    fora, e so o ``socket.gaierror`` do nome sem resolucao, que o pika deixa sair
-    cru. Outro ``OSError`` da abertura (descritores esgotados, falha de TLS) e
-    defeito e derruba o processo, como o ``OSError`` do ``trabalho`` ou do
-    arquivo de vida (disco): com a conexao aberta o pika ja embrulha o erro de
-    socket em ``AMQPError``.
+    fora, e so dois, que o pika deixa sair crus: o ``socket.gaierror`` do nome sem
+    resolucao e o ``AMQPConnectorStackTimeout`` (o broker aceitou o TCP e nao
+    respondeu o AMQP no prazo). Outro ``OSError`` da abertura (descritores
+    esgotados, falha de TLS) e defeito e derruba o processo, como o ``OSError``
+    do ``trabalho`` ou do arquivo de vida (disco): com a conexao aberta o pika ja
+    embrulha o erro de socket em ``AMQPError``.
     """
     sinalizar(heartbeat, pronto=False)
     try:
         canal.abrir()
-    except (AMQPError, socket.gaierror) as exc:
+    except (AMQPError, socket.gaierror, AMQPConnectorStackTimeout) as exc:
         # So o tipo: autenticacao recusada ou 403/404 na declaracao passiva nao
-        # se confundem com o broker fora do ar. gaierror: o nome do broker sem
-        # resolucao (Service headless sem pod pronto, no boot ou depois de uma
-        # queda), que o pika nao embrulha. Nao e todo OSError: descritores
-        # esgotados e falha de TLS tambem saem crus da abertura, e reconectar
-        # esconderia o defeito.
+        # se confundem com o broker fora do ar. Os dois que o pika nao embrulha:
+        # gaierror, o nome do broker sem resolucao (Service headless sem pod
+        # pronto, no boot ou depois de uma queda), e o prazo da pilha vencido
+        # (broker congelado, que aceita o TCP e nao fala AMQP). Nao e todo
+        # OSError: descritores esgotados e falha de TLS tambem saem crus da
+        # abertura, e reconectar esconderia o defeito.
         _log.warning(
             "broker_unavailable",
             extra={"processo": processo, "erro": type(exc).__name__},

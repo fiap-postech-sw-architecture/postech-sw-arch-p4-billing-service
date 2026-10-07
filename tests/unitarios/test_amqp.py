@@ -255,6 +255,36 @@ def test_nome_do_broker_some_do_dns_depois_de_conectar_e_a_volta_reconecta(
     assert parar.estados_na_espera == ["conectando"] * len(parar.esperas)
 
 
+def test_broker_que_aceita_o_tcp_e_nao_responde_espera_com_backoff_fora_da_prontidao(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, sorteio: SorteioAnotado
+) -> None:
+    # Broker congelado: o sistema aceita o TCP (fila de conexoes, sem accept) e o
+    # AMQP nunca responde. O pika deixa sair crua a excecao do prazo da pilha,
+    # que nao e AMQPError nem OSError.
+    with socket.create_server(("127.0.0.1", 0)) as mudo:
+        porta = mudo.getsockname()[1]
+        url = f"amqp://billing:x@127.0.0.1:{porta}/%2F"  # gitleaks:allow (teste)
+        parametros = amqp.parametros(url, nome="billing-consumidor")
+        parametros.stack_timeout = 0.5
+        arquivo = tmp_path / "hb"
+        parar = EsperaAnotada(ate=1, arquivo_de_vida=arquivo)
+
+        def nao_conectou() -> None:
+            pytest.fail("o trabalho nao roda sem conexao")
+
+        with caplog.at_level(logging.INFO):
+            _rodar(CanalAmqp(parametros), nao_conectou, parar, arquivo)
+
+    assert parar.esperas == [1.0]
+    assert parar.estados_na_espera == ["conectando"]
+    erros = [
+        registro.__dict__["erro"]
+        for registro in caplog.records
+        if registro.getMessage() == "broker_unavailable"
+    ]
+    assert erros == ["AMQPConnectorStackTimeout"]
+
+
 @pytest.mark.parametrize(
     ("falha_ao_abrir", "arquivo", "erro"),
     [
