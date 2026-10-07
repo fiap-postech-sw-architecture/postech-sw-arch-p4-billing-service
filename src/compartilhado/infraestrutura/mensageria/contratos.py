@@ -42,6 +42,7 @@ class MensagemForaDoContratoError(Exception):
 
 
 def diretorio() -> Path:
+    """``CONTRATOS_DIR`` (``/app/contratos`` na imagem) ou o do repositorio."""
     return Path(os.environ.get("CONTRATOS_DIR") or _PADRAO)
 
 

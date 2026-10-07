@@ -126,20 +126,18 @@ def _consumir_enquanto_conectado(
     heartbeat: Path,
     inatividade: float,
 ) -> None:
-    canal.canal.basic_qos(prefetch_count=PREFETCH)
-    for metodo, propriedades, corpo in canal.canal.consume(
-        FILA, inactivity_timeout=inatividade
-    ):
+    for entrega in canal.consumir(FILA, prefetch=PREFETCH, inatividade=inatividade):
         sinalizar(heartbeat, pronto=True)
-        if metodo is not None:
-            consumidor.tratar(canal, metodo.delivery_tag, propriedades, corpo)
+        if entrega is not None:
+            consumidor.tratar(canal, *entrega)
         if parar.is_set():
             # As pre-buscadas ainda sem ack voltam para a fila.
-            canal.canal.cancel()
+            canal.cancelar_consumo()
             return
 
 
 def main(parar: threading.Event | None = None) -> None:
+    """Sobe o consumidor e roda ate o SIGTERM (``parar`` serve aos testes)."""
     configurar_logging()
     config = ConfiguracaoDoConsumidor.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot

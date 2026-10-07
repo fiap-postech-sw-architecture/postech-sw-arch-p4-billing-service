@@ -10,10 +10,10 @@ import io
 import json
 import logging
 import threading
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+import pika
 import pytest
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
@@ -682,26 +682,23 @@ class CanalDoBrokerFalso:
 
 
 class CanalAmqpFalso(CanalAmqp):
-    """Falha ao abrir N vezes; cada conexao entrega a lista da vez."""
+    """Falha ao abrir N vezes; cada conexao entrega a lista da vez pelo
+    ``consumir`` de verdade, sobre o canal de mentira."""
 
     def __init__(
         self, falhas_ao_abrir: int, conexoes: list[CanalDoBrokerFalso]
     ) -> None:
+        super().__init__(pika.ConnectionParameters())
         self.falhas_ao_abrir = falhas_ao_abrir
         self.aberturas = 0
         self.conexoes = conexoes
-        self.atual: CanalDoBrokerFalso | None = None
         self.respostas = CanalDeTeste()
 
     def abrir(self) -> None:
         self.aberturas += 1
         if self.aberturas <= self.falhas_ao_abrir:
             raise AMQPConnectionError("broker fora")
-        self.atual = self.conexoes.pop(0)
-
-    @property
-    def canal(self) -> CanalDoBrokerFalso | None:
-        return self.atual
+        self._canal = self.conexoes.pop(0)
 
     def confirmar(self, entrega: int) -> None:
         self.respostas.confirmar(entrega)
@@ -713,7 +710,7 @@ class CanalAmqpFalso(CanalAmqp):
         return None
 
     def fechar(self) -> None:
-        self.atual = None
+        self._canal = None
 
 
 class TestLacoDoProcesso:
@@ -722,7 +719,7 @@ class TestLacoDoProcesso:
     ) -> None:
         envelope = _cancelar()
         corpo = json.dumps(envelope).encode()
-        metodo = SimpleNamespace(delivery_tag=1)
+        metodo = pika.spec.Basic.Deliver(delivery_tag=1)
         parar = threading.Event()
 
         class Ultima(CanalDoBrokerFalso):

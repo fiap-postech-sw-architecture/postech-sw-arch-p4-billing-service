@@ -19,7 +19,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid4
 
 import pika
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from pymongo.database import Database
 
     from src.compartilhado.dominio.relogio import Relogio
+    from src.compartilhado.infraestrutura.mensageria.amqp import Publicador
     from src.compartilhado.infraestrutura.mongo import Documento
 
 _log = logging.getLogger(__name__)
@@ -53,16 +54,6 @@ LEASE: Final = timedelta(seconds=30)
 ATRASOS_SEGUNDOS: Final = (1, 4, 16, 64)
 MAX_TENTATIVAS: Final = len(ATRASOS_SEGUNDOS) + 1
 _EM_ENTREGA: Final = "em_entrega"
-
-
-class Publicador(Protocol):
-    def publicar(
-        self,
-        exchange: str,
-        routing_key: str,
-        corpo: bytes,
-        propriedades: pika.BasicProperties,
-    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)

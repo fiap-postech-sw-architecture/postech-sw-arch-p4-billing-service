@@ -27,7 +27,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import pika
@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
     from src.compartilhado.aplicacao.mensageria import Desfecho
     from src.compartilhado.dominio.relogio import Relogio
+    from src.compartilhado.infraestrutura.mensageria.amqp import Canal
     from src.compartilhado.infraestrutura.mongo import Documento
     from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
 
@@ -89,22 +90,6 @@ _ROTULOS_TRANSITORIOS: Final = (
 
 
 type Handler = Callable[[Mapping[str, Any], UnidadeDaMensagem], Desfecho]
-
-
-class Canal(Protocol):
-    def publicar(
-        self,
-        exchange: str,
-        routing_key: str,
-        corpo: bytes,
-        propriedades: pika.BasicProperties,
-    ) -> None: ...
-
-    def confirmar(self, entrega: int) -> None: ...
-
-    def rejeitar(self, entrega: int) -> None: ...
-
-    def aguardar(self, segundos: float) -> None: ...
 
 
 class _PermanenteError(Exception):

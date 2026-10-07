@@ -16,7 +16,7 @@ import logging
 import secrets
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import pika
 from pika.exceptions import AMQPError, ChannelClosedByBroker, NackError, UnroutableError
@@ -25,7 +25,7 @@ from src.compartilhado.infraestrutura.processo import sinalizar
 
 if TYPE_CHECKING:
     import threading
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -49,6 +49,37 @@ class MensagemRecusadaError(Exception):
     def detalhe_de_log(self) -> dict[str, str]:
         """Texto fixo (nome do erro ou codigo do broker), nunca a mensagem."""
         return {"detalhe": str(self)}
+
+
+class Publicador(Protocol):
+    """Quem publica com confirm do broker (o relay so precisa disto)."""
+
+    def publicar(
+        self,
+        exchange: str,
+        routing_key: str,
+        corpo: bytes,
+        propriedades: pika.BasicProperties,
+    ) -> None:
+        """Volta so com o confirm; ``MensagemRecusadaError`` se o broker recusar."""
+        ...
+
+
+class Canal(Publicador, Protocol):
+    """O canal do consumidor: publica a copia de retry, confirma ou rejeita a
+    entrega e atende o broker enquanto o handler roda."""
+
+    def confirmar(self, entrega: int) -> None:
+        """Ack da entrega."""
+        ...
+
+    def rejeitar(self, entrega: int) -> None:
+        """Reject sem requeue: a fila manda a mensagem para a DLQ."""
+        ...
+
+    def aguardar(self, segundos: float) -> None:
+        """Atende o broker (heartbeat, fechamento) por ate ``segundos``."""
+        ...
 
 
 def parametros(url: str, *, nome: str) -> pika.URLParameters:
@@ -80,16 +111,15 @@ class CanalAmqp:
         self._parametros = parametros
         self._filas = tuple(filas)
         self._exchanges = tuple(exchanges)
+        # Objetos do pika, que nao publica tipos: conexao, canal de consumo e
+        # canal de publicacao.
         self._conexao: Any = None
         self._canal: Any = None
         self._publicacao: Any = None
 
-    @property
-    def canal(self) -> Any:  # noqa: ANN401 - BlockingChannel do pika, sem tipos
-        """Canal de consumo (consume, ack e reject do consumidor)."""
-        return self._canal
-
     def abrir(self) -> None:
+        """Conecta (fechando a conexao anterior) e confere, por declaracao
+        passiva, as filas e os exchanges que o processo usa."""
         self.fechar()
         self._conexao = pika.BlockingConnection(self._parametros)
         self._canal = self._conexao.channel()
@@ -131,7 +161,24 @@ class CanalAmqp:
             msg = f"canal fechado pelo broker ({exc.reply_code})"
             raise MensagemRecusadaError(msg) from exc
 
+    def consumir(
+        self, fila: str, *, prefetch: int, inatividade: float
+    ) -> Iterator[tuple[int, pika.BasicProperties, bytes] | None]:
+        """Entregas da fila (tag, propriedades e corpo), com ``None`` a cada
+        ``inatividade`` segundos sem mensagem. O gerador acaba, sem excecao,
+        quando o broker cancela o consumo (fila apagada, failover)."""
+        self._canal.basic_qos(prefetch_count=prefetch)
+        for metodo, propriedades, corpo in self._canal.consume(
+            fila, inactivity_timeout=inatividade
+        ):
+            yield None if metodo is None else (metodo.delivery_tag, propriedades, corpo)
+
+    def cancelar_consumo(self) -> None:
+        """Para de consumir: as entregas pre-buscadas sem ack voltam a fila."""
+        self._canal.cancel()
+
     def confirmar(self, entrega: int) -> None:
+        """Ack da entrega no canal de consumo."""
         self._canal.basic_ack(entrega)
 
     def rejeitar(self, entrega: int) -> None:
@@ -143,6 +190,7 @@ class CanalAmqp:
         self._conexao.process_data_events(time_limit=segundos)
 
     def fechar(self) -> None:
+        """Fecha a conexao, se aberta (sem erro se ela ja caiu)."""
         conexao, self._conexao = self._conexao, None
         self._canal = self._publicacao = None
         if conexao is not None and conexao.is_open:

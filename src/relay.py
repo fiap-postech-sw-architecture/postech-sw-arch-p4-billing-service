@@ -83,6 +83,7 @@ def _entregar_enquanto_conectado(
 
 
 def main(parar: threading.Event | None = None) -> None:
+    """Sobe o relay e roda ate o SIGTERM (``parar`` serve aos testes)."""
     configurar_logging()
     config = ConfiguracaoDoRelay.do_ambiente()
     provedor = configurar_telemetria("relay")
