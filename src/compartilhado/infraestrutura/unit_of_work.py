@@ -14,7 +14,9 @@ comita junto o efeito, a outbox e ``mensagens_processadas``. O id do comando e
 o ``causation_id`` das respostas, e o agregado criado guarda em ``aberto_por``
 o comando e o contexto de trace que o abriram, de onde saem a causa e o trace
 dos eventos que ele emite depois, sem comando (decisao do cliente, webhook,
-prazo; ADR-043).
+prazo; ADR-043): o evento e filho desse contexto e leva, para o relay ligar
+por span link, o contexto de quem retomou o passo (a requisicao ou o ciclo do
+``prazos``).
 """
 
 from __future__ import annotations
@@ -81,6 +83,8 @@ class MensagemRecebida:
 class _Causa:
     mensagem_id: UUID | None
     contexto: dict[str, str] = field(default_factory=dict)
+    # Quem retomou o passo que esperava (requisicao, webhook, ciclo do prazos).
+    retomado_por: dict[str, str] = field(default_factory=dict)
 
 
 class MongoUnitOfWork:
@@ -210,6 +214,7 @@ class MongoUnitOfWork:
                 for chave in _CONTEXTO_W3C
                 if aberto_por.get(chave)
             },
+            retomado_por=contexto_atual(),
         )
 
     def _gravar_outbox(self, sessao: ClientSession) -> None:
@@ -360,6 +365,7 @@ def _documento_da_outbox(
         "exchange": contratos.EXCHANGE_EVENTOS,
         "routing_key": contratos.routing_key_do_evento(evento.tipo),
         **causa.contexto,
+        **({"retomado_por": causa.retomado_por} if causa.retomado_por else {}),
         "envelope": envelope,
     }
 
@@ -386,6 +392,8 @@ ESQUEMA_OUTBOX: Documento = {
         "routing_key": {"bsonType": "string"},
         "traceparent": {"bsonType": "string"},
         "tracestate": {"bsonType": "string"},
+        # Contexto W3C de quem retomou o passo: span link na publicacao.
+        "retomado_por": {"bsonType": "object"},
         "entregue_em": {"bsonType": "date"},
         # Token do relay que detem a linha em entrega (fencing do lease).
         "reivindicacao": {"bsonType": "binData"},

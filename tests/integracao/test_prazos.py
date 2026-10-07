@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
 from prometheus_client import REGISTRY
 
 from src import prazos
@@ -377,6 +378,10 @@ class TestBoot:
         }
         for nome, valor in variaveis.items():
             monkeypatch.setenv(nome, valor)
+        # O provider global do OpenTelemetry e o dos testes (fixture spans).
+        monkeypatch.setattr(
+            prazos, "configurar_telemetria", lambda _processo: TracerProvider()
+        )
         return variaveis
 
     @pytest.mark.parametrize("modo", ["simulado", "mercadopago"])

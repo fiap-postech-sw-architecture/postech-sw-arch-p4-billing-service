@@ -12,10 +12,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     ConsumidorDeComandos,
 )
+from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.consumidor import FILA, criar_handlers
 from src.orcamento.aplicacao.use_cases import DecidirOrcamento
@@ -37,6 +40,7 @@ from tests.integracao.apoio import (
     CanalDeTeste,
     GatewayRoteirizado,
     MetricasEspia,
+    PublicadorFalso,
     RelogioFixo,
     comando,
     configuracao,
@@ -46,9 +50,15 @@ from tests.integracao.apoio import (
 )
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import ReadableSpan
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
+
+_tracer = trace.get_tracer("teste")
 
 ITENS = [
     {"tipo": "servico", "codigo": "SRV-TROCA-OLEO", "quantidade": 1},
@@ -312,6 +322,74 @@ class TestEventosDoOrcamentoSemComando:
         )
 
         assert respostas(banco)[-1] == ("OrcamentoExpirado", geracao["id"])
+
+
+class TestTraceDosPassosRetomados:
+    """O evento de um passo retomado por pessoa ou prazo sai no trace da saga,
+    com span link para o trace de quem o retomou (ADR-043)."""
+
+    def _publicar(self, banco: Banco, relogio: RelogioFixo) -> None:
+        RelayDaOutbox(
+            banco, PublicadorFalso(), usuario="billing", relogio=relogio
+        ).entregar_pendentes(10)
+
+    def _spans_da_saga(
+        self, spans: InMemorySpanExporter, evento: str
+    ) -> tuple[ReadableSpan, ReadableSpan]:
+        terminados = spans.get_finished_spans()
+        consumo = next(s for s in terminados if s.name == "process GerarOrcamento")
+        publicacao = next(s for s in terminados if s.name == f"publish {evento}")
+        return consumo, publicacao
+
+    def test_decisao_pela_api_sai_na_saga_com_link_para_a_requisicao(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        relogio: RelogioFixo,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        ordem_id = uuid4()
+        entregar(consumidor, canal, gerar(ordem_id))
+        # A instrumentacao do FastAPI abre o span da requisicao (aqui, a mao).
+        with _tracer.start_as_current_span(
+            "POST /api/v1/orcamentos/{id}/decisao", kind=SpanKind.SERVER
+        ) as requisicao:
+            aprovar_pelo_atendente(banco, relogio, ordem_id)
+
+        self._publicar(banco, relogio)
+
+        consumo, publicacao = self._spans_da_saga(spans, "OrcamentoAprovado")
+        assert publicacao.context.trace_id == consumo.context.trace_id
+        [link] = publicacao.links
+        assert link.context.trace_id == requisicao.get_span_context().trace_id
+
+    def test_expiracao_pelo_prazos_sai_na_saga_com_link_para_o_ciclo(
+        self,
+        banco: Banco,
+        consumidor: ConsumidorDeComandos,
+        canal: CanalDeTeste,
+        relogio: RelogioFixo,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        entregar(consumidor, canal, gerar(uuid4()))
+        relogio.avancar(hours=73)
+
+        executar_ciclo(
+            banco,
+            gateway=None,
+            metricas=MetricasEspia(),
+            max_recusas=3,
+            relogio=relogio,
+        )
+        self._publicar(banco, relogio)
+
+        consumo, publicacao = self._spans_da_saga(spans, "OrcamentoExpirado")
+        [ciclo] = [s for s in spans.get_finished_spans() if s.name == "prazos"]
+        assert publicacao.context.trace_id == consumo.context.trace_id
+        assert ciclo.context.trace_id != consumo.context.trace_id
+        [link] = publicacao.links
+        assert link.context.trace_id == ciclo.context.trace_id
 
 
 class TestSolicitarPagamento:

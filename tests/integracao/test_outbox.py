@@ -285,11 +285,39 @@ class TestEventoSemComando:
         linha = _linha(banco, "OrcamentoAprovado")
         assert linha["envelope"]["causation_id"] == str(comando.id)
         assert linha["traceparent"] == _traceparent(span)
+        # Sem span corrente (API sem instrumentacao), nada para ligar.
+        assert "retomado_por" not in linha
         documento = banco["orcamentos"].find_one({"_id": gerado.id})
         assert documento is not None
         assert documento["status"] == "APROVADO"
         # O $setOnInsert nao e reescrito pelas gravacoes seguintes.
         assert documento["aberto_por"]["mensagem_id"] == comando.id
+
+    def test_quem_retomou_o_passo_fica_gravado_para_o_span_link(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        comando = _comando()
+        gerado = orcamento()
+        with _tracer.start_as_current_span("process GerarOrcamento") as saga:
+            _salvar_no_comando(
+                banco, comando, lambda uow: MongoOrcamentoRepository(uow).salvar(gerado)
+            )
+        uow = MongoUnitOfWork(banco)
+        repo = MongoOrcamentoRepository(uow)
+
+        def aprovar() -> None:
+            atual = repo.obter_por_id(gerado.id)
+            assert atual is not None
+            atual.aprovar(canal=CanalDecisao.LINK, agora=AGORA + timedelta(hours=1))
+            repo.salvar(atual)
+
+        # A requisicao que retomou o passo tem trace proprio.
+        with _tracer.start_as_current_span("POST decisao") as requisicao:
+            uow.executar(aprovar)
+
+        linha = _linha(banco, "OrcamentoAprovado")
+        assert linha["traceparent"] == _traceparent(saga)
+        assert linha["retomado_por"] == {"traceparent": _traceparent(requisicao)}
 
     def test_registro_criado_por_outro_comando_guarda_o_primeiro(
         self, banco: Banco

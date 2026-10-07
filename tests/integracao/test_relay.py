@@ -30,6 +30,7 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
 )
 from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
+from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
 from src.compartilhado.infraestrutura.processo import CONECTANDO, PRONTO
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
@@ -40,7 +41,7 @@ from src.compartilhado.infraestrutura.unit_of_work import (
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.relay import rodar
 from tests.factories import orcamento
-from tests.integracao.apoio import RelogioFixo
+from tests.integracao.apoio import PublicadorFalso, RelogioFixo
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,38 +54,6 @@ if TYPE_CHECKING:
     Banco = Database[dict[str, Any]]
 
 _tracer = trace.get_tracer("teste")
-
-
-class PublicadorFalso:
-    """Guarda cada publicacao; pode segurar a chamada ou falhar depois dela."""
-
-    def __init__(
-        self,
-        erro: Exception | None = None,
-        segura: threading.Event | None = None,
-    ) -> None:
-        self.publicadas: list[tuple[str, str, bytes, pika.BasicProperties]] = []
-        self.erro = erro
-        self.segura = segura
-        self.entrou = threading.Event()
-
-    def publicar(
-        self,
-        exchange: str,
-        routing_key: str,
-        corpo: bytes,
-        propriedades: pika.BasicProperties,
-    ) -> None:
-        self.entrou.set()
-        if self.segura is not None:
-            assert self.segura.wait(10)
-        self.publicadas.append((exchange, routing_key, corpo, propriedades))
-        if self.erro is not None:
-            raise self.erro
-
-    @property
-    def ids(self) -> list[str]:
-        return [propriedades.message_id for *_, propriedades in self.publicadas]
 
 
 def _gravar_orcamentos(banco: Banco, quantidade: int = 1) -> None:
@@ -185,6 +154,40 @@ class TestEntrega:
         assert props.headers["traceparent"].split("-")[2] == (
             f"{producer.context.span_id:016x}"
         )
+
+    def test_span_producer_liga_quem_retomou_o_passo(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        _gravar_orcamentos(banco)
+        with _tracer.start_as_current_span("process GerarOrcamento") as saga:
+            pai = contexto_atual()
+        with _tracer.start_as_current_span("POST decisao") as requisicao:
+            retomou = contexto_atual()
+        banco["outbox"].update_one({}, {"$set": {**pai, "retomado_por": retomou}})
+
+        _relay(banco, PublicadorFalso(), RelogioFixo()).entregar_pendentes(1)
+
+        [producer] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert producer.parent is not None
+        assert producer.parent.span_id == saga.get_span_context().span_id
+        assert producer.context.trace_id == saga.get_span_context().trace_id
+        [link] = producer.links
+        assert link.context.trace_id == requisicao.get_span_context().trace_id
+        assert link.context.span_id == requisicao.get_span_context().span_id
+
+    def test_linha_sem_quem_retomou_publica_sem_link(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        _gravar_orcamentos(banco)
+
+        _relay(banco, PublicadorFalso(), RelogioFixo()).entregar_pendentes(1)
+
+        [producer] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert producer.links == ()
 
 
 class TestFalhas:

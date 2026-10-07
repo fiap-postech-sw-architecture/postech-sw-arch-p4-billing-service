@@ -1,11 +1,13 @@
 """OpenTelemetry da mensageria: contexto W3C na outbox e nos headers AMQP (ADR-043).
 
-Relay e consumidor instalam o ``TracerProvider`` do SDK sempre, para o contexto
-seguir de mensagem em mensagem; a exportacao OTLP/gRPC so liga com
+Relay, consumidor e ``prazos`` instalam o ``TracerProvider`` do SDK sempre, para
+o contexto seguir de mensagem em mensagem; a exportacao OTLP/gRPC so liga com
 ``OTEL_ENABLED=true`` (endpoint em ``OTEL_EXPORTER_OTLP_ENDPOINT``), os mesmos
-nomes do contrato de configuracao da plataforma. A API nao instala o SDK: sem
-span corrente, o evento espontaneo segue o contexto guardado no registro que
-esperava por ele (``aberto_por``, na unidade de trabalho).
+nomes do contrato de configuracao da plataforma. O evento espontaneo segue o
+contexto guardado no registro que esperava por ele (``aberto_por``, na unidade
+de trabalho), com span link para o span de quem retomou o passo: o ciclo do
+``prazos`` e, quando a API tiver a instrumentacao do FastAPI, a requisicao (a
+API ainda nao instala o SDK).
 """
 
 from __future__ import annotations
@@ -54,6 +56,13 @@ def contexto_de(portador: Mapping[str, object]) -> Context:
     if len(textos.get("tracestate", "")) > _TAMANHO_MAXIMO_TRACESTATE:
         del textos["tracestate"]
     return _PROPAGADOR.extract(textos)
+
+
+def links_de(portador: Mapping[str, object]) -> list[trace.Link]:
+    """Span link para o contexto W3C do portador, quando ele e valido (ADR-043:
+    o evento de um passo retomado aponta para o trace de quem o retomou)."""
+    contexto = trace.get_current_span(contexto_de(portador)).get_span_context()
+    return [trace.Link(contexto)] if contexto.is_valid else []
 
 
 def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvider:

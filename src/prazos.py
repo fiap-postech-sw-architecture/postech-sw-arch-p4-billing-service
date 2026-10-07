@@ -22,6 +22,10 @@ from prometheus_client import Gauge, start_http_server
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.telemetria import (
+    configurar_telemetria,
+    tracer,
+)
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
 from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
@@ -60,6 +64,16 @@ ULTIMO_CICLO = Gauge(
 )
 
 
+class _UnidadeDoPrazo(MongoUnitOfWork):
+    """Cada transacao do ``prazos`` (expiracao ou conciliacao de um registro)
+    num span proprio: o evento gravado nela sai com span link para este trace
+    (ADR-043). Ciclo sem nada vencido nem a conciliar nao abre span."""
+
+    def executar[T](self, trabalho: Callable[[], T]) -> T:
+        with tracer.start_as_current_span("prazos"):
+            return super().executar(trabalho)
+
+
 @dataclass(frozen=True, slots=True)
 class ResultadoDoCiclo:
     conciliados: int
@@ -93,7 +107,7 @@ def executar_ciclo(
     limite: int = LIMITE_POR_CICLO,
 ) -> ResultadoDoCiclo:
     """Um ciclo: concilia (se houver ``gateway``) e expira orcamentos e pagamentos."""
-    uow = MongoUnitOfWork(banco, relogio=relogio)
+    uow = _UnidadeDoPrazo(banco, relogio=relogio)
     pagamentos = MongoPagamentoRepository(uow)
     conciliados = 0
     if gateway is not None:
@@ -167,6 +181,7 @@ def main(parar: threading.Event | None = None) -> None:
     configurar_logging()
     config = ConfiguracaoDosPrazos.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
+    provedor = configurar_telemetria("prazos")
     if parar is None:
         parar = threading.Event()
         instalar_sinais(parar)
@@ -200,6 +215,7 @@ def main(parar: threading.Event | None = None) -> None:
         cliente.close()
         if gateway is not None:
             gateway.fechar()
+        provedor.shutdown()
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -34,6 +34,7 @@ from src.compartilhado.infraestrutura.mensageria.metricas import MENSAGENS_PUBLI
 from src.compartilhado.infraestrutura.mensageria.telemetria import (
     contexto_atual,
     contexto_de,
+    links_de,
     tracer,
 )
 from src.compartilhado.infraestrutura.unit_of_work import COLECAO_OUTBOX
@@ -73,6 +74,7 @@ class _Linha:
     routing_key: str
     envelope: dict[str, Any]
     contexto: dict[str, str]
+    retomado_por: dict[str, str]
     reivindicacao: UUID
 
     @classmethod
@@ -85,6 +87,7 @@ class _Linha:
             routing_key=doc["routing_key"],
             envelope=doc["envelope"],
             contexto={k: doc[k] for k in ("traceparent", "tracestate") if k in doc},
+            retomado_por=doc.get("retomado_por", {}),
             reivindicacao=doc["reivindicacao"],
         )
 
@@ -150,11 +153,13 @@ class RelayDaOutbox:
 
     def _entregar(self, linha: _Linha) -> None:
         # Publica no contexto gravado com a linha: o span PRODUCER e filho de
-        # quem gravou (consumidor do comando ou registro que esperava).
+        # quem gravou (consumidor do comando ou registro que esperava), com span
+        # link para quem retomou o passo que esperava (ADR-043).
         with tracer.start_as_current_span(
             f"publish {linha.tipo}",
             context=contexto_de(linha.contexto),
             kind=SpanKind.PRODUCER,
+            links=links_de(linha.retomado_por),
             attributes={
                 "messaging.system": "rabbitmq",
                 "messaging.operation.type": "publish",

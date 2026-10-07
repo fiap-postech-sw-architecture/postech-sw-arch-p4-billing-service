@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -225,6 +226,38 @@ class CanalDeTeste:
 
     def aguardar(self, segundos: float) -> None:
         return None
+
+
+class PublicadorFalso:
+    """Guarda cada publicacao; pode segurar a chamada ou falhar depois dela."""
+
+    def __init__(
+        self,
+        erro: Exception | None = None,
+        segura: threading.Event | None = None,
+    ) -> None:
+        self.publicadas: list[tuple[str, str, bytes, pika.BasicProperties]] = []
+        self.erro = erro
+        self.segura = segura
+        self.entrou = threading.Event()
+
+    def publicar(
+        self,
+        exchange: str,
+        routing_key: str,
+        corpo: bytes,
+        propriedades: pika.BasicProperties,
+    ) -> None:
+        self.entrou.set()
+        if self.segura is not None:
+            assert self.segura.wait(10)
+        self.publicadas.append((exchange, routing_key, corpo, propriedades))
+        if self.erro is not None:
+            raise self.erro
+
+    @property
+    def ids(self) -> list[str]:
+        return [propriedades.message_id for *_, propriedades in self.publicadas]
 
 
 def comando(
