@@ -91,6 +91,9 @@ class HistoricoDoProvedor:
             None,
         )
 
-    def registrar_estorno_automatico(self, estorno: EstornoAutomatico) -> None:
-        """Quem chama confere antes, com ``estorno_automatico``, que e o primeiro."""
+    def registrar_estorno_automatico(self, estorno: EstornoAutomatico) -> bool:
+        """``False`` se a tentativa ja tem estorno registrado (o primeiro vale)."""
+        if self.estorno_automatico(estorno.referencia_pagamento) is not None:
+            return False
         self._estornos_automaticos.append(estorno)
+        return True

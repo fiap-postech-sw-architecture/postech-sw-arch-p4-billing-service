@@ -79,11 +79,25 @@ class TestEstornosAutomaticos:
         estorno = EstornoAutomatico(referencia_pagamento="9", registrado_em=AGORA)
 
         assert historico.estorno_automatico("9") is None
-        historico.registrar_estorno_automatico(estorno)
+        assert historico.registrar_estorno_automatico(estorno)
 
         assert historico.estorno_automatico("9") == estorno
         assert historico.estorno_automatico("10") is None
         assert historico.estornos_automaticos == (estorno,)
+
+    def test_um_estorno_por_tentativa_e_o_primeiro_vale(self) -> None:
+        historico = HistoricoDoProvedor()
+        primeiro = EstornoAutomatico(referencia_pagamento="9", registrado_em=AGORA)
+        depois = EstornoAutomatico(
+            referencia_pagamento="9", registrado_em=AGORA, falha="recusado"
+        )
+        outra = EstornoAutomatico(referencia_pagamento="10", registrado_em=AGORA)
+
+        assert historico.registrar_estorno_automatico(primeiro)
+        assert not historico.registrar_estorno_automatico(depois)
+        assert historico.registrar_estorno_automatico(outra)
+
+        assert historico.estornos_automaticos == (primeiro, outra)
 
     @pytest.mark.parametrize(
         "dados",

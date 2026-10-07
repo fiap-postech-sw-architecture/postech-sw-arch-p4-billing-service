@@ -319,15 +319,13 @@ class Pagamento(AggregateRoot):
         Recusado pelo provedor (``falha``): fica marcado para intervencao
         manual, sem evento (nenhuma saga espera por ele). Repetir: ``False``.
         """
-        if self._historico.estorno_automatico(referencia) is not None:
-            return False
-        self._historico.registrar_estorno_automatico(
-            EstornoAutomatico(
-                referencia_pagamento=referencia,
-                registrado_em=agora,
-                falha=None if falha is None else _motivo(falha),
-            )
+        estorno = EstornoAutomatico(
+            referencia_pagamento=referencia,
+            registrado_em=agora,
+            falha=None if falha is None else _motivo(falha),
         )
+        if not self._historico.registrar_estorno_automatico(estorno):
+            return False
         if falha is not None:
             return True
         motivo = MotivoEstorno.PAGAMENTO_APOS_ENCERRAMENTO
