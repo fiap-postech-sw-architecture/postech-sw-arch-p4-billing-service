@@ -1,0 +1,199 @@
+# MongoDB 7 do Billing em replica set de um no (rs0: as transacoes exigem
+# replica set), com autenticacao por keyfile e o mongodb_exporter em sidecar.
+# Usuarios (Secret billing-mongo, gerado pelo make deploy do platform): o root
+# nasce no primeiro boot do volume, pelo entrypoint da imagem; billing (os
+# processos e o Job) e exporter sao criados pelo Job de inicializacao, que
+# tambem inicia o replica set (job.yaml, replica-set.js).
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-mongo
+spec:
+  clusterIP: None
+  # O membro se anuncia como billing-mongo-0.billing-mongo..., e o mongod so
+  # aceita o rs.initiate se esse nome resolver para ele: o DNS do pod existe
+  # antes de ele ficar pronto.
+  publishNotReadyAddresses: true
+  selector:
+    app: billing-mongo
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: billing-mongo
+spec:
+  serviceName: billing-mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-mongo
+  template:
+    metadata:
+      labels:
+        app: billing-mongo
+        processo: banco
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9216"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Usuario mongodb da imagem; o fsGroup deixa o volume gravavel por ele.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # O Secret montado fica legivel pelo grupo (fsGroup), e o mongod recusa
+        # keyfile que nao seja so do dono: copia com 400. O install, e nao o
+        # cp, porque o init roda de novo no mesmo pod com o arquivo ja la.
+        - name: chave
+          image: mongo:7.0.43
+          imagePullPolicy: IfNotPresent
+          command: [install, -m, "400", /segredo/keyfile, /chave/keyfile]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: segredo
+              mountPath: /segredo
+              readOnly: true
+            - name: chave
+              mountPath: /chave
+      containers:
+        - name: mongo
+          image: mongo:7.0.43
+          imagePullPolicy: IfNotPresent
+          # O entrypoint da imagem cria o root no primeiro boot (sem --replSet
+          # nem --keyFile) e liga o --auth.
+          args:
+            - --replSet
+            - rs0
+            - --bind_ip_all
+            - --keyFile
+            - /chave/keyfile
+            - --wiredTigerCacheSizeGB
+            - "0.25"
+          ports:
+            - name: mongo
+              containerPort: 27017
+          env:
+            # mongosh (sondas e o init do entrypoint) grava em $HOME.
+            - name: HOME
+              value: /tmp
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: root
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_INITDB_ROOT_PASSWORD
+          # O ping nao pede autenticacao nem replica set iniciado: o pod fica
+          # pronto antes do rs.initiate do Job. O mongosh leva ~1 s de CPU
+          # para subir; dai os prazos.
+          livenessProbe:
+            exec:
+              command: [mongosh, --quiet, --eval, "db.adminCommand('ping').ok"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: [mongosh, --quiet, --eval, "db.adminCommand('ping').ok"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: dados
+              mountPath: /data/db
+            - name: chave
+              mountPath: /chave
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        # Conecta com o usuario exporter (clusterMonitor e leitura do local),
+        # nunca com o root; a senha entra pela URI montada no pod, nunca em
+        # argumento.
+        - name: exporter
+          image: percona/mongodb_exporter:0.53.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --collector.dbstats
+            - --collector.replicasetstatus
+          ports:
+            - name: metrics
+              containerPort: 9216
+          env:
+            - name: MONGO_EXPORTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_EXPORTER_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://exporter:$(MONGO_EXPORTER_PASSWORD)@127.0.0.1:27017/admin
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: segredo
+          secret:
+            secretName: billing-mongo
+            items:
+              - key: MONGO_KEYFILE
+                path: keyfile
+        - name: chave
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+  # StorageClass padrao do cluster: standard no kind, local-path no k3s.
+  volumeClaimTemplates:
+    - metadata:
+        name: dados
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi

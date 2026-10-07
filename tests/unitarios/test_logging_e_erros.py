@@ -419,6 +419,29 @@ def test_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:
     assert invalido.headers["X-Request-ID"] != "x" * 200
 
 
+@pytest.mark.parametrize("prefixo", ["", "/billing"], ids=["sem-prefixo", "borda"])
+def test_swagger_sem_csp_restrito_tambem_atras_do_prefixo_da_borda(
+    prefixo: str,
+) -> None:
+    # O uvicorn poe o root_path (ROOT_PATH) na frente do path do scope; o
+    # TestClient nao, entao o teste pede o caminho com o prefixo, como o
+    # uvicorn o entrega. Com o CSP restrito o Swagger UI nao carrega.
+    app = FastAPI()
+    app.add_middleware(SecurityHeadersMiddleware)
+    cliente = TestClient(app, root_path=prefixo)
+
+    for pagina in ("/docs", "/redoc"):
+        resposta = cliente.get(f"{prefixo}{pagina}")
+        assert resposta.status_code == 200
+        assert "Content-Security-Policy" not in resposta.headers
+        assert f"{prefixo}/openapi.json" in resposta.text
+    openapi = cliente.get(f"{prefixo}/openapi.json")
+    assert "Content-Security-Policy" not in openapi.headers
+    assert openapi.json().get("servers", []) == ([{"url": prefixo}] if prefixo else [])
+    outra = cliente.get(f"{prefixo}/api/v1/docs")
+    assert outra.headers["Content-Security-Policy"] == "default-src 'none'"
+
+
 def test_metricas_por_template_de_rota(cliente: TestClient) -> None:
     cliente.get("/erro/nao-encontrado")
     cliente.get("/qualquer/coisa")

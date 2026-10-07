@@ -27,6 +27,9 @@ reports/
 kubeconfig*
 *-kubeconfig
 
+# Overlay que o implantar-servicos.sh do platform gera e apaga a cada deploy
+k8s/overlays/execucao/
+
 # Terraform
 .terraform/
 *.tfstate

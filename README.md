@@ -99,8 +99,9 @@ Variáveis (lista completa com valores de demonstração em [`.env.example`](.en
 | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | `false`, `http://jaeger:4317`, `billing-service` | exportação dos traces do relay, do consumidor e do `prazos` pelo protocolo do OpenTelemetry (OTLP) sobre gRPC; desligada, o contexto de trace segue nas mensagens do mesmo jeito, nos headers `traceparent`/`tracestate` do padrão W3C Trace Context |
 | `CONTRATOS_DIR` | `contratos/` do repositório (`/app/contratos` na imagem) | schemas das mensagens |
 | `RUN_SEED_ON_STARTUP` | `false` (o compose liga) | seed idempotente da tabela de preços no boot da API |
+| `ROOT_PATH` | vazio | prefixo da borda (`/billing` no Kubernetes), passado ao `--root-path` do uvicorn: o Swagger de `/billing/docs` busca o `/billing/openapi.json`, e o OpenAPI leva o prefixo em `servers` (ADR-038) |
 
-Processos da imagem (`entrypoint.sh`): `api` (padrão), `prazos`, `relay`, `consumidor` e `banco` (preparação idempotente do MongoDB, antes dos outros). A imagem roda como o usuário 1001, sem shell de login, com o sistema de arquivos só leitura no compose.
+Processos da imagem (`entrypoint.sh`): `api` (padrão), `prazos`, `relay`, `consumidor`, `banco` (preparação idempotente do MongoDB, antes dos outros) e `aguarda-banco` (espera essa preparação; seção [Implantação](#implantação)). A imagem roda como o usuário 1001, sem shell de login, com o sistema de arquivos só leitura no compose e no Kubernetes.
 
 ## Mensageria
 
@@ -135,7 +136,7 @@ RabbitMQ 4.3.6 com a topologia da plataforma (ADR-036; RFC-004, seções 5.1 a 5
   - Relay e consumidor tocam um arquivo a cada volta do laço (`RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT`), com `pronto` só enquanto a conexão com o broker está de pé; fora dela, inclusive na espera antes de reconectar, o arquivo diz `conectando`. A liveness confere a idade do arquivo, e a readiness, também o conteúdo.
   - É um arquivo só, e não o par heartbeat e pronto do OS e da Execução, porque a mesma sonda lê os dois sinais de uma vez. O `prazos`, sem conexão para provar, só toca o arquivo dele.
   - A reconexão espera de 1 a 30 s, dobrando, com jitter: entre a metade e o total do atraso, para as réplicas que perderam o broker juntas não voltarem juntas. Vale também para a conexão que cai logo depois de aberta, para o consumidor cancelado pelo broker e para o nome do broker que deixa de resolver no DNS (o Service headless do RabbitMQ some do DNS sem pod pronto, no boot ou depois de uma queda): o processo fica fora da prontidão, com o log `broker_unavailable`, em vez de cair e reiniciar. Na abertura da conexão, contam como broker fora o erro de conexão do pika (`AMQPError`), o nome sem resolução (`socket.gaierror`) e o broker que aceita a conexão TCP e não responde o AMQP no prazo da pilha do pika (15 s, `AMQPConnectorStackTimeout`); qualquer outro erro derruba o processo, para o orquestrador reiniciá-lo e o defeito aparecer: falta de descritores, certificado TLS recusado e erro de disco ao tocar o arquivo de vida.
-  - Com o DNS mudo (sem resposta, nem a de nome inexistente), a consulta do pika não tem prazo e prende a tentativa pelo tempo do resolver: 20 s medidos com a glibc e o `resolv.conf` padrão do Kubernetes (`ndots:5`, três domínios de busca), que o `timeout`, o `attempts` e a lista de domínios multiplicam. O arquivo de vida é tocado de novo quando a tentativa falha, então a idade dele chega, no máximo, ao maior entre esse tempo e a espera do backoff (30 s), e não à soma dos dois. O SIGTERM só é atendido quando a consulta volta (medido: sinal aos 3 s, laço encerrado aos 20 s), sem conexão nem mensagem em curso para perder; contra o broker que aceita a conexão e não responde, o limite é o prazo da pilha do pika (15 s medidos). A sonda de liveness (60 s no compose) e o `terminationGracePeriodSeconds` do manifesto do Kubernetes precisam de margem sobre o tempo do resolver: o padrão de 30 s cobre os 20 s medidos, e o encerramento do Docker (10 s) interrompe o processo à força.
+  - Com o DNS mudo (sem resposta, nem a de nome inexistente), a consulta do pika não tem prazo e prende a tentativa pelo tempo do resolver: 20 s medidos com a glibc e o `resolv.conf` padrão do Kubernetes (`ndots:5`, três domínios de busca), que o `timeout`, o `attempts` e a lista de domínios multiplicam. O arquivo de vida é tocado de novo quando a tentativa falha, então a idade dele chega, no máximo, ao maior entre esse tempo e a espera do backoff (30 s), e não à soma dos dois. O SIGTERM só é atendido quando a consulta volta (medido: sinal aos 3 s, laço encerrado aos 20 s), sem conexão nem mensagem em curso para perder; contra o broker que aceita a conexão e não responde, o limite é o prazo da pilha do pika (15 s medidos). A sonda de liveness (60 s no compose e 90 s no Kubernetes) e o `terminationGracePeriodSeconds` dos manifests (45 s) têm margem sobre o tempo do resolver; o encerramento do Docker (10 s) interrompe o processo à força.
   - Com alarme de memória ou disco no broker, a conexão que publica fica bloqueada. O relay não reivindica linha nova enquanto ela estiver bloqueada, e o pika a derruba em 8 s, mesmo ociosa (abaixo do prazo de encerramento do Docker e do Kubernetes): o publish preso cai junto, com a linha devolvida sem gastar tentativa, e o relay reconecta com backoff.
 - **Encerramento:** SIGTERM termina a mensagem em curso, cancela o consumo (as mensagens pré-buscadas voltam à fila) e fecha as conexões. API, `prazos` e consumidor não sobem sem os schemas dos contratos.
 - **Contratos:** `contratos/` é cópia do `platform` no commit gravado em `contratos/ORIGEM`: os schemas e exemplos das mensagens do Billing, o `asyncapi.yaml` e, em `contratos/rabbitmq/`, a topologia do broker (definitions, permissões, configuração, plugins e o script que cria os usuários) que o compose e os testes sobem. Um teste baixa o `platform` nesse commit e compara os arquivos byte a byte (marcador `rede`: sem acesso ao GitHub, falha no CI e é pulado fora dele); outro valida os exemplos do `platform`.
@@ -198,3 +199,88 @@ make audit   # pip-audit nas dependencias de runtime
   - API e casos de uso: matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência e corridas reais entre decisão, webhook e expiração.
   - Mensageria: relays concorrentes e lease retomado; consumidor com origem, contrato, entrada hostil, retry por nível e DLQ; os quatro comandos com a causa de cada resposta; e o fluxo de ponta a ponta do comando publicado ao evento em `pytstop.eventos`, com o trace encadeado, a mensagem venenosa, a mensagem sem rota, o alarme de memória e o broker parado.
 - **Gate:** 90% de linhas e ramos (`.coveragerc`); o SonarQube aplica o quality gate (ADR-041). O resumo da cobertura por pacote sai de `make test` seguido de `uv run python scripts/cobertura_resumo.py coverage.xml`, e o CI publica o mesmo resumo no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)).
+
+## Implantação
+
+Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, validados no job `build` do CI por `make manifests` (kubeconform com os schemas do Kubernetes 1.35, a versão do nó do kind, e `Secret` reprovado; trivy config sem achado HIGH ou CRITICAL, com a única exceção e o motivo em [`k8s/trivy-ignore.rego`](k8s/trivy-ignore.rego)). Namespace `pytstop-billing`, prefixo `/billing` no Kong (ADR-038, ADR-042).
+
+| Arquivo em `k8s/base` | O que tem |
+|---|---|
+| `namespace.yaml` | O namespace, com Pod Security `restricted` em `enforce` |
+| `api.yaml`, `relay.yaml`, `consumidor.yaml`, `prazos.yaml` | Um Deployment por processo da imagem, cada um com o initContainer `aguarda-banco` |
+| `servico.yaml` | Service interno `billing-service:8000`, o `BILLING_URL` da Execução |
+| `banco.yaml` | MongoDB 7.0.43 em replica set de um nó (`rs0`), com keyfile e volume, e o `mongodb_exporter` em sidecar |
+| `job.yaml`, `replica-set.js` | Job `billing-inicializacao`: replica set e usuários, índices e validadores, seed de preços |
+| `hpa.yaml` | HPA da API por CPU (70% do request) |
+| `networkpolicy.yaml` | Entrada negada por padrão e liberada só onde precisa |
+| `borda.yaml` | Services e Ingress do Kong, cópia do exemplo do `platform` |
+
+| | `kind` | `kind-ci` (CD) | `k3s` |
+|---|---|---|---|
+| Réplicas da API (HPA) | 1 a 2 | 1 | 1 a 3 |
+| URL pública (`BILLING_PUBLIC_URL`) | `https://localhost/billing` | `https://localhost/billing` | a da VM, gravada pelo deploy do k3s |
+| Prazos | padrão | orçamento vence em 72 s, `prazos` a cada 5 s e a primeira recusa do provedor encerra a cobrança (E2E) | padrão |
+| Volume do MongoDB | 1Gi | 1Gi | 5Gi |
+| Imagem | `pytstop-billing-service:dev` | a do CD, num overlay gerado | por digest, num overlay gerado |
+
+- **Ordem de subida:** o `implantar-servicos.sh` do `platform` apaga o Job anterior (Job é imutável), aplica o overlay com `apply --server-side` e espera o MongoDB, o Job completar e cada Deployment. O Job roda em três etapas: o initContainer `replica-set` (`mongosh`) espera o `mongod`, inicia o replica set e cria os usuários `billing` e `exporter`, como root; o `banco` cria índices e validadores e marca a versão (`python -m src.banco`, com o usuário `billing`); o `seed` cadastra os preços de demonstração que faltam. Os Deployments ficam no `aguarda-banco` (`python -m src.banco aguardar`) até a versão deles estar marcada: no rolling update, os pods novos esperam o Job da versão nova enquanto os antigos seguem servindo. Rollback: `kubectl rollout undo`, sem descer a versão do banco (mudanças aditivas).
+- **Configuração:** o ConfigMap `billing-service` (com o hash do conteúdo no nome: mudar um valor reinicia os pods) entra por `envFrom`, com `ENVIRONMENT=production` também no kind, para as guardas de boot valerem com os segredos gerados.
+- **Segredos:** nenhum está nos manifests. O `make deploy` do `platform` os gera ([Segredos gerados](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform#segredos-gerados)), e eles entram por `secretKeyRef`; a `MONGODB_URI` se monta no pod por expansão de variável (`mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo...`), e o `kubectl describe` mostra o molde, não a senha.
+
+  | Secret | Chaves | Quem lê |
+  |---|---|---|
+  | `billing-mongo` | `MONGO_INITDB_ROOT_PASSWORD`, `MONGO_BILLING_PASSWORD`, `MONGO_EXPORTER_PASSWORD`, `MONGO_KEYFILE` | o `mongod` (o root no primeiro boot do volume e o keyfile), o Job (root e `billing`), os processos (`billing`) e o exporter (`exporter`) |
+  | `billing-link` | `ORCAMENTO_LINK_SECRET` | API e consumidor |
+  | `rabbitmq` | `RABBITMQ_URL`, com o usuário `billing` | relay e consumidor |
+  | `billing-mercadopago` (opcional) | `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` | API, consumidor e `prazos`, com `MP_MODE=mercadopago` (no k3s, quando o Secret existe) |
+
+- **Sondas:** a API tem liveness em `/api/v1/saude` e readiness em `/api/v1/saude/pronto` (MongoDB e versão do banco). Relay e consumidor usam o arquivo de vida em `/tmp`: liveness com ele tocado há menos de 90 s e readiness com o conteúdo `pronto`; a startup (até 60 s) confere a idade, e não o `pronto`, para o broker fora no boot deixar o pod fora da prontidão em vez de reiniciá-lo. O `prazos` fica pronto quando o arquivo existe e vivo enquanto ele tem menos de 120 s. As sondas exec rodam `python -c`, sem shell; o `terminationGracePeriodSeconds` é de 30 s na API e de 45 s nos processos, com margem sobre a consulta de DNS que o SIGTERM não interrompe. O MongoDB responde a um `ping` pelo `mongosh`.
+- **Métricas:** todo pod de processo é anotado para o Prometheus da plataforma (`prometheus.io/scrape`, `port` e `path`): a API na porta `http` (8000), relay, consumidor e `prazos` na `metrics` (9100) e o MongoDB pelo exporter (9216), com `--collector.dbstats` e `--collector.replicasetstatus`; o `mongodb_up` diz se o exporter entrou no banco.
+- **Rede e endurecimento:** a NetworkPolicy só trata a entrada. Tudo é negado, e ficam liberados o Kong e o Prometheus na API, a API da Execução na API (validação de preços), o Prometheus nas métricas dos processos e do exporter e os pods do próprio namespace no MongoDB. Todo pod roda sem root (1001; 999 no MongoDB; 65534 no exporter), sem escalada de privilégio, sem capability, com seccomp `RuntimeDefault`, sem token de ServiceAccount e com a raiz somente leitura (`/tmp` num `emptyDir`).
+- **Recursos** (request e limit): API 100m e 500m de CPU, 256 e 512 Mi de memória; relay, consumidor e `prazos` 50m e 250m, 128 e 256 Mi; MongoDB 100m e 500m, 256 Mi e 1 Gi (cache do WiredTiger em 0,25 GB); exporter 10m e 100m, 32 e 64 Mi; Job 50m e 500m, 128 e 256 Mi.
+- **Borda:** no kind, o Kong publica o serviço em `https://localhost/billing`, com o certificado padrão dele (`curl -k`): `/billing/api/v1/*`, o Swagger em `/billing/docs` (a API sobe com `ROOT_PATH=/billing`), o link de decisão, o webhook e o simulador, os três com limite próprio; `/billing/metrics` e `/billing/api/v1/admin/*` respondem 404 sem chegar ao serviço.
+
+### No kind local
+
+Com o repositório `platform` clonado ao lado deste:
+
+```bash
+make -C ../postech-sw-arch-p4-platform kind-up deploy    # cluster, plataforma e Secrets
+make kind-deploy                                         # imagem do commit atual, carga no kind e implantacao (overlay kind)
+../postech-sw-arch-p4-platform/scripts/ci/smoke-servicos.sh billing-service
+curl -k https://localhost/billing/api/v1/saude
+make manifests                                           # kubeconform e trivy config, como no CI
+```
+
+`make kind-deploy OVERLAY=kind-ci` usa o overlay do CD, e `PLATFORM_DIR=<caminho>` aponta outro clone do `platform`. Para subir os três serviços de uma vez, o `implantar-servicos.sh` do `platform` recebe os três diretórios (README do `platform`, seção "Contrato com os serviços").
+
+### Troca de senhas e chaves
+
+A senha nova tem só letras e dígitos (a do `openssl rand -hex 24` serve), porque entra crua na `MONGODB_URI`. Os comandos usam o contexto do kind (no k3s, troque o `--context`), e a senha não passa por argumento: o `mongosh` pede a do root e a nova, e o `jq` recebe a nova por variável de ambiente.
+
+Usuário `billing`:
+
+1. Troque a senha no banco, como root:
+
+   ```bash
+   kubectl --context kind-pytstop-p4 -n pytstop-billing exec -it billing-mongo-0 -c mongo -- \
+     mongosh --quiet -u root --authenticationDatabase admin
+   ```
+
+   No `mongosh`: `db.getSiblingDB("billing").changeUserPassword("billing", passwordPrompt())`.
+2. Grave a mesma senha no Secret:
+
+   ```bash
+   read -rs senha
+   kubectl --context kind-pytstop-p4 -n pytstop-billing get secret billing-mongo -o json \
+     | SENHA="$senha" jq '.data.MONGO_BILLING_PASSWORD = (env.SENHA | @base64)' \
+     | kubectl --context kind-pytstop-p4 replace -f -
+   ```
+
+3. Reinicie os Deployments, que leem a senha só no start: `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart deployment`. Até o restart, conexão nova com a senha antiga é recusada; o Job a relê no deploy seguinte.
+
+Usuário `exporter`: os mesmos passos, com `db.getSiblingDB("admin").changeUserPassword("exporter", passwordPrompt())`, a chave `MONGO_EXPORTER_PASSWORD` e, no passo 3, `rollout restart statefulset/billing-mongo` (o exporter é sidecar do banco, que reinicia junto). Root: os passos 1 e 2, com `changeUserPassword("root", passwordPrompt())` em `admin` e a chave `MONGO_INITDB_ROOT_PASSWORD`; só o Job a usa, no deploy seguinte.
+
+Keyfile: grave um valor novo (`openssl rand -base64 756 | tr -d '\n'`) na chave `MONGO_KEYFILE`, pelo mesmo `jq` do passo 2, e reinicie o banco com `rollout restart statefulset/billing-mongo`. O replica set tem um membro só, então nenhum outro precisa da chave antiga, mas o banco fica fora durante o restart.
+
+Chave do link de decisão (`ORCAMENTO_LINK_SECRET`): apague o Secret `billing-link`, rode o `make deploy` do `platform`, que o recria, e reinicie juntos a API e o consumidor (`rollout restart deployment/billing-service-api deployment/billing-service-consumidor`). Os links e checkouts já enviados deixam de valer: o orçamento que aguarda decisão fica sem link até vencer, e o atendente ainda decide por ele.

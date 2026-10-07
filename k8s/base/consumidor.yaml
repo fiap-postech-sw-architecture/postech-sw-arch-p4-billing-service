@@ -1,0 +1,148 @@
+# Consumidor dos comandos da saga (billing.comandos), com o handler numa thread
+# de trabalho e o teto de 10 s por mensagem. Uma replica (prefetch 1; o
+# consumidor e idempotente, e dois no rolling update sao seguros). Sondas pelo
+# arquivo de vida, como no relay (relay.yaml): idade na liveness e na startup,
+# conteudo "pronto" na readiness.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service-consumidor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-service-consumidor
+  template:
+    metadata:
+      labels:
+        app: billing-service-consumidor
+        processo: consumidor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Margem sobre a consulta de DNS que o SIGTERM nao interrompe (20 s
+      # medidos com o resolv.conf do Kubernetes).
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: aguarda-banco
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [aguarda-banco]
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: consumidor
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [consumidor]
+          ports:
+            - name: metrics
+              containerPort: 9100
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+            # Do platform (Secret derivado, regravado a cada deploy).
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq
+                  key: RABBITMQ_URL
+            # Os comandos geram o link de decisao e cobram no provedor.
+            - name: ORCAMENTO_LINK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: billing-link
+                  key: ORCAMENTO_LINK_SECRET
+            - name: MP_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mercadopago
+                  key: MP_ACCESS_TOKEN
+                  optional: true
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/consumidor-heartbeat')>90)
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/consumidor-heartbeat')>90)
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import sys;sys.exit(open('/tmp/consumidor-heartbeat').read()!='pronto')
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

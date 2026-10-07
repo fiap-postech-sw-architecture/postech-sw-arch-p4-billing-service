@@ -1,7 +1,8 @@
 #!/bin/bash
 # Um container, processos diferentes (RFC-004 secao 10.2): `api` (padrao),
-# `prazos`, `relay` (outbox -> RabbitMQ), `consumidor` (comandos da saga) e
-# `banco` (preparacao idempotente do MongoDB, antes dos outros).
+# `prazos`, `relay` (outbox -> RabbitMQ), `consumidor` (comandos da saga),
+# `banco` (preparacao idempotente do MongoDB, antes dos outros) e
+# `aguarda-banco` (espera essa preparacao).
 set -euo pipefail
 
 processo="${1:-api}"
@@ -16,9 +17,12 @@ case "$processo" in
     fi
     # --no-proxy-headers: X-Forwarded-For so com proxy confiavel configurado
     # (mesma postura do p3); a borda e o Kong. --no-server-header: a resposta
-    # nao anuncia o servidor (uvicorn) nem a versao.
+    # nao anuncia o servidor (uvicorn) nem a versao. --root-path: o prefixo
+    # da borda (ROOT_PATH=/billing no Kubernetes; vazio no compose), que o
+    # Kong tira do caminho: sem ele o Swagger de /billing/docs buscaria o
+    # /openapi.json fora do prefixo (ADR-038).
     exec uvicorn src.main:criar_app --factory --host 0.0.0.0 --port 8000 \
-      --no-proxy-headers --no-server-header
+      --no-proxy-headers --no-server-header --root-path "${ROOT_PATH:-}"
     ;;
   prazos)
     exec python -m src.prazos
@@ -32,8 +36,12 @@ case "$processo" in
   banco)
     exec python -m src.banco
     ;;
+  aguarda-banco)
+    # initContainer dos Deployments: espera o Job preparar o banco desta versao.
+    exec python -m src.banco aguardar
+    ;;
   *)
-    echo "Processo desconhecido: ${processo} (use api, prazos, relay, consumidor ou banco)" >&2
+    echo "Processo desconhecido: ${processo} (use api, prazos, relay, consumidor, banco ou aguarda-banco)" >&2
     exit 64
     ;;
 esac

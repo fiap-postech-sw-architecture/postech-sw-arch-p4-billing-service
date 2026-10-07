@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pymongo import MongoClient
 from pymongo.errors import WriteError
 
 from src import banco as init_do_banco
@@ -20,6 +21,7 @@ from src.compartilhado.infraestrutura.mongo import (
     BancoNaoPreparadoError,
     conferir_versao,
     criar_cliente,
+    marcar_versao,
 )
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
@@ -28,7 +30,6 @@ from src.precos.infraestrutura.repository import MongoPrecoServicoRepository
 from tests.integracao.apoio import configuracao
 
 if TYPE_CHECKING:
-    from pymongo import MongoClient
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
@@ -169,6 +170,62 @@ class TestBancoEProntidao:
         else:
             with pytest.raises(BancoNaoPreparadoError, match=r"src\.banco"):
                 conferir_versao(banco)
+
+    def test_aguardar_espera_o_init_do_banco(
+        self, banco: Banco, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        esperas: list[float] = []
+
+        def esperar(segundos: float) -> None:
+            esperas.append(segundos)
+            marcar_versao(banco)  # o Job de inicializacao termina na espera
+
+        init_do_banco.aguardar(banco, esperar=esperar)
+
+        assert esperas == [2.0]
+        assert capsys.readouterr().out == (
+            f"database {banco.name} not ready (BancoNaoPreparadoError), "
+            "retrying in 2 s\n"
+        )
+
+    def test_aguardar_trata_o_banco_fora_do_ar_como_espera(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        class EsperaInterrompidaError(Exception):
+            pass
+
+        def esperar(segundos: float) -> None:
+            raise EsperaInterrompidaError
+
+        inalcancavel: MongoClient[dict[str, Any]] = MongoClient(
+            "mongodb://127.0.0.1:1/?directConnection=true",
+            serverSelectionTimeoutMS=100,
+        )
+        try:
+            with pytest.raises(EsperaInterrompidaError):
+                init_do_banco.aguardar(inalcancavel["billing"], esperar=esperar)
+        finally:
+            inalcancavel.close()
+        assert "not ready (ServerSelectionTimeoutError)" in capsys.readouterr().out
+
+    def test_comando_aguardar(
+        self,
+        banco: Banco,
+        mongo_uri: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("ENVIRONMENT", "test")
+        monkeypatch.setenv("MONGODB_URI", mongo_uri)
+        monkeypatch.setenv("MONGODB_DB", banco.name)
+        marcar_versao(banco)
+
+        init_do_banco.main(["aguardar"])
+
+        assert capsys.readouterr().out == f"database {banco.name} ready\n"
+        # Outro argumento nao cai na preparacao: o initContainer so espera.
+        with pytest.raises(SystemExit, match="uso"):
+            init_do_banco.main(["aguarda"])
 
 
 PRODUCAO = {

@@ -1,0 +1,26 @@
+# Kind do CD (job deploy-kind, ADR-042): o overlay kind com a API numa replica
+# so, para os tres servicos e a plataforma caberem no runner, e os prazos
+# curtos do E2E: orcamento vence em 72 s, o prazos roda a cada 5 s e a primeira
+# recusa do provedor encerra a cobranca.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../kind
+
+configMapGenerator:
+  - name: billing-service
+    behavior: merge
+    literals:
+      - ORCAMENTO_VALIDADE_HORAS=0.02
+      - PRAZOS_INTERVALO_SEGUNDOS=5
+      - PAGAMENTO_MAX_RECUSAS=1
+
+patches:
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: billing-service-api
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 1

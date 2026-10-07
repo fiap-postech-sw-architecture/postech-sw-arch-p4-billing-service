@@ -6,8 +6,10 @@ para um replica set ja existente; um banco novo por teste, apagado no fim.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -22,8 +24,10 @@ from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.main import criar_app
 from tests.integracao.apoio import (
     FILAS_DO_BILLING,
+    RAIZ_DO_REPO,
     SENHA_DO_ADMIN,
     BrokerDeTeste,
+    MongoComChave,
     RelogioFixo,
     configuracao,
     definicoes_de_teste,
@@ -96,6 +100,48 @@ def mongo_uri() -> Iterator[str]:
                 container
             )
             yield uri
+
+
+# Como o StatefulSet: keyfile so do usuario do mongod (400) e o entrypoint da
+# imagem, que cria o root no primeiro boot e liga o --auth.
+_CHAVE_E_MONGOD = (
+    'printf %s "$CHAVE" > /tmp/keyfile && chown 999:999 /tmp/keyfile'
+    " && chmod 400 /tmp/keyfile && exec docker-entrypoint.sh --replSet rs0"
+    " --bind_ip_all --keyFile /tmp/keyfile"
+)
+
+
+@pytest.fixture(scope="module")
+def mongo_com_chave() -> Iterator[MongoComChave]:
+    """MongoDB com autenticacao por keyfile e o k8s/base montado em /scripts (o
+    replica-set.js do Job de inicializacao)."""
+    from testcontainers.core.container import DockerContainer
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+
+    senhas = {
+        f"MONGO_{nome}_PASSWORD": secrets.token_hex(24)
+        for nome in ("INITDB_ROOT", "BILLING", "EXPORTER")
+    }
+    with pytest.MonkeyPatch.context() as ambiente:
+        _docker_do_colima(ambiente)
+        container = (
+            DockerContainer(IMAGEM_MONGO)
+            .with_env("MONGO_INITDB_ROOT_USERNAME", "root")
+            .with_env(
+                "MONGO_INITDB_ROOT_PASSWORD", senhas["MONGO_INITDB_ROOT_PASSWORD"]
+            )
+            .with_env("CHAVE", base64.b64encode(secrets.token_bytes(756)).decode())
+            .with_volume_mapping(str(RAIZ_DO_REPO / "k8s" / "base"), "/scripts", "ro")
+            .with_kwargs(entrypoint=["bash", "-c", _CHAVE_E_MONGOD])
+            .with_exposed_ports(27017)
+            # So o mongod final sobe com --replSet: o do primeiro boot, que cria
+            # o root, nao (o replica-set.js espera o ping dele).
+            .waiting_for(LogMessageWaitStrategy(re.compile(r'"replSet":"rs0"')))
+        )
+        with container:
+            host = container.get_container_host_ip()
+            porta = container.get_exposed_port(27017)
+            yield MongoComChave(container, f"{host}:{porta}", senhas)
 
 
 @pytest.fixture(scope="session")

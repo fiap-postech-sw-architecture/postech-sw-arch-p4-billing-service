@@ -11,6 +11,7 @@ scripts/
 *.md
 Makefile
 docker-compose.yml
+k8s/
 contratos/rabbitmq/
 .gitleaks.toml
 .coveragerc

@@ -1,0 +1,15 @@
+# Kind local da plataforma (cluster pytstop-p4): o base, com o HPA da API de 1 a
+# 2 replicas e a URL publica https://localhost/billing (o Kong na 443 do host,
+# com o certificado padrao dele). O make kind-deploy constroi a imagem com o
+# commit como tag e a troca aqui pelo overlay que o implantar-servicos.sh do
+# platform gera; a tag dev serve ao apply direto, com a imagem carregada a mao
+# (README, Implantacao).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: pytstop-billing-service
+    newTag: dev

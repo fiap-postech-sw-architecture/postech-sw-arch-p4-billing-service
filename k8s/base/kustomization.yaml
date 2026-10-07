@@ -1,0 +1,59 @@
+# Billing Service no namespace pytstop-billing: um Deployment por processo
+# (api, relay, consumidor, prazos), o MongoDB em StatefulSet com o exporter, o
+# Job de inicializacao, o HPA da API, as NetworkPolicies e a borda no Kong
+# (README, Implantacao). Nenhum Secret aqui: os do servico vem do make deploy
+# do platform e entram por secretKeyRef. Nao aplique o base direto: use um
+# overlay (kind, kind-ci ou k3s) pelo make kind-deploy, que chama o
+# implantar-servicos.sh do platform.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pytstop-billing
+
+# Sem includeSelectors: o seletor dos Deployments e so o app.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: billing-service
+    includeTemplates: true
+
+resources:
+  - namespace.yaml
+  - api.yaml
+  - relay.yaml
+  - consumidor.yaml
+  - prazos.yaml
+  - servico.yaml
+  - banco.yaml
+  - job.yaml
+  - hpa.yaml
+  - networkpolicy.yaml
+  - borda.yaml
+
+configMapGenerator:
+  # Configuracao dos processos (envFrom); o nome ganha o hash do conteudo, e
+  # mudar um valor reinicia os pods. ENVIRONMENT=production tambem no kind: as
+  # guardas de boot valem com os segredos gerados.
+  - name: billing-service
+    literals:
+      - ENVIRONMENT=production
+      - ROOT_PATH=/billing
+      - BILLING_PUBLIC_URL=https://localhost/billing
+      - JWKS_URL=http://os-service.pytstop-os.svc.cluster.local:8000/.well-known/jwks.json
+      - MONGODB_DB=billing
+      # Simulador do Mercado Pago (ADR-040); o k3s troca pelo provedor real
+      # quando existe o Secret billing-mercadopago.
+      - MP_MODE=simulado
+      - SIMULADOR_PERMITIDO=true
+      - MP_TIMEOUT_SEGUNDOS=5
+      - ORCAMENTO_VALIDADE_HORAS=72
+      - PAGAMENTO_VALIDADE_MINUTOS=60
+      - PAGAMENTO_MAX_RECUSAS=3
+      - PRAZOS_INTERVALO_SEGUNDOS=30
+      - METRICS_PORT=9100
+      - RUN_SEED_ON_STARTUP=false
+      - OTEL_ENABLED=true
+      - OTEL_SERVICE_NAME=billing-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger.pytstop-plataforma.svc.cluster.local:4317
+  - name: billing-mongo-scripts
+    files:
+      - replica-set.js

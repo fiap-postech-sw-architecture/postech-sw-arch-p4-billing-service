@@ -1,0 +1,13 @@
+# Service interno da API: o BILLING_URL da Execucao (validacao de precos). Sem a
+# anotacao do Kong; a borda tem Services proprios (borda.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -1,0 +1,21 @@
+# Autoescalonamento so da API, por CPU (70% do request). O teto muda por
+# overlay: 2 no kind, 1 no kind-ci (ADR-042) e 3 no k3s. Relay, consumidor e
+# prazos ficam com uma replica fixa.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: billing-service-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: billing-service-api
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
