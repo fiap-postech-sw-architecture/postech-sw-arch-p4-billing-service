@@ -148,6 +148,7 @@ def processos(
     *,
     handlers: Mapping[str, Handler] | None = None,
     relay: bool = True,
+    heartbeat: int | None = None,
 ) -> Iterator[ConsumidorAnotado]:
     """Consumidor e relay do Billing em threads, com o usuario billing."""
     parar = threading.Event()
@@ -155,10 +156,13 @@ def processos(
         configuracao().comandos, gateway=GatewayRoteirizado(), relogio=agora_utc
     )
     consumidor = ConsumidorAnotado(banco, handlers, fila=FILA, usuario="billing")
+    parametros_do_consumidor = parametros(
+        broker.url("billing"), nome="teste-consumidor"
+    )
+    if heartbeat is not None:
+        parametros_do_consumidor.heartbeat = heartbeat
     canal_do_consumidor = CanalAmqp(
-        parametros(broker.url("billing"), nome="teste-consumidor"),
-        filas=(FILA,),
-        exchanges=(EXCHANGE_RETRY,),
+        parametros_do_consumidor, filas=(FILA,), exchanges=(EXCHANGE_RETRY,)
     )
     threads = [
         threading.Thread(
@@ -202,6 +206,7 @@ def processos(
         for thread in threads:
             thread.join(timeout=10)
             assert not thread.is_alive()
+        consumidor.fechar()
 
 
 def _pronto(arquivo: Path) -> bool:
@@ -378,6 +383,49 @@ class TestRetryEDlq:
         assert morta["id"] == mensagem["id"]
         assert "x-tentativa" not in (props.headers or {})
         assert handler.chamadas == 0
+
+
+class HandlerLento:
+    """Handler que demora mais que o heartbeat negociado da conexao."""
+
+    def __init__(self, segundos: float) -> None:
+        self.segundos = segundos
+        self.chamadas = 0
+
+    def __call__(self, dados: Mapping[str, Any], uow: UnidadeDaMensagem) -> Desfecho:
+        self.chamadas += 1
+        time.sleep(self.segundos)
+        return Desfecho.PROCESSADA
+
+
+def test_handler_mais_lento_que_o_heartbeat_nao_derruba_a_conexao(
+    banco: Banco,
+    broker: BrokerDeTeste,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler = HandlerLento(segundos=6)
+    with (
+        caplog.at_level(logging.WARNING),
+        processos(
+            banco,
+            broker,
+            tmp_path,
+            handlers={"CancelarOrcamento": handler},
+            relay=False,
+            heartbeat=2,
+        ),
+    ):
+        publicar_comando(broker, _cancelar())
+        esperar(lambda: banco["mensagens_processadas"].count_documents({}) == 1)
+
+    # A thread da conexao atendeu o broker enquanto o handler rodava: nenhuma
+    # queda, uma execucao so e o ack dado (nada voltou para a fila).
+    assert handler.chamadas == 1
+    assert "broker_connection_lost" not in [r.getMessage() for r in caplog.records]
+    with broker.conectar() as conexao:
+        fila = conexao.channel().queue_declare(FILA, passive=True)
+    assert fila.method.message_count == 0
 
 
 def _propriedades_com_timestamp_em_ms(envelope: dict[str, Any]) -> Any:

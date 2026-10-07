@@ -156,19 +156,20 @@ def main(parar: threading.Event | None = None) -> None:
         exchanges=(EXCHANGE_RETRY,),
     )
     gateway = criar_gateway(config.comandos)
+    banco = cliente[config.banco.mongodb_banco]
+    consumidor = ConsumidorDeComandos(
+        banco,
+        criar_handlers(config.comandos, gateway=gateway),
+        fila=FILA,
+        usuario=config.rabbitmq_usuario,
+    )
     try:
-        banco = cliente[config.banco.mongodb_banco]
         conferir_versao(banco)
-        consumidor = ConsumidorDeComandos(
-            banco,
-            criar_handlers(config.comandos, gateway=gateway),
-            fila=FILA,
-            usuario=config.rabbitmq_usuario,
-        )
         _log.info("consumer_started", extra={"fila": FILA})
         rodar(consumidor, canal, parar=parar, heartbeat=config.heartbeat)
         _log.info("consumer_stopped")
     finally:
+        consumidor.fechar()
         canal.fechar()
         cliente.close()
         if isinstance(gateway, MercadoPagoGateway):

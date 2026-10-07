@@ -223,6 +223,9 @@ class CanalDeTeste:
     def rejeitar(self, entrega: int) -> None:
         self.rejeitadas.append(entrega)
 
+    def aguardar(self, segundos: float) -> None:
+        return None
+
 
 def comando(
     tipo: str,

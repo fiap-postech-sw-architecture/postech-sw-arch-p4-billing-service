@@ -22,8 +22,10 @@ negocio sem evento de falha no contrato ou defeito) vao para a DLQ.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -32,6 +34,7 @@ from uuid import UUID
 import pika
 import structlog
 from opentelemetry.trace import SpanKind, Status, StatusCode
+from pika.exceptions import AMQPError
 from pymongo.errors import ConnectionFailure, PyMongoError
 
 from src.compartilhado.dominio.exceptions import (
@@ -72,6 +75,9 @@ EXCHANGE_RETRY: Final = "pytstop.retry"
 TAMANHO_MAXIMO_DO_CORPO: Final = 64 * 1024
 # Campo ainda nao validado vai para o log cortado.
 _LIMITE_NO_LOG: Final = 64
+# Enquanto o handler roda na thread de trabalho, a da conexao atende o broker
+# (heartbeat, bloqueio, fechamento) a cada meio segundo.
+_ATENDER_O_BROKER_A_CADA_SEGUNDOS: Final = 0.5
 # Fila de retry por tentativa (1 a 5); a sexta falha vai para a DLQ.
 NIVEIS_DE_RETRY: Final = ("1s", "5s", "15s", "60s", "300s")
 PRODUTOR_DOS_COMANDOS: Final = "os"
@@ -107,6 +113,8 @@ class Canal(Protocol):
 
     def rejeitar(self, entrega: int) -> None: ...
 
+    def aguardar(self, segundos: float) -> None: ...
+
 
 class _PermanenteError(Exception):
     """Mensagem que nenhuma repeticao conserta: vai direto para a DLQ."""
@@ -139,6 +147,16 @@ class ConsumidorDeComandos:
         self._fila = fila
         self._usuario = usuario
         self._relogio = relogio
+        # O handler roda fora da thread da conexao: a do pika so atende o
+        # broker quando o codigo dela volta ao pika, e um handler mais lento que
+        # o heartbeat derrubaria a conexao no meio da mensagem.
+        self._trabalho = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="consumidor-handler"
+        )
+
+    def fechar(self) -> None:
+        """Espera o handler em curso e encerra a thread de trabalho."""
+        self._trabalho.shutdown()
 
     def tratar(
         self,
@@ -205,7 +223,11 @@ class ConsumidorDeComandos:
             },
         ) as span:
             try:
-                resultado = self._processar(envelope)
+                resultado = self._processar_fora_da_conexao(canal, envelope)
+            except AMQPError:
+                # A conexao caiu com o handler rodando: o laco reconecta e o
+                # broker devolve a mensagem (o handler e idempotente).
+                raise
             except Exception as exc:  # noqa: BLE001 - classificado abaixo; nunca ack mudo
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 if _transitorio(exc):
@@ -221,6 +243,17 @@ class ConsumidorDeComandos:
                 },
             )
             return resultado
+
+    def _processar_fora_da_conexao(
+        self, canal: Canal, envelope: Mapping[str, Any]
+    ) -> str:
+        # No contexto deste span (logs e outbox seguem o trace da mensagem).
+        futuro = self._trabalho.submit(
+            contextvars.copy_context().run, self._processar, envelope
+        )
+        while not wait([futuro], timeout=_ATENDER_O_BROKER_A_CADA_SEGUNDOS).done:
+            canal.aguardar(0)
+        return futuro.result()
 
     def _processar(self, envelope: Mapping[str, Any]) -> str:
         mensagem = MensagemRecebida(

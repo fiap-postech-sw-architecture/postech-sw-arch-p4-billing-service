@@ -697,6 +697,9 @@ class CanalAmqpFalso(CanalAmqp):
     def rejeitar(self, entrega: int) -> None:
         self.respostas.rejeitar(entrega)
 
+    def aguardar(self, segundos: float) -> None:
+        return None
+
     def fechar(self) -> None:
         self.atual = None
 
