@@ -45,6 +45,11 @@ class MensagemRecusadaError(Exception):
     """O broker devolveu (sem rota), recusou (nack) ou fechou o canal por esta
     mensagem: e falha da mensagem, nao queda do broker."""
 
+    @property
+    def detalhe_de_log(self) -> dict[str, str]:
+        """Texto fixo (nome do erro ou codigo do broker), nunca a mensagem."""
+        return {"detalhe": str(self)}
+
 
 def parametros(url: str, *, nome: str) -> pika.URLParameters:
     """Parametros da conexao, com o nome que aparece no console do broker."""

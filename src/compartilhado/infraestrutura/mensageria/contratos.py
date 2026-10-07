@@ -36,6 +36,10 @@ class MensagemForaDoContratoError(Exception):
     desconhecida. A mensagem diz onde e qual regra falhou, nunca o valor (o
     ``dados`` traz texto livre)."""
 
+    @property
+    def detalhe_de_log(self) -> dict[str, str]:
+        return {"detalhe": str(self)}
+
 
 def diretorio() -> Path:
     return Path(os.environ.get("CONTRATOS_DIR") or _PADRAO)

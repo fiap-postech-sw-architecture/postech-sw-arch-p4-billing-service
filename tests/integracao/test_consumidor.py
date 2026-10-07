@@ -492,12 +492,24 @@ class TestRetry:
         assert (resultado, canal.publicadas, canal.rejeitadas) == ("dlq", [], [1])
 
     def test_copia_recusada_pelo_broker_leva_a_original_para_a_dlq(
-        self, consumidor: ConsumidorDeComandos, handler: HandlerDeTeste
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         handler.erro = AutoReconnect("banco fora")
         canal = CanalDeTeste(erro_ao_publicar=MensagemRecusadaError("NackError"))
-        assert entregar(consumidor, canal, _cancelar()) == "dlq"
+        with caplog.at_level(logging.ERROR):
+            assert entregar(consumidor, canal, _cancelar()) == "dlq"
         assert (canal.confirmadas, canal.rejeitadas) == ([], [1])
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "command_dead_lettered"
+        ]
+        assert (registro.__dict__["erro"], registro.__dict__["detalhe"]) == (
+            "MensagemRecusadaError",
+            "NackError",
+        )
+        assert registro.exc_info is None
 
 
 class TestTransacaoDaMensagem:

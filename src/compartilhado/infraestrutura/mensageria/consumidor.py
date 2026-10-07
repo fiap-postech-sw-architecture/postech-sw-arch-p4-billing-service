@@ -38,7 +38,6 @@ from pymongo.errors import ConnectionFailure, PyMongoError
 
 from src.compartilhado.dominio.exceptions import (
     DependenciaIndisponivelError,
-    DomainException,
 )
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.mensageria import contratos
@@ -110,6 +109,11 @@ class Canal(Protocol):
 
 class _PermanenteError(Exception):
     """Mensagem que nenhuma repeticao conserta: vai direto para a DLQ."""
+
+    @property
+    def detalhe_de_log(self) -> dict[str, str]:
+        """Texto fixo, com o valor recusado ja cortado."""
+        return {"detalhe": str(self)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,25 +309,13 @@ class ConsumidorDeComandos:
     ) -> str:
         canal.rejeitar(tag)
         contexto: dict[str, Any] = {**identificacao, "erro": type(erro).__name__}
-        if isinstance(erro, DomainException):
-            # So o codigo: a mensagem pode trazer texto do provedor de pagamento.
-            _log.error(
-                "command_dead_lettered", extra={**contexto, "codigo": erro.codigo}
-            )
-        elif isinstance(
-            erro,
-            (
-                _PermanenteError,
-                MensagemRecusadaError,
-                contratos.MensagemForaDoContratoError,
-            ),
-        ):
-            # Textos fixos ou o ponto do contrato que falhou, nunca o dado.
-            _log.error(
-                "command_dead_lettered", extra={**contexto, "detalhe": str(erro)}
-            )
-        else:
+        # A excecao diz o que dela pode ir para o log (codigo ou texto fixo);
+        # sem isso e defeito, e o traceback vai junto.
+        detalhe = getattr(erro, "detalhe_de_log", None)
+        if detalhe is None:
             _log.error("command_dead_lettered", extra=contexto, exc_info=erro)
+        else:
+            _log.error("command_dead_lettered", extra={**contexto, **detalhe})
         return "dlq"
 
 
