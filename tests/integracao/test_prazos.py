@@ -16,6 +16,7 @@ from prometheus_client import REGISTRY
 from src import prazos
 from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mongo import BancoNaoPreparadoError
+from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDosPrazos
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
@@ -351,7 +352,7 @@ def test_sigterm_encerra_o_laco() -> None:
         # processo mataria o proprio pytest (rc=-15) em vez de falhar o teste.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        prazos.instalar_sinais(parar)
+        instalar_sinais(parar)
         signal.raise_signal(signal.SIGTERM)
         assert parar.is_set()
         parar.clear()

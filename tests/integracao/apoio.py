@@ -1,12 +1,15 @@
-"""Apoio dos testes de integracao: outbox, relogio controlavel e configuracao."""
+"""Apoio dos testes de integracao: outbox, relogio, configuracao e mensageria."""
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID, uuid4
 
+import pika
 from pymongo import MongoClient, monitoring
 
 from src.configuracao import Configuracao
@@ -17,10 +20,12 @@ from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
-    from uuid import UUID
 
     from pymongo.database import Database
 
+    from src.compartilhado.infraestrutura.mensageria.consumidor import (
+        ConsumidorDeComandos,
+    )
     from src.pagamento.aplicacao.ports import CobrancaCriada, ItemCobranca
     from src.pagamento.dominio.cobranca import SituacaoNoProvedor
     from src.pagamento.dominio.estados import MotivoEstorno
@@ -185,3 +190,81 @@ class GatewayRoteirizado(GatewayPagamentoSimulado):
         if self.erro_no_estorno:
             raise self.erro_no_estorno
         super().estornar(referencia, chave_idempotencia=chave_idempotencia)
+
+
+# --- Mensageria: comandos do OS e canal AMQP de mentira ----------------------
+
+
+class CanalDeTeste:
+    """``Canal`` do consumidor que so anota publicacoes, acks e rejeicoes."""
+
+    def __init__(self, erro_ao_publicar: Exception | None = None) -> None:
+        self.publicadas: list[tuple[str, str, bytes, pika.BasicProperties]] = []
+        self.confirmadas: list[int] = []
+        self.rejeitadas: list[int] = []
+        self.erro_ao_publicar = erro_ao_publicar
+
+    def publicar(
+        self,
+        exchange: str,
+        routing_key: str,
+        corpo: bytes,
+        propriedades: pika.BasicProperties,
+    ) -> None:
+        if self.erro_ao_publicar is not None:
+            raise self.erro_ao_publicar
+        self.publicadas.append((exchange, routing_key, corpo, propriedades))
+
+    def confirmar(self, entrega: int) -> None:
+        self.confirmadas.append(entrega)
+
+    def rejeitar(self, entrega: int) -> None:
+        self.rejeitadas.append(entrega)
+
+
+def comando(
+    tipo: str,
+    dados: dict[str, Any],
+    *,
+    mensagem_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Envelope de um comando do OS (``correlation_id`` = ``ordem_id``)."""
+    return {
+        "id": str(mensagem_id or uuid4()),
+        "tipo": tipo,
+        "versao": 1,
+        "origem": "os-service",
+        "correlation_id": dados["ordem_id"],
+        "causation_id": str(uuid4()),
+        "ocorrido_em": "2026-10-06T12:00:00Z",
+        "dados": dados,
+    }
+
+
+def propriedades(
+    envelope: dict[str, Any],
+    *,
+    user_id: str | None = "os",
+    cabecalhos: dict[str, Any] | None = None,
+) -> pika.BasicProperties:
+    return pika.BasicProperties(
+        message_id=envelope["id"],
+        correlation_id=envelope["correlation_id"],
+        type=envelope["tipo"],
+        user_id=user_id,
+        content_type="application/json",
+        delivery_mode=2,
+        headers=cabecalhos or {},
+    )
+
+
+def entregar(
+    consumidor: ConsumidorDeComandos,
+    canal: CanalDeTeste,
+    envelope: dict[str, Any],
+    **opcoes: Any,
+) -> str:
+    """Uma entrega da fila ao consumidor (tag sequencial no canal)."""
+    tag = len(canal.confirmadas) + len(canal.rejeitadas) + 1
+    corpo = json.dumps(envelope).encode()
+    return consumidor.tratar(canal, tag, propriedades(envelope, **opcoes), corpo)

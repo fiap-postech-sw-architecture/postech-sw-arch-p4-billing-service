@@ -297,6 +297,9 @@ ESQUEMA_OUTBOX: Documento = {
         "traceparent": {"bsonType": "string"},
         "tracestate": {"bsonType": "string"},
         "entregue_em": {"bsonType": "date"},
+        # Token do relay que detem a linha em entrega (fencing do lease).
+        "reivindicacao": {"bsonType": "binData"},
+        "ultimo_erro": {"bsonType": "string"},
         "envelope": {"bsonType": "object"},
     },
 }

@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from opentelemetry import trace
 
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
@@ -37,6 +38,20 @@ def adicionar_versao_imagem(
     """Injeta git_sha/git_date em todo evento (sem sobrescrever explicit)."""
     event_dict.setdefault("git_sha", _GIT_SHA)
     event_dict.setdefault("git_date", _GIT_DATE)
+    return event_dict
+
+
+def adicionar_trace(
+    _logger: object,
+    _method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """``trace_id``/``span_id`` do span corrente (relay e consumidor): do log no
+    Loki ao trace no Jaeger (ADR-043). Fora de span, nada."""
+    contexto = trace.get_current_span().get_span_context()
+    if contexto.is_valid:
+        event_dict.setdefault("trace_id", format(contexto.trace_id, "032x"))
+        event_dict.setdefault("span_id", format(contexto.span_id, "016x"))
     return event_dict
 
 
@@ -226,6 +241,7 @@ def _cadeia_compartilhada() -> list[Any]:
     return [
         structlog.contextvars.merge_contextvars,
         adicionar_versao_imagem,
+        adicionar_trace,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),

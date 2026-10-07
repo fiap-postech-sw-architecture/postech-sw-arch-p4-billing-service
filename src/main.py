@@ -17,7 +17,7 @@ from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
 from src.compartilhado.interfaces.router_saude import router as router_saude
-from src.configuracao import Configuracao, ModoMercadoPago
+from src.configuracao import Configuracao, ConfiguracaoDosComandos, ModoMercadoPago
 from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
 from src.orcamento.interfaces.router import router as router_orcamentos
 from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
@@ -46,11 +46,13 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
-def criar_gateway(config: Configuracao) -> GatewayPagamento:
+def criar_gateway(config: ConfiguracaoDosComandos) -> GatewayPagamento:
     """``MP_MODE=mercadopago`` liga o Checkout Pro real; ``simulado``, o simulador.
 
     O simulador assina o ``checkout_url`` com o segredo do link de decisao, em
-    dominio proprio (um token nao vale no lugar do outro).
+    dominio proprio (um token nao vale no lugar do outro). A API e o
+    consumidor dos comandos usam a mesma fabrica: o token emitido num processo
+    vale no outro, e o estorno que o simulador nao conhece e aceito.
     """
     if config.mp_modo is ModoMercadoPago.MERCADOPAGO:
         if not config.mp_access_token:  # garantido pela Configuracao
@@ -84,7 +86,7 @@ def criar_app(
     """
     configurar_logging()
     config = config or Configuracao.do_ambiente()
-    gateway = gateway or criar_gateway(config)
+    gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
 
     @asynccontextmanager

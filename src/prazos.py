@@ -13,7 +13,6 @@ concluido (alerta de prazos parado).
 from __future__ import annotations
 
 import logging
-import signal
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -23,6 +22,7 @@ from prometheus_client import Gauge, start_http_server
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
+from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDosPrazos, ModoMercadoPago
 from src.orcamento.aplicacao.use_cases import ExpirarOrcamentosVencidos
@@ -145,12 +145,6 @@ def rodar(
         heartbeat.touch()
         if not cheio:
             parar.wait(intervalo)
-
-
-def instalar_sinais(parar: threading.Event) -> None:
-    """Como PID 1 sem handler, o processo ignora SIGTERM e morre por SIGKILL."""
-    signal.signal(signal.SIGTERM, lambda *_: parar.set())
-    signal.signal(signal.SIGINT, lambda *_: parar.set())
 
 
 def criar_gateway(config: ConfiguracaoDosPrazos) -> MercadoPagoGateway | None:

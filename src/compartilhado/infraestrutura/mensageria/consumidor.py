@@ -1,0 +1,302 @@
+"""Consumidor dos comandos da saga (ADR-036; RFC-004, secoes 5.1 e 5.4).
+
+Para cada mensagem: confere o ``user_id`` contra o produtor do tipo (comandos
+sao do ``os``; a copia de retry chega com o proprio usuario e ``x-tentativa``
+maior que zero), abre o span CONSUMER filho da publicacao, valida o envelope
+no contrato e chama o handler do tipo com uma unidade de trabalho da mensagem,
+que grava ``mensagens_processadas`` na transacao do efeito. O handler roda
+mesmo para o ``id`` ja visto: os casos de uso sao idempotentes pela chave de
+negocio e republicam o desfecho registrado, sem repetir o efeito.
+
+Erro transitorio (banco, provedor ou dependencia fora): copia publicada no
+``pytstop.retry`` com ``x-tentativa`` incrementado, na fila de retry do nivel
+da nova tentativa (``<fila>.retry.1s`` a ``.300s``, cada uma com o proprio TTL),
+com confirm, e so entao ack na original. A sexta falha e o erro permanente
+(contrato, tipo, versao, ``user_id`` ou regra de negocio) vao para a DLQ.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Final, Protocol
+from uuid import UUID
+
+import pika
+import structlog
+from opentelemetry.trace import SpanKind, Status, StatusCode
+from pymongo.errors import PyMongoError
+
+from src.compartilhado.dominio.exceptions import (
+    DependenciaIndisponivelError,
+    DomainException,
+)
+from src.compartilhado.dominio.relogio import agora_utc
+from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.amqp import MensagemRecusadaError
+from src.compartilhado.infraestrutura.mensageria.metricas import (
+    MENSAGENS_CONSUMIDAS,
+    TIPO_DESCONHECIDO,
+)
+from src.compartilhado.infraestrutura.mensageria.telemetria import (
+    contexto_atual,
+    contexto_de,
+    tracer,
+)
+from src.compartilhado.infraestrutura.unit_of_work import (
+    COLECAO_PROCESSADAS,
+    MensagemRecebida,
+    MongoUnitOfWork,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+    from pymongo.database import Database
+
+    from src.compartilhado.dominio.relogio import Relogio
+    from src.compartilhado.infraestrutura.mongo import Documento
+
+_log = logging.getLogger(__name__)
+
+EXCHANGE_RETRY: Final = "pytstop.retry"
+# Fila de retry por tentativa (1 a 5); a sexta falha vai para a DLQ.
+NIVEIS_DE_RETRY: Final = ("1s", "5s", "15s", "60s", "300s")
+PRODUTOR_DOS_COMANDOS: Final = "os"
+# Falhas que passam sozinhas: banco, provedor ou rede fora (repetir resolve).
+_TRANSITORIOS: Final = (
+    DependenciaIndisponivelError,
+    PyMongoError,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+class Desfecho(StrEnum):
+    """O que o handler fez com o comando (rotulo ``resultado`` da metrica)."""
+
+    PROCESSADA = "processada"
+    # Original atrasado depois da lapide: descartado sem efeito e sem resposta.
+    IGNORADA = "ignorada"
+
+
+type Handler = Callable[[Mapping[str, Any], MongoUnitOfWork], Desfecho]
+
+
+class Canal(Protocol):
+    def publicar(
+        self,
+        exchange: str,
+        routing_key: str,
+        corpo: bytes,
+        propriedades: pika.BasicProperties,
+    ) -> None: ...
+
+    def confirmar(self, entrega: int) -> None: ...
+
+    def rejeitar(self, entrega: int) -> None: ...
+
+
+class _ErroPermanenteError(Exception):
+    """Mensagem que nenhuma repeticao conserta: vai direto para a DLQ."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Entrega:
+    tag: int
+    propriedades: pika.BasicProperties
+    cabecalhos: dict[str, Any]
+    corpo: bytes
+    tentativa: int
+    tipo: str
+
+
+class ConsumidorDeComandos:
+    """Trata cada entrega da fila: ack, copia de retry ou DLQ."""
+
+    def __init__(
+        self,
+        banco: Database[Documento],
+        handlers: Mapping[str, Handler],
+        *,
+        fila: str,
+        usuario: str,
+        relogio: Relogio = agora_utc,
+    ) -> None:
+        self._banco = banco
+        self._handlers = handlers
+        self._fila = fila
+        self._usuario = usuario
+        self._relogio = relogio
+
+    def tratar(
+        self,
+        canal: Canal,
+        tag: int,
+        propriedades: pika.BasicProperties,
+        corpo: bytes,
+    ) -> str:
+        """Processa uma entrega; devolve o ``resultado`` contado na metrica."""
+        cabecalhos: dict[str, Any] = dict(propriedades.headers or {})
+        tipo = TIPO_DESCONHECIDO
+        try:
+            tentativa = _tentativa(cabecalhos)
+            envelope = _envelope(corpo)
+            tipo = self._tipo_conhecido(envelope)
+            self._conferir_origem(propriedades.user_id, tentativa)
+        except _ErroPermanenteError as exc:
+            resultado = self._descartar(canal, tag, tipo, exc)
+        else:
+            entrega = _Entrega(tag, propriedades, cabecalhos, corpo, tentativa, tipo)
+            with structlog.contextvars.bound_contextvars(
+                correlation_id=str(envelope.get("correlation_id")),
+                mensagem_id=str(envelope.get("id")),
+            ):
+                resultado = self._tratar_no_span(canal, entrega, envelope)
+        MENSAGENS_CONSUMIDAS.labels(tipo=tipo, resultado=resultado).inc()
+        return resultado
+
+    def _tipo_conhecido(self, envelope: Mapping[str, Any]) -> str:
+        tipo = envelope.get("tipo")
+        if not isinstance(tipo, str) or tipo not in self._handlers:
+            msg = "tipo sem handler neste consumidor"
+            raise _ErroPermanenteError(msg)
+        return tipo
+
+    def _conferir_origem(self, usuario: str | None, tentativa: int) -> None:
+        # Defesa em profundidade: o broker ja confere user_id x conexao, e as
+        # permissoes de topico limitam quem publica cada routing key.
+        if usuario == PRODUTOR_DOS_COMANDOS or (
+            tentativa > 0 and usuario == self._usuario
+        ):
+            return
+        msg = "user_id diferente do produtor do tipo"
+        raise _ErroPermanenteError(msg)
+
+    def _tratar_no_span(
+        self, canal: Canal, entrega: _Entrega, envelope: Mapping[str, Any]
+    ) -> str:
+        with tracer.start_as_current_span(
+            f"process {entrega.tipo}",
+            context=contexto_de(entrega.cabecalhos),
+            kind=SpanKind.CONSUMER,
+            attributes={
+                "messaging.system": "rabbitmq",
+                "messaging.operation.type": "process",
+                "messaging.destination.name": self._fila,
+                "messaging.message.id": str(envelope.get("id")),
+                "messaging.message.conversation_id": str(
+                    envelope.get("correlation_id")
+                ),
+                "pytstop.tentativa": entrega.tentativa,
+            },
+        ) as span:
+            try:
+                contratos.validar(envelope)
+                resultado = self._processar(envelope)
+            except _TRANSITORIOS as exc:
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                return self._repetir(canal, entrega, exc)
+            except Exception as exc:  # noqa: BLE001 - permanente: DLQ com alerta
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                return self._descartar(canal, entrega.tag, entrega.tipo, exc)
+            canal.confirmar(entrega.tag)
+            _log.info(
+                "command_consumed",
+                extra={
+                    "tipo": entrega.tipo,
+                    "resultado": resultado,
+                    "tentativa": entrega.tentativa,
+                },
+            )
+            return resultado
+
+    def _processar(self, envelope: Mapping[str, Any]) -> str:
+        mensagem = MensagemRecebida(
+            id=UUID(envelope["id"]),
+            tipo=envelope["tipo"],
+            correlation_id=UUID(envelope["correlation_id"]),
+        )
+        duplicada = (
+            self._banco[COLECAO_PROCESSADAS].find_one({"_id": mensagem.id}, {"_id": 1})
+            is not None
+        )
+        uow = MongoUnitOfWork(self._banco, relogio=self._relogio, mensagem=mensagem)
+        desfecho = self._handlers[mensagem.tipo](envelope["dados"], uow)
+        uow.concluir_mensagem()
+        return "duplicada" if duplicada else desfecho.value
+
+    def _repetir(self, canal: Canal, entrega: _Entrega, erro: Exception) -> str:
+        proxima = entrega.tentativa + 1
+        if proxima > len(NIVEIS_DE_RETRY):
+            return self._descartar(canal, entrega.tag, entrega.tipo, erro)
+        original = entrega.propriedades
+        copia = pika.BasicProperties(
+            message_id=original.message_id,
+            correlation_id=original.correlation_id,
+            type=original.type,
+            # O broker exige o usuario da conexao; o consumidor aceita o proprio
+            # usuario de volta porque x-tentativa > 0.
+            user_id=self._usuario,
+            content_type="application/json",
+            delivery_mode=pika.DeliveryMode.Persistent,
+            headers={**entrega.cabecalhos, **contexto_atual(), "x-tentativa": proxima},
+        )
+        fila_de_retry = f"{self._fila}.retry.{NIVEIS_DE_RETRY[proxima - 1]}"
+        try:
+            canal.publicar(EXCHANGE_RETRY, fila_de_retry, entrega.corpo, copia)
+        except MensagemRecusadaError as exc:
+            # Sem a copia confirmada, a original nao pode sumir: vai para a DLQ.
+            return self._descartar(canal, entrega.tag, entrega.tipo, exc)
+        canal.confirmar(entrega.tag)
+        _log.warning(
+            "command_retry_scheduled",
+            extra={
+                "tipo": entrega.tipo,
+                "tentativa": proxima,
+                "erro": type(erro).__name__,
+            },
+        )
+        return "retry"
+
+    def _descartar(self, canal: Canal, tag: int, tipo: str, erro: Exception) -> str:
+        canal.rejeitar(tag)
+        contexto: dict[str, Any] = {"tipo": tipo, "erro": type(erro).__name__}
+        if isinstance(
+            erro,
+            (
+                _ErroPermanenteError,
+                MensagemRecusadaError,
+                contratos.MensagemForaDoContratoError,
+                DomainException,
+            ),
+        ):
+            # Textos fixos ou o ponto do contrato que falhou, nunca o dado.
+            _log.error(
+                "command_dead_lettered", extra={**contexto, "detalhe": str(erro)}
+            )
+        else:
+            _log.error("command_dead_lettered", extra=contexto, exc_info=erro)
+        return "dlq"
+
+
+def _tentativa(cabecalhos: Mapping[str, Any]) -> int:
+    valor = cabecalhos.get("x-tentativa", 0)
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0:
+        msg = "x-tentativa invalido"
+        raise _ErroPermanenteError(msg)
+    return valor
+
+
+def _envelope(corpo: bytes) -> dict[str, Any]:
+    try:
+        envelope = json.loads(corpo)
+    except ValueError:
+        msg = "corpo nao e JSON"
+        raise _ErroPermanenteError(msg) from None
+    if not isinstance(envelope, dict):
+        msg = "corpo nao e um envelope"
+        raise _ErroPermanenteError(msg)
+    return envelope

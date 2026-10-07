@@ -210,6 +210,11 @@ warn_unused_ignores = true
 module = ["testcontainers.*"]
 ignore_missing_imports = true
 
+# pika nao publica tipos (sem py.typed nem stubs mantidos).
+[[tool.mypy.overrides]]
+module = ["pika", "pika.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 markers = [
     "integracao: usa MongoDB real (testcontainers em replica set ou TEST_MONGODB_URI)",
