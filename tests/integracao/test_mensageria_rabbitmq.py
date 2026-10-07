@@ -933,7 +933,10 @@ class TestRelayNoBroker:
         pelo_nome = dataclasses.replace(broker, host="rabbitmq.teste")
 
         with caplog.at_level(logging.INFO), processos(banco, pelo_nome, tmp_path):
+            # Os dois conectados antes de cortar o nome: o que o teste prova e a
+            # conexao de pe que cai, nao a que nunca abriu.
             esperar(lambda: _pronto(tmp_path / "relay"))
+            esperar(lambda: _pronto(tmp_path / "consumidor"))
             # O broker cai e, com ele, o nome: o Service headless fica sem pod
             # pronto e o DNS deixa de resolver.
             dns.nomes["rabbitmq.teste"] = None
