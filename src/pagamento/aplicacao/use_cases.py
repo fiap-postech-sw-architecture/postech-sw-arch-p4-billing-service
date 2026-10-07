@@ -54,6 +54,8 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+# Codigo do log de comando ignorado: o original que chegou depois da lapide.
+MOTIVO_LAPIDE = "LAPIDE"
 # O estado so avanca (SOLICITADO -> CONFIRMADO -> ESTORNADO): replanejar a
 # compensacao mais vezes que isso seria defeito, nao corrida.
 _TENTATIVAS_DE_COMPENSACAO = 3
@@ -159,11 +161,13 @@ class SolicitarPagamento:
         return PagamentoDTO.de(pagamento)
 
     def _repetido(self, existente: Pagamento) -> PagamentoDTO:
-        if existente.cobranca is None:
+        if existente.e_lapide:
+            # A compensacao chegou antes (lapide): sem efeito e sem resposta.
             _log.info(
-                "command_discarded",
+                "command_ignored",
                 extra={
                     "comando": "SolicitarPagamento",
+                    "motivo": MOTIVO_LAPIDE,
                     "ordem_id": str(existente.ordem_id),
                 },
             )

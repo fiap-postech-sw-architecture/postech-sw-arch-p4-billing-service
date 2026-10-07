@@ -1,6 +1,7 @@
 # Alvos espelham o CI. Ferramentas vem do grupo dev do uv (`uv sync`).
-# Os testes de integracao sobem o MongoDB por testcontainers: precisam de Docker
-# (no macOS com colima, tests/integracao/conftest.py aponta o DOCKER_HOST).
+# Os testes de integracao sobem o MongoDB e o RabbitMQ por testcontainers:
+# precisam de Docker (no macOS com colima, tests/integracao/conftest.py aponta o
+# DOCKER_HOST). Os de contrato baixam o platform do GitHub (marcador rede).
 PY := uv run
 GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
@@ -58,21 +59,33 @@ audit:
 		--disable-pip --progress-spinner off
 
 # Smoke da imagem pelo entrypoint real (init do banco, seed, usuario 1001), o
-# job build do CI: sobe a stack, confere a readiness (MongoDB preparado), que
-# rota autenticada sem token responde 401 e que a resposta nao anuncia o
-# servidor (os cabecalhos vem de uma variavel: num pipe, a falha do curl seria
-# engolida e o smoke passaria sem ter olhado nada); derruba tudo com os volumes,
-# inclusive em falha (depois de mostrar os logs). Projeto e portas proprios para
-# nao derrubar a stack do compose-up.
+# job build do CI: sobe a stack (o --wait espera o healthcheck de cada servico,
+# inclusive relay e consumidor prontos, conectados ao RabbitMQ; servico doente
+# derruba o --wait), publica um GerarOrcamento como o OS e espera o
+# OrcamentoGerado (scripts/smoke_mensageria.py), confere a readiness da API
+# (MongoDB preparado), que rota autenticada sem token responde 401 e que a
+# resposta nao anuncia o servidor (os cabecalhos vem de uma variavel: num pipe,
+# a falha do curl seria engolida e o smoke passaria sem ter olhado nada);
+# derruba tudo com os volumes, inclusive em falha (depois de mostrar os logs).
+# Projeto e portas proprios para nao derrubar a stack do compose-up nem a do
+# platform.
 SMOKE_PORT ?= 18002
 SMOKE_MONGO_PORT ?= 17017
+SMOKE_RABBITMQ_PORT ?= 15673
+SMOKE_RABBITMQ_UI_PORT ?= 25673
 SMOKE_URL := http://127.0.0.1:$(SMOKE_PORT)
+# Usuario os do RabbitMQ do compose (senha de demonstracao do platform).
+SMOKE_OS_URL := amqp://os:pytstop-os-demo-2026@rabbitmq:5672/%2F
 SMOKE_COMPOSE := API_PORT=$(SMOKE_PORT) MONGO_PORT=$(SMOKE_MONGO_PORT) \
+	RABBITMQ_PORT=$(SMOKE_RABBITMQ_PORT) RABBITMQ_UI_PORT=$(SMOKE_RABBITMQ_UI_PORT) \
 	$(COMPOSE) -p pytstop-billing-smoke
 
 smoke:
 	@status=0; \
 	$(SMOKE_COMPOSE) up -d --build --wait \
+	&& echo "relay e consumidor prontos (healthcheck: conectados ao RabbitMQ)" \
+	&& $(SMOKE_COMPOSE) exec -T -e SMOKE_OS_URL=$(SMOKE_OS_URL) relay \
+		python - < scripts/smoke_mensageria.py \
 	&& curl -fsS --max-time 5 $(SMOKE_URL)/api/v1/saude/pronto && echo \
 	&& codigo="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 $(SMOKE_URL)/api/v1/precos/servicos)" \
 	&& test "$$codigo" = 401 \
@@ -96,7 +109,7 @@ compose-down:
 	$(COMPOSE) down -v
 
 compose-logs:
-	$(COMPOSE) logs -f api prazos
+	$(COMPOSE) logs -f api prazos relay consumidor
 
 seed:
 	$(COMPOSE) exec api python -m src.seed

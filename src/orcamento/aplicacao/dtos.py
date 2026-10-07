@@ -50,6 +50,7 @@ class OrcamentoDTO:
     valido_ate: datetime | None
     decisao: DecisaoDTO | None
     motivo_cancelamento: str | None
+    lapide: bool
 
     @classmethod
     def de(cls, orcamento: Orcamento) -> OrcamentoDTO:
@@ -84,4 +85,5 @@ class OrcamentoDTO:
                 else None
             ),
             motivo_cancelamento=orcamento.motivo_cancelamento,
+            lapide=orcamento.e_lapide,
         )

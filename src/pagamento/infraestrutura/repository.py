@@ -45,6 +45,8 @@ ESQUEMA: Documento = {
         "referencia_pagamento": {"bsonType": ["string", "null"]},
         "notificacoes": {"bsonType": "array"},
         "estornos_automaticos": {"bsonType": "array"},
+        # Comando e contexto de trace que abriram o registro (unidade de trabalho).
+        "aberto_por": {"bsonType": "object"},
     },
 }
 
@@ -99,14 +101,8 @@ class MongoPagamentoRepository:
         return [doc["_id"] for doc in cursor.sort("expira_em").limit(limite)]
 
     def salvar(self, pagamento: Pagamento) -> None:
-        self._uow.registrar(pagamento)
         try:
-            self._colecao.replace_one(
-                {"_id": pagamento.id},
-                _para_documento(pagamento),
-                upsert=True,
-                session=self._uow.sessao,
-            )
+            self._uow.gravar(COLECAO, pagamento, _para_documento(pagamento))
         except DuplicateKeyError:
             raise PagamentoJaSolicitadoError from None
 

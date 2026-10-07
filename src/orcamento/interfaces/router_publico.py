@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK
 from src.orcamento.aplicacao.use_cases import ConsultarOrcamentos, DecidirOrcamento
 from src.orcamento.interfaces.dependencies import (
     obter_consultar_orcamentos,
@@ -19,7 +20,7 @@ from src.orcamento.interfaces.dependencies import (
 )
 from src.orcamento.interfaces.schemas import DecisaoRequest, OrcamentoPublicoResponse
 
-PREFIXO = "/api/v1/publico/orcamentos"
+PREFIXO = CAMINHO_DO_LINK
 
 router = APIRouter(prefix=PREFIXO, tags=["publico"])
 

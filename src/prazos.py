@@ -13,7 +13,6 @@ concluido (alerta de prazos parado).
 from __future__ import annotations
 
 import logging
-import signal
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -22,9 +21,15 @@ from prometheus_client import Gauge, start_http_server
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.logging import configurar_logging
+from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.telemetria import (
+    configurar_telemetria,
+    tracer,
+)
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
+from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
-from src.configuracao import ConfiguracaoDosPrazos, ModoMercadoPago
+from src.configuracao import ConfiguracaoDosPrazos
 from src.orcamento.aplicacao.use_cases import ExpirarOrcamentosVencidos
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.aplicacao.use_cases import (
@@ -32,10 +37,7 @@ from src.pagamento.aplicacao.use_cases import (
     ExpirarPagamentosVencidos,
     ProcessarNotificacaoPagamento,
 )
-from src.pagamento.infraestrutura.mercadopago import (
-    ConfiguracaoMercadoPago,
-    MercadoPagoGateway,
-)
+from src.pagamento.infraestrutura.gateway import criar_gateway_de_conciliacao
 from src.pagamento.infraestrutura.metricas import MetricasPrometheus
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 
@@ -57,6 +59,16 @@ ULTIMO_CICLO = Gauge(
     "pytstop_prazos_ultimo_ciclo_timestamp_seconds",
     "Instante (epoch) do ultimo ciclo concluido do processo prazos.",
 )
+
+
+class _UnidadeDoPrazo(MongoUnitOfWork):
+    """Cada transacao do ``prazos`` (expiracao ou conciliacao de um registro)
+    num span proprio: o evento gravado nela sai com span link para este trace
+    (ADR-043). Ciclo sem nada vencido nem a conciliar nao abre span."""
+
+    def executar[T](self, trabalho: Callable[[], T]) -> T:
+        with tracer.start_as_current_span("prazos"):
+            return super().executar(trabalho)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +104,7 @@ def executar_ciclo(
     limite: int = LIMITE_POR_CICLO,
 ) -> ResultadoDoCiclo:
     """Um ciclo: concilia (se houver ``gateway``) e expira orcamentos e pagamentos."""
-    uow = MongoUnitOfWork(banco)
+    uow = _UnidadeDoPrazo(banco, relogio=relogio)
     pagamentos = MongoPagamentoRepository(uow)
     conciliados = 0
     if gateway is not None:
@@ -147,36 +159,17 @@ def rodar(
             parar.wait(intervalo)
 
 
-def instalar_sinais(parar: threading.Event) -> None:
-    """Como PID 1 sem handler, o processo ignora SIGTERM e morre por SIGKILL."""
-    signal.signal(signal.SIGTERM, lambda *_: parar.set())
-    signal.signal(signal.SIGINT, lambda *_: parar.set())
-
-
-def criar_gateway(config: ConfiguracaoDosPrazos) -> MercadoPagoGateway | None:
-    """So o Mercado Pago real e conciliado: o simulador vive na memoria da API."""
-    if config.mp_modo is not ModoMercadoPago.MERCADOPAGO or not config.mp_access_token:
-        return None
-    return MercadoPagoGateway(
-        ConfiguracaoMercadoPago(
-            access_token=config.mp_access_token,
-            # O prazos so consulta: nunca cria preferencia.
-            notification_url="",
-            base_url=config.mp_api_url,
-            timeout_segundos=config.mp_timeout_segundos,
-        )
-    )
-
-
 def main(parar: threading.Event | None = None) -> None:
     configurar_logging()
     config = ConfiguracaoDosPrazos.do_ambiente()
+    contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
+    provedor = configurar_telemetria("prazos")
     if parar is None:
         parar = threading.Event()
         instalar_sinais(parar)
     start_http_server(config.porta_metricas)
     cliente = criar_cliente(config.banco.mongodb_uri)
-    gateway = criar_gateway(config)
+    gateway = criar_gateway_de_conciliacao(config)
     metricas = MetricasPrometheus()
     try:
         banco = cliente[config.banco.mongodb_banco]
@@ -204,6 +197,7 @@ def main(parar: threading.Event | None = None) -> None:
         cliente.close()
         if gateway is not None:
             gateway.fechar()
+        provedor.shutdown()
 
 
 if __name__ == "__main__":  # pragma: no cover

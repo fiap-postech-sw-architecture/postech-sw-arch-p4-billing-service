@@ -1,0 +1,17 @@
+{
+  "id": "7b91cc3c-4b18-4cc5-8efb-073d09b69fe1",
+  "tipo": "PagamentoSolicitado",
+  "versao": 1,
+  "origem": "billing-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "947bc2d1-54b0-4972-900a-bc62b2e45922",
+  "ocorrido_em": "2026-10-06T13:32:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "pagamento_id": "8b7fdbea-b573-47c6-8654-df9ea01818c8",
+    "valor": "820.00",
+    "moeda": "BRL",
+    "checkout_url": "http://localhost/billing/simulador/checkout/8b7fdbea-b573-47c6-8654-df9ea01818c8?token=eyJwIjoiOGI3ZiJ9.Q2hlY2tvdXQ",
+    "expira_em": "2026-10-06T14:32:00Z"
+  }
+}

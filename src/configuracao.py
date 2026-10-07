@@ -1,8 +1,11 @@
 """Configuracao lida do ambiente e validada no boot (falha rapido), por processo.
 
 Cada processo le so o que usa: a API (``Configuracao``), o ``prazos``
-(``ConfiguracaoDosPrazos``) e o seed e a preparacao do banco
-(``ConfiguracaoDoBanco``).
+(``ConfiguracaoDosPrazos``), o relay da outbox (``ConfiguracaoDoRelay``), o
+consumidor dos comandos da saga (``ConfiguracaoDoConsumidor``) e o seed e a
+preparacao do banco (``ConfiguracaoDoBanco``). API e consumidor dividem o que
+os casos de uso dos comandos precisam (``ConfiguracaoDosComandos``: link de
+decisao, prazos e provedor de pagamento).
 
 Sem ``ENVIRONMENT`` o servico assume producao (falha fechada): enderecos e o
 segredo do link precisam vir explicitos, e o segredo de demonstracao publico
@@ -24,7 +27,7 @@ from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -46,6 +49,12 @@ _PADROES_DE_DESENVOLVIMENTO = {
 # de proposito (o healthcheck le o arquivo), e o /tmp e o tmpfs privado do
 # container, onde so roda o usuario do servico: por isso as supressoes.
 _HEARTBEAT_PADRAO = "/tmp/prazos-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
+_HEARTBEAT_DO_RELAY = "/tmp/relay-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
+_HEARTBEAT_DO_CONSUMIDOR = "/tmp/consumidor-heartbeat"  # noqa: S108  # nosec B108  # NOSONAR
+# /metrics dos processos sem API (prazos, relay, consumidor): a mesma porta do
+# OS e da Execucao e do exemplo de descoberta do platform. A API serve o dela na
+# porta HTTP.
+_METRICAS = 9100
 
 
 class ModoMercadoPago(StrEnum):
@@ -149,6 +158,20 @@ class _Ambiente:
             raise ValueError(msg)
         return token
 
+    def rabbitmq(self) -> tuple[str, str]:
+        """``RABBITMQ_URL`` com o usuario do servico, que vai no ``user_id`` de
+        toda publicacao (o broker confere). Sem padrao: a senha nao fica no
+        codigo, nem a de demonstracao."""
+        url = self.env.get("RABBITMQ_URL") or ""
+        partes = urlsplit(url)
+        if partes.scheme not in {"amqp", "amqps"} or not partes.hostname:
+            msg = "RABBITMQ_URL deve ser amqp(s)://<usuario>:<senha>@<host>:<porta>/"
+            raise ValueError(msg)
+        if not partes.username:
+            msg = "RABBITMQ_URL precisa do usuario do servico (ex.: billing)"
+            raise ValueError(msg)
+        return url, unquote(partes.username)
+
 
 @dataclass(frozen=True, slots=True)
 class ConfiguracaoDoBanco:
@@ -195,7 +218,112 @@ class ConfiguracaoDosPrazos:
             mp_api_url=ambiente.mp_api_url(),
             mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
             heartbeat=Path(ambiente.opcional("PRAZOS_HEARTBEAT", _HEARTBEAT_PADRAO)),
-            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", 8000),
+            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", _METRICAS),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguracaoDoRelay:
+    """Processo ``relay``: outbox do MongoDB para o RabbitMQ."""
+
+    banco: ConfiguracaoDoBanco
+    rabbitmq_url: str = field(repr=False)
+    rabbitmq_usuario: str
+    heartbeat: Path
+    porta_metricas: int
+
+    @classmethod
+    def do_ambiente(cls, env: Mapping[str, str] | None = None) -> ConfiguracaoDoRelay:
+        ambiente = _Ambiente(env)
+        url, usuario = ambiente.rabbitmq()
+        return cls(
+            banco=ConfiguracaoDoBanco.do_ambiente(ambiente.env),
+            rabbitmq_url=url,
+            rabbitmq_usuario=usuario,
+            heartbeat=Path(ambiente.opcional("RELAY_HEARTBEAT", _HEARTBEAT_DO_RELAY)),
+            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", _METRICAS),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguracaoDosComandos:
+    """O que os casos de uso dos comandos usam: link de decisao, prazos e
+    provedor de pagamento (API e consumidor leem igual)."""
+
+    url_publica: str
+    link_segredo: str = field(repr=False)
+    orcamento_validade: timedelta
+    pagamento_validade: timedelta
+    mp_modo: ModoMercadoPago
+    mp_access_token: str | None = field(repr=False)
+    mp_api_url: str
+    mp_notification_url: str
+    mp_timeout_segundos: float
+
+    @classmethod
+    def do_ambiente(
+        cls, env: Mapping[str, str] | None = None
+    ) -> ConfiguracaoDosComandos:
+        return cls._de(_Ambiente(env))
+
+    @classmethod
+    def _de(cls, ambiente: _Ambiente) -> ConfiguracaoDosComandos:
+        segredo = ambiente.exigir("ORCAMENTO_LINK_SECRET")
+        if not ambiente.desenvolvimento:
+            _validar_segredo_de_producao(segredo)
+        modo = ambiente.modo_mercadopago()
+        url_publica = ambiente.url(
+            "BILLING_PUBLIC_URL", ambiente.exigir("BILLING_PUBLIC_URL"), https=True
+        ).rstrip("/")
+        return cls(
+            url_publica=url_publica,
+            link_segredo=segredo,
+            orcamento_validade=timedelta(
+                hours=ambiente.positivo("ORCAMENTO_VALIDADE_HORAS", 72)
+            ),
+            pagamento_validade=timedelta(
+                minutes=ambiente.positivo("PAGAMENTO_VALIDADE_MINUTOS", 60)
+            ),
+            mp_modo=modo,
+            mp_access_token=ambiente.mp_access_token(modo),
+            mp_api_url=ambiente.mp_api_url(),
+            mp_notification_url=ambiente.url(
+                "MP_NOTIFICATION_URL",
+                ambiente.opcional(
+                    "MP_NOTIFICATION_URL", f"{url_publica}/api/v1/webhooks/mercadopago"
+                ),
+                https=True,
+            ),
+            mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguracaoDoConsumidor:
+    """Processo ``consumidor``: comandos da saga em ``billing.comandos``."""
+
+    banco: ConfiguracaoDoBanco
+    rabbitmq_url: str = field(repr=False)
+    rabbitmq_usuario: str
+    heartbeat: Path
+    porta_metricas: int
+    comandos: ConfiguracaoDosComandos
+
+    @classmethod
+    def do_ambiente(
+        cls, env: Mapping[str, str] | None = None
+    ) -> ConfiguracaoDoConsumidor:
+        ambiente = _Ambiente(env)
+        url, usuario = ambiente.rabbitmq()
+        return cls(
+            banco=ConfiguracaoDoBanco.do_ambiente(ambiente.env),
+            rabbitmq_url=url,
+            rabbitmq_usuario=usuario,
+            heartbeat=Path(
+                ambiente.opcional("CONSUMIDOR_HEARTBEAT", _HEARTBEAT_DO_CONSUMIDOR)
+            ),
+            porta_metricas=ambiente.inteiro_positivo("METRICS_PORT", _METRICAS),
+            comandos=ConfiguracaoDosComandos._de(ambiente),
         )
 
 
@@ -222,44 +350,43 @@ class Configuracao:
     @classmethod
     def do_ambiente(cls, env: Mapping[str, str] | None = None) -> Configuracao:
         ambiente = _Ambiente(env)
-        segredo = ambiente.exigir("ORCAMENTO_LINK_SECRET")
-        if not ambiente.desenvolvimento:
-            _validar_segredo_de_producao(segredo)
-        modo = ambiente.modo_mercadopago()
+        comandos = ConfiguracaoDosComandos._de(ambiente)
         webhook_secret = ambiente.env.get("MP_WEBHOOK_SECRET") or None
-        if modo is ModoMercadoPago.MERCADOPAGO and not webhook_secret:
+        if comandos.mp_modo is ModoMercadoPago.MERCADOPAGO and not webhook_secret:
             msg = "MP_MODE=mercadopago exige MP_ACCESS_TOKEN e MP_WEBHOOK_SECRET"
             raise ValueError(msg)
         banco = ConfiguracaoDoBanco.do_ambiente(ambiente.env)
-        url_publica = ambiente.url(
-            "BILLING_PUBLIC_URL", ambiente.exigir("BILLING_PUBLIC_URL"), https=True
-        ).rstrip("/")
         return cls(
             ambiente=ambiente.nome,
             mongodb_uri=banco.mongodb_uri,
             mongodb_banco=banco.mongodb_banco,
             jwks_url=ambiente.url("JWKS_URL", ambiente.exigir("JWKS_URL"), https=False),
-            url_publica=url_publica,
-            link_segredo=segredo,
-            orcamento_validade=timedelta(
-                hours=ambiente.positivo("ORCAMENTO_VALIDADE_HORAS", 72)
-            ),
-            pagamento_validade=timedelta(
-                minutes=ambiente.positivo("PAGAMENTO_VALIDADE_MINUTOS", 60)
-            ),
+            url_publica=comandos.url_publica,
+            link_segredo=comandos.link_segredo,
+            orcamento_validade=comandos.orcamento_validade,
+            pagamento_validade=comandos.pagamento_validade,
             pagamento_max_recusas=ambiente.inteiro_positivo("PAGAMENTO_MAX_RECUSAS", 3),
-            mp_modo=modo,
-            mp_access_token=ambiente.mp_access_token(modo),
+            mp_modo=comandos.mp_modo,
+            mp_access_token=comandos.mp_access_token,
             mp_webhook_secret=webhook_secret,
-            mp_api_url=ambiente.mp_api_url(),
-            mp_notification_url=ambiente.url(
-                "MP_NOTIFICATION_URL",
-                ambiente.opcional(
-                    "MP_NOTIFICATION_URL", f"{url_publica}/api/v1/webhooks/mercadopago"
-                ),
-                https=True,
-            ),
-            mp_timeout_segundos=ambiente.positivo("MP_TIMEOUT_SEGUNDOS", 5),
+            mp_api_url=comandos.mp_api_url,
+            mp_notification_url=comandos.mp_notification_url,
+            mp_timeout_segundos=comandos.mp_timeout_segundos,
+        )
+
+    @property
+    def comandos(self) -> ConfiguracaoDosComandos:
+        """A parte que o consumidor tambem le (fabrica do provedor)."""
+        return ConfiguracaoDosComandos(
+            url_publica=self.url_publica,
+            link_segredo=self.link_segredo,
+            orcamento_validade=self.orcamento_validade,
+            pagamento_validade=self.pagamento_validade,
+            mp_modo=self.mp_modo,
+            mp_access_token=self.mp_access_token,
+            mp_api_url=self.mp_api_url,
+            mp_notification_url=self.mp_notification_url,
+            mp_timeout_segundos=self.mp_timeout_segundos,
         )
 
 

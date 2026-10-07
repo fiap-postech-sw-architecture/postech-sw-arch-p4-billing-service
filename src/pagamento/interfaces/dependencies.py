@@ -14,7 +14,7 @@ from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 
 
 def obter_consultar_pagamentos(request: Request) -> ConsultarPagamentos:
-    uow = MongoUnitOfWork(request.app.state.banco)
+    uow = MongoUnitOfWork(request.app.state.banco, relogio=request.app.state.relogio)
     return ConsultarPagamentos(MongoPagamentoRepository(uow))
 
 
@@ -33,13 +33,13 @@ def _processar(
 
 
 def obter_processar_notificacao(request: Request) -> ProcessarNotificacaoPagamento:
-    uow = MongoUnitOfWork(request.app.state.banco)
+    uow = MongoUnitOfWork(request.app.state.banco, relogio=request.app.state.relogio)
     return _processar(request, uow, MongoPagamentoRepository(uow))
 
 
 def obter_simular_resultado(request: Request) -> SimularResultadoPagamento:
     # Rota so registrada com MP_MODE=simulado: o gateway e o simulador.
-    uow = MongoUnitOfWork(request.app.state.banco)
+    uow = MongoUnitOfWork(request.app.state.banco, relogio=request.app.state.relogio)
     pagamentos = MongoPagamentoRepository(uow)
     return SimularResultadoPagamento(
         request.app.state.gateway_pagamento,

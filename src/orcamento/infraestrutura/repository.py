@@ -45,6 +45,8 @@ ESQUEMA: Documento = {
         "valido_ate": {"bsonType": ["date", "null"]},
         "linhas": {"bsonType": "array"},
         "total": ESQUEMA_DINHEIRO,
+        # Comando e contexto de trace que abriram o registro (unidade de trabalho).
+        "aberto_por": {"bsonType": "object"},
     },
 }
 
@@ -79,14 +81,8 @@ class MongoOrcamentoRepository:
         return [doc["_id"] for doc in cursor.sort("valido_ate").limit(limite)]
 
     def salvar(self, orcamento: Orcamento) -> None:
-        self._uow.registrar(orcamento)
         try:
-            self._colecao.replace_one(
-                {"_id": orcamento.id},
-                _para_documento(orcamento),
-                upsert=True,
-                session=self._uow.sessao,
-            )
+            self._uow.gravar(COLECAO, orcamento, _para_documento(orcamento))
         except DuplicateKeyError:
             raise OrcamentoJaGeradoError from None
 

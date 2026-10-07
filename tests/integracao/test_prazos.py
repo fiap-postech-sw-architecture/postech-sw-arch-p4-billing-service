@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
 from prometheus_client import REGISTRY
 
 from src import prazos
 from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mongo import BancoNaoPreparadoError
+from src.compartilhado.infraestrutura.processo import instalar_sinais
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.configuracao import ConfiguracaoDosPrazos
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
@@ -27,6 +29,7 @@ from src.pagamento.aplicacao.use_cases import (
     ConciliarPagamentos,
     ProcessarNotificacaoPagamento,
 )
+from src.pagamento.infraestrutura.gateway import criar_gateway_de_conciliacao
 from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
 from src.prazos import ResultadoDoCiclo, executar_ciclo, rodar
@@ -351,7 +354,7 @@ def test_sigterm_encerra_o_laco() -> None:
         # processo mataria o proprio pytest (rc=-15) em vez de falhar o teste.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        prazos.instalar_sinais(parar)
+        instalar_sinais(parar)
         signal.raise_signal(signal.SIGTERM)
         assert parar.is_set()
         parar.clear()
@@ -364,8 +367,25 @@ def test_sigterm_encerra_o_laco() -> None:
 
 class TestBoot:
     @pytest.fixture
+    def telemetria(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Processos que pediram o SDK do OpenTelemetry. O provider global e o
+        dos testes (fixture spans): aqui so se anota o pedido."""
+        processos: list[str] = []
+
+        def configurar(processo: str) -> TracerProvider:
+            processos.append(processo)
+            return TracerProvider()
+
+        monkeypatch.setattr(prazos, "configurar_telemetria", configurar)
+        return processos
+
+    @pytest.fixture
     def ambiente(
-        self, monkeypatch: pytest.MonkeyPatch, mongo_uri: str, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mongo_uri: str,
+        tmp_path: Path,
+        telemetria: list[str],
     ) -> dict[str, str]:
         variaveis = {
             "ENVIRONMENT": "test",
@@ -382,6 +402,7 @@ class TestBoot:
     def test_main_sobe_com_a_configuracao_minima_e_para_no_sinal(
         self,
         ambiente: dict[str, str],
+        telemetria: list[str],
         monkeypatch: pytest.MonkeyPatch,
         cliente_mongo: MongoClient[dict[str, Any]],
         modo: str,
@@ -397,7 +418,10 @@ class TestBoot:
             prazos.main(parar)
         finally:
             cliente_mongo.drop_database(ambiente["MONGODB_DB"])
-        assert portas == [8000]
+        assert portas == [9100]
+        # Sem o SDK o ciclo nao grava o contexto e o evento de expiracao perde
+        # o span link para o trace do prazos (ADR-043).
+        assert telemetria == ["prazos"]
 
     def test_main_instala_os_sinais_quando_nao_recebe_o_evento(
         self,
@@ -439,7 +463,7 @@ class TestBoot:
         simulado = ConfiguracaoDosPrazos.do_ambiente(
             {"ENVIRONMENT": "test", "MP_MODE": "simulado"}
         )
-        assert prazos.criar_gateway(simulado) is None
+        assert criar_gateway_de_conciliacao(simulado) is None
         real = ConfiguracaoDosPrazos.do_ambiente(
             {
                 "ENVIRONMENT": "test",
@@ -447,6 +471,6 @@ class TestBoot:
                 "MP_ACCESS_TOKEN": "TEST-token-de-teste",  # gitleaks:allow
             }
         )
-        gateway = prazos.criar_gateway(real)
+        gateway = criar_gateway_de_conciliacao(real)
         assert isinstance(gateway, MercadoPagoGateway)
         gateway.fechar()

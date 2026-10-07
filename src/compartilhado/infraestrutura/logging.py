@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from opentelemetry import trace
 
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
@@ -40,13 +41,30 @@ def adicionar_versao_imagem(
     return event_dict
 
 
+def adicionar_trace(
+    _logger: object,
+    _method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """``trace_id``/``span_id`` do span corrente (relay e consumidor): do log no
+    Loki ao trace no Jaeger (ADR-043). Fora de span, nada."""
+    contexto = trace.get_current_span().get_span_context()
+    if contexto.is_valid:
+        event_dict.setdefault("trace_id", format(contexto.trace_id, "032x"))
+        event_dict.setdefault("span_id", format(contexto.span_id, "016x"))
+    return event_dict
+
+
 _CPF_PATTERN = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
 _CNPJ_PATTERN = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b")
-# Dominio casado label a label (`.` fora da classe), sem backtracking
-# catastrofico: o scrubber roda sobre o event_dict inteiro, tracebacks inclusos,
-# sem limite de tamanho.
+# O scrubber roda sobre o event_dict inteiro, tracebacks inclusos, sem limite
+# de tamanho: cada trecho do e-mail tem teto (local-part de ate 64 caracteres,
+# rotulos de ate 63, ate 10 rotulos, TLD de ate 24), entao a tentativa em cada
+# posicao e curta e o custo cresce linear com a entrada. Com `+` sem teto, um
+# texto como `a.a.a....` de 80 KB levava segundos (quadratico).
 _EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"
+    r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}"
+    r"\.[A-Za-z]{2,24}\b"
 )
 
 # Telefone BR: duas formas estruturais, escolhidas para nao gerar falso-positivo
@@ -226,6 +244,7 @@ def _cadeia_compartilhada() -> list[Any]:
     return [
         structlog.contextvars.merge_contextvars,
         adicionar_versao_imagem,
+        adicionar_trace,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -263,6 +282,10 @@ def configurar_logging(stream: TextIO | None = None) -> None:
     root.handlers = [handler]
     if root.level == logging.NOTSET or root.level > logging.INFO:
         root.setLevel(logging.INFO)
+    # O pika loga em WARNING, com o comeco do corpo, a mensagem que o broker
+    # devolve (mandatory), e em INFO cada passo da conexao: so os erros dele
+    # interessam, e a reconexao ja tem log proprio.
+    logging.getLogger("pika").setLevel(logging.ERROR)
     _religar_loggers_do_uvicorn()
 
 

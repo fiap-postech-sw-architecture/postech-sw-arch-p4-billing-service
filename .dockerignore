@@ -1,5 +1,6 @@
-# O Dockerfile copia so pyproject/uv.lock, src/ e entrypoint.sh; esta lista
-# reduz o contexto enviado ao daemon e impede segredo local de entrar nele.
+# O Dockerfile copia so pyproject/uv.lock, src/, contratos/ e entrypoint.sh;
+# esta lista reduz o contexto enviado ao daemon e impede segredo local de entrar
+# nele.
 .git
 .github/
 .claude/
@@ -10,6 +11,7 @@ scripts/
 *.md
 Makefile
 docker-compose.yml
+contratos/rabbitmq/
 .gitleaks.toml
 .coveragerc
 sonar-project.properties

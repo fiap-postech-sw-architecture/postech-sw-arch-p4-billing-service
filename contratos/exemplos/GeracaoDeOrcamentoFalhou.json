@@ -1,0 +1,16 @@
+{
+  "id": "1f87e78f-45e5-41ed-b3b3-2bbd2ec10443",
+  "tipo": "GeracaoDeOrcamentoFalhou",
+  "versao": 1,
+  "origem": "billing-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "aab90131-077c-473b-8f58-84287532cb38",
+  "ocorrido_em": "2026-10-06T12:46:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "motivo": "Itens sem preço cadastrado na tabela.",
+    "codigos_invalidos": [
+      "PEC-SEM-PRECO-01"
+    ]
+  }
+}

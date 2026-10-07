@@ -49,6 +49,7 @@ class PagamentoDTO:
     motivo_estorno: str | None
     notificacoes: tuple[NotificacaoDTO, ...]
     estornos_automaticos: tuple[EstornoAutomaticoDTO, ...]
+    lapide: bool
 
     @classmethod
     def de(cls, pagamento: Pagamento) -> PagamentoDTO:
@@ -91,4 +92,5 @@ class PagamentoDTO:
                 )
                 for e in pagamento.estornos_automaticos
             ),
+            lapide=pagamento.e_lapide,
         )

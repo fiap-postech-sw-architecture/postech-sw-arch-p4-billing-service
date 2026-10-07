@@ -16,6 +16,17 @@ dependencies = [
     "structlog>=26.1.0,<27",
     # Transitiva do starlette; piso explicito pelo advisory de out/2026.
     "anyio>=4.15.1,<5",
+    # Mensageria (ADR-036): relay e consumidor sobre RabbitMQ.
+    "pika>=1.4.4,<2",
+    # Contratos das mensagens (copiados do platform em contratos/): o envelope e
+    # o dados sao validados na gravacao da outbox e no consumo; o
+    # rfc3339-validator liga a checagem de date-time, que o FormatChecker pularia.
+    "jsonschema>=4.26.0,<5",
+    "rfc3339-validator>=0.1.4,<1",
+    # Contexto W3C pela outbox e pelo AMQP; exportacao OTLP/gRPC para o Jaeger
+    # (ADR-043), ligada por OTEL_ENABLED.
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
 ]
 
 [dependency-groups]
@@ -34,12 +45,10 @@ dev = [
     "mypy>=2.4.0",
     "bandit>=1.9.4",
     "import-linter>=2.15",
-    # Contrato dos eventos: cada mensagem valida contra os JSON Schemas da
-    # plataforma copiados em tests/contratos/ (o rfc3339-validator liga a
-    # checagem de date-time, que o FormatChecker pularia sem ele).
-    "jsonschema>=4.25",
     "types-jsonschema>=4.25",
-    "rfc3339-validator>=0.1.4",
+    # Teste de contrato le o produtor de cada tipo no asyncapi.yaml copiado.
+    "pyyaml>=6.0.3",
+    "types-pyyaml>=6.0.12",
 ]
 
 [build-system]
@@ -147,6 +156,13 @@ forbidden_modules = [
     "jwt",
     "prometheus_client",
     "structlog",
+    # Mensageria, contratos e telemetria ficam na infraestrutura.
+    "pika",
+    "jsonschema",
+    "referencing",
+    "yaml",
+    "rfc3339_validator",
+    "opentelemetry",
 ]
 
 [[tool.importlinter.contracts]]
@@ -191,6 +207,26 @@ forbidden_modules = [
     "src.orcamento.aplicacao",
 ]
 
+# Nenhum contexto importa a camada interfaces de outro (rotas, handlers de
+# comando, schemas): o que um contexto le de outro passa por porta e adapter.
+[[tool.importlinter.contracts]]
+name = "precos nao importa interfaces de outros contextos"
+type = "forbidden"
+source_modules = ["src.precos"]
+forbidden_modules = ["src.orcamento.interfaces", "src.pagamento.interfaces"]
+
+[[tool.importlinter.contracts]]
+name = "orcamento nao importa interfaces de outros contextos"
+type = "forbidden"
+source_modules = ["src.orcamento"]
+forbidden_modules = ["src.precos.interfaces", "src.pagamento.interfaces"]
+
+[[tool.importlinter.contracts]]
+name = "pagamento nao importa interfaces de outros contextos"
+type = "forbidden"
+source_modules = ["src.pagamento"]
+forbidden_modules = ["src.precos.interfaces", "src.orcamento.interfaces"]
+
 [tool.mypy]
 strict = true
 python_version = "3.14"
@@ -201,9 +237,15 @@ warn_unused_ignores = true
 module = ["testcontainers.*"]
 ignore_missing_imports = true
 
+# pika nao publica tipos (sem py.typed nem stubs mantidos).
+[[tool.mypy.overrides]]
+module = ["pika", "pika.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 markers = [
     "integracao: usa MongoDB real (testcontainers em replica set ou TEST_MONGODB_URI)",
+    "rede: baixa o platform pelo GitHub (checksum dos contratos); offline: -m 'not rede'",
 ]
 addopts = "--strict-markers"
 testpaths = ["tests"]

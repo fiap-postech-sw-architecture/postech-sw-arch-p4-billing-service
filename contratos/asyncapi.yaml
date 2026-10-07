@@ -1,0 +1,2153 @@
+asyncapi: 3.0.0
+info:
+  title: PytStop - mensageria da saga de atendimento
+  version: 1.0.0
+  description: |
+    Comandos e eventos que os três serviços da fase 4 trocam pelo RabbitMQ.
+    O OS Service orquestra a saga: publica comandos no exchange
+    pytstop.comandos e consome os eventos que Billing e Execução publicam no
+    exchange pytstop.eventos. Os participantes só consomem comandos.
+
+    Todo corpo é um envelope (schemas/envelope.schema.json) cujo campo dados
+    segue schemas/<tipo>.schema.json. Exemplos completos em exemplos/.
+    Routing key: comando.<servico de destino>.<acao> ou
+    evento.<servico de origem>.<fato>, com o nome da mensagem em snake_case.
+    Retry: cada fila tem cinco filas de retry, uma por atraso, <fila>.retry.1s,
+    .retry.5s, .retry.15s, .retry.60s e .retry.300s, com o TTL fixo na fila. O
+    consumidor republica a cópia, sem expiration, no exchange pytstop.retry
+    (topic, com permissão de tópico só para as filas de retry da própria fila),
+    com a routing key igual ao nome da fila de retry do nível da nova tentativa:
+    x-tentativa 1 vai para <fila>.retry.1s, 2 para .retry.5s, 3 para .retry.15s,
+    4 para .retry.60s e 5 para .retry.300s. Quando o TTL vence, a fila de retry
+    devolve a mensagem para a fila. A falha seguinte à quinta tentativa e a falha
+    definitiva vão para <fila>.dlq pelo pytstop.dlx. Topologia completa em
+    k8s/base/rabbitmq/definitions.json.
+
+    Origem: o produtor preenche a propriedade AMQP user_id com o próprio usuário
+    (o userId de cada operação de envio), e o broker recusa valor diferente do
+    usuário da conexão. O consumidor aceita user_id igual ao produtor do tipo;
+    na cópia de retry (header x-tentativa de 1 a 5), aceita o próprio usuário,
+    porque quem republica é ele. Qualquer outro valor é erro permanente (DLQ).
+defaultContentType: application/json
+servers:
+  kubernetes:
+    host: rabbitmq.pytstop-plataforma.svc.cluster.local:5672
+    protocol: amqp
+    protocolVersion: 0-9-1
+    description: "RabbitMQ da plataforma no kind ou no k3s (namespace pytstop-plataforma)."
+  compose:
+    host: localhost:5672
+    protocol: amqp
+    protocolVersion: 0-9-1
+    description: "RabbitMQ do docker compose da plataforma."
+channels:
+  comando.execucao.solicitar_diagnostico:
+    address: comando.execucao.solicitar_diagnostico
+    title: "SolicitarDiagnostico"
+    description: "Routing key de SolicitarDiagnostico no exchange pytstop.comandos."
+    messages:
+      SolicitarDiagnostico:
+        $ref: '#/components/messages/SolicitarDiagnostico'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.diagnostico_iniciado:
+    address: evento.execucao.diagnostico_iniciado
+    title: "DiagnosticoIniciado"
+    description: "Routing key de DiagnosticoIniciado no exchange pytstop.eventos."
+    messages:
+      DiagnosticoIniciado:
+        $ref: '#/components/messages/DiagnosticoIniciado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.diagnostico_concluido:
+    address: evento.execucao.diagnostico_concluido
+    title: "DiagnosticoConcluido"
+    description: "Routing key de DiagnosticoConcluido no exchange pytstop.eventos."
+    messages:
+      DiagnosticoConcluido:
+        $ref: '#/components/messages/DiagnosticoConcluido'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.execucao.descartar_diagnostico:
+    address: comando.execucao.descartar_diagnostico
+    title: "DescartarDiagnostico"
+    description: "Routing key de DescartarDiagnostico no exchange pytstop.comandos."
+    messages:
+      DescartarDiagnostico:
+        $ref: '#/components/messages/DescartarDiagnostico'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.diagnostico_descartado:
+    address: evento.execucao.diagnostico_descartado
+    title: "DiagnosticoDescartado"
+    description: "Routing key de DiagnosticoDescartado no exchange pytstop.eventos."
+    messages:
+      DiagnosticoDescartado:
+        $ref: '#/components/messages/DiagnosticoDescartado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.billing.gerar_orcamento:
+    address: comando.billing.gerar_orcamento
+    title: "GerarOrcamento"
+    description: "Routing key de GerarOrcamento no exchange pytstop.comandos."
+    messages:
+      GerarOrcamento:
+        $ref: '#/components/messages/GerarOrcamento'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.orcamento_gerado:
+    address: evento.billing.orcamento_gerado
+    title: "OrcamentoGerado"
+    description: "Routing key de OrcamentoGerado no exchange pytstop.eventos."
+    messages:
+      OrcamentoGerado:
+        $ref: '#/components/messages/OrcamentoGerado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.geracao_de_orcamento_falhou:
+    address: evento.billing.geracao_de_orcamento_falhou
+    title: "GeracaoDeOrcamentoFalhou"
+    description: "Routing key de GeracaoDeOrcamentoFalhou no exchange pytstop.eventos."
+    messages:
+      GeracaoDeOrcamentoFalhou:
+        $ref: '#/components/messages/GeracaoDeOrcamentoFalhou'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.orcamento_aprovado:
+    address: evento.billing.orcamento_aprovado
+    title: "OrcamentoAprovado"
+    description: "Routing key de OrcamentoAprovado no exchange pytstop.eventos."
+    messages:
+      OrcamentoAprovado:
+        $ref: '#/components/messages/OrcamentoAprovado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.orcamento_recusado:
+    address: evento.billing.orcamento_recusado
+    title: "OrcamentoRecusado"
+    description: "Routing key de OrcamentoRecusado no exchange pytstop.eventos."
+    messages:
+      OrcamentoRecusado:
+        $ref: '#/components/messages/OrcamentoRecusado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.orcamento_expirado:
+    address: evento.billing.orcamento_expirado
+    title: "OrcamentoExpirado"
+    description: "Routing key de OrcamentoExpirado no exchange pytstop.eventos."
+    messages:
+      OrcamentoExpirado:
+        $ref: '#/components/messages/OrcamentoExpirado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.billing.cancelar_orcamento:
+    address: comando.billing.cancelar_orcamento
+    title: "CancelarOrcamento"
+    description: "Routing key de CancelarOrcamento no exchange pytstop.comandos."
+    messages:
+      CancelarOrcamento:
+        $ref: '#/components/messages/CancelarOrcamento'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.orcamento_cancelado:
+    address: evento.billing.orcamento_cancelado
+    title: "OrcamentoCancelado"
+    description: "Routing key de OrcamentoCancelado no exchange pytstop.eventos."
+    messages:
+      OrcamentoCancelado:
+        $ref: '#/components/messages/OrcamentoCancelado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.execucao.reservar_pecas:
+    address: comando.execucao.reservar_pecas
+    title: "ReservarPecas"
+    description: "Routing key de ReservarPecas no exchange pytstop.comandos."
+    messages:
+      ReservarPecas:
+        $ref: '#/components/messages/ReservarPecas'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.pecas_reservadas:
+    address: evento.execucao.pecas_reservadas
+    title: "PecasReservadas"
+    description: "Routing key de PecasReservadas no exchange pytstop.eventos."
+    messages:
+      PecasReservadas:
+        $ref: '#/components/messages/PecasReservadas'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.reserva_de_pecas_falhou:
+    address: evento.execucao.reserva_de_pecas_falhou
+    title: "ReservaDePecasFalhou"
+    description: "Routing key de ReservaDePecasFalhou no exchange pytstop.eventos."
+    messages:
+      ReservaDePecasFalhou:
+        $ref: '#/components/messages/ReservaDePecasFalhou'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.execucao.liberar_reserva:
+    address: comando.execucao.liberar_reserva
+    title: "LiberarReserva"
+    description: "Routing key de LiberarReserva no exchange pytstop.comandos."
+    messages:
+      LiberarReserva:
+        $ref: '#/components/messages/LiberarReserva'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.reserva_liberada:
+    address: evento.execucao.reserva_liberada
+    title: "ReservaLiberada"
+    description: "Routing key de ReservaLiberada no exchange pytstop.eventos."
+    messages:
+      ReservaLiberada:
+        $ref: '#/components/messages/ReservaLiberada'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.billing.solicitar_pagamento:
+    address: comando.billing.solicitar_pagamento
+    title: "SolicitarPagamento"
+    description: "Routing key de SolicitarPagamento no exchange pytstop.comandos."
+    messages:
+      SolicitarPagamento:
+        $ref: '#/components/messages/SolicitarPagamento'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.pagamento_solicitado:
+    address: evento.billing.pagamento_solicitado
+    title: "PagamentoSolicitado"
+    description: "Routing key de PagamentoSolicitado no exchange pytstop.eventos."
+    messages:
+      PagamentoSolicitado:
+        $ref: '#/components/messages/PagamentoSolicitado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.pagamento_confirmado:
+    address: evento.billing.pagamento_confirmado
+    title: "PagamentoConfirmado"
+    description: "Routing key de PagamentoConfirmado no exchange pytstop.eventos."
+    messages:
+      PagamentoConfirmado:
+        $ref: '#/components/messages/PagamentoConfirmado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.pagamento_recusado:
+    address: evento.billing.pagamento_recusado
+    title: "PagamentoRecusado"
+    description: "Routing key de PagamentoRecusado no exchange pytstop.eventos."
+    messages:
+      PagamentoRecusado:
+        $ref: '#/components/messages/PagamentoRecusado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.pagamento_expirado:
+    address: evento.billing.pagamento_expirado
+    title: "PagamentoExpirado"
+    description: "Routing key de PagamentoExpirado no exchange pytstop.eventos."
+    messages:
+      PagamentoExpirado:
+        $ref: '#/components/messages/PagamentoExpirado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.billing.estornar_pagamento:
+    address: comando.billing.estornar_pagamento
+    title: "EstornarPagamento"
+    description: "Routing key de EstornarPagamento no exchange pytstop.comandos."
+    messages:
+      EstornarPagamento:
+        $ref: '#/components/messages/EstornarPagamento'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.pagamento_estornado:
+    address: evento.billing.pagamento_estornado
+    title: "PagamentoEstornado"
+    description: "Routing key de PagamentoEstornado no exchange pytstop.eventos."
+    messages:
+      PagamentoEstornado:
+        $ref: '#/components/messages/PagamentoEstornado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.estorno_de_pagamento_falhou:
+    address: evento.billing.estorno_de_pagamento_falhou
+    title: "EstornoDePagamentoFalhou"
+    description: "Routing key de EstornoDePagamentoFalhou no exchange pytstop.eventos."
+    messages:
+      EstornoDePagamentoFalhou:
+        $ref: '#/components/messages/EstornoDePagamentoFalhou'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.billing.pagamento_cancelado:
+    address: evento.billing.pagamento_cancelado
+    title: "PagamentoCancelado"
+    description: "Routing key de PagamentoCancelado no exchange pytstop.eventos."
+    messages:
+      PagamentoCancelado:
+        $ref: '#/components/messages/PagamentoCancelado'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.execucao.agendar_execucao:
+    address: comando.execucao.agendar_execucao
+    title: "AgendarExecucao"
+    description: "Routing key de AgendarExecucao no exchange pytstop.comandos."
+    messages:
+      AgendarExecucao:
+        $ref: '#/components/messages/AgendarExecucao'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.execucao_agendada:
+    address: evento.execucao.execucao_agendada
+    title: "ExecucaoAgendada"
+    description: "Routing key de ExecucaoAgendada no exchange pytstop.eventos."
+    messages:
+      ExecucaoAgendada:
+        $ref: '#/components/messages/ExecucaoAgendada'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.execucao.cancelar_execucao:
+    address: comando.execucao.cancelar_execucao
+    title: "CancelarExecucao"
+    description: "Routing key de CancelarExecucao no exchange pytstop.comandos."
+    messages:
+      CancelarExecucao:
+        $ref: '#/components/messages/CancelarExecucao'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.execucao_cancelada:
+    address: evento.execucao.execucao_cancelada
+    title: "ExecucaoCancelada"
+    description: "Routing key de ExecucaoCancelada no exchange pytstop.eventos."
+    messages:
+      ExecucaoCancelada:
+        $ref: '#/components/messages/ExecucaoCancelada'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.execucao_iniciada:
+    address: evento.execucao.execucao_iniciada
+    title: "ExecucaoIniciada"
+    description: "Routing key de ExecucaoIniciada no exchange pytstop.eventos."
+    messages:
+      ExecucaoIniciada:
+        $ref: '#/components/messages/ExecucaoIniciada'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  evento.execucao.execucao_finalizada:
+    address: evento.execucao.execucao_finalizada
+    title: "ExecucaoFinalizada"
+    description: "Routing key de ExecucaoFinalizada no exchange pytstop.eventos."
+    messages:
+      ExecucaoFinalizada:
+        $ref: '#/components/messages/ExecucaoFinalizada'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.eventos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  comando.execucao.anonimizar_veiculo:
+    address: comando.execucao.anonimizar_veiculo
+    title: "AnonimizarVeiculo"
+    description: "Routing key de AnonimizarVeiculo no exchange pytstop.comandos."
+    messages:
+      AnonimizarVeiculo:
+        $ref: '#/components/messages/AnonimizarVeiculo'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: pytstop.comandos
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  execucao.comandos:
+    address: execucao.comandos
+    title: "Fila de comandos da Execução"
+    description: "Fila quorum ligada por comando.execucao.#. Retry pelo exchange pytstop.retry nas filas execucao.comandos.retry.1s, execucao.comandos.retry.5s, execucao.comandos.retry.15s, execucao.comandos.retry.60s e execucao.comandos.retry.300s (uma por atraso; routing key = nome da fila de retry) e DLQ em execucao.comandos.dlq."
+    messages:
+      SolicitarDiagnostico:
+        $ref: '#/components/messages/SolicitarDiagnostico'
+      DescartarDiagnostico:
+        $ref: '#/components/messages/DescartarDiagnostico'
+      ReservarPecas:
+        $ref: '#/components/messages/ReservarPecas'
+      LiberarReserva:
+        $ref: '#/components/messages/LiberarReserva'
+      AgendarExecucao:
+        $ref: '#/components/messages/AgendarExecucao'
+      CancelarExecucao:
+        $ref: '#/components/messages/CancelarExecucao'
+      AnonimizarVeiculo:
+        $ref: '#/components/messages/AnonimizarVeiculo'
+    bindings:
+      amqp:
+        is: queue
+        queue:
+          name: execucao.comandos
+          durable: true
+          exclusive: false
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  billing.comandos:
+    address: billing.comandos
+    title: "Fila de comandos do Billing"
+    description: "Fila quorum ligada por comando.billing.#. Retry pelo exchange pytstop.retry nas filas billing.comandos.retry.1s, billing.comandos.retry.5s, billing.comandos.retry.15s, billing.comandos.retry.60s e billing.comandos.retry.300s (uma por atraso; routing key = nome da fila de retry) e DLQ em billing.comandos.dlq."
+    messages:
+      GerarOrcamento:
+        $ref: '#/components/messages/GerarOrcamento'
+      CancelarOrcamento:
+        $ref: '#/components/messages/CancelarOrcamento'
+      SolicitarPagamento:
+        $ref: '#/components/messages/SolicitarPagamento'
+      EstornarPagamento:
+        $ref: '#/components/messages/EstornarPagamento'
+    bindings:
+      amqp:
+        is: queue
+        queue:
+          name: billing.comandos
+          durable: true
+          exclusive: false
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  os.eventos:
+    address: os.eventos
+    title: "Fila de eventos do OS Service"
+    description: "Fila quorum ligada por evento.billing.# e evento.execucao.#. Retry pelo exchange pytstop.retry nas filas os.eventos.retry.1s, os.eventos.retry.5s, os.eventos.retry.15s, os.eventos.retry.60s e os.eventos.retry.300s (uma por atraso; routing key = nome da fila de retry) e DLQ em os.eventos.dlq."
+    messages:
+      DiagnosticoIniciado:
+        $ref: '#/components/messages/DiagnosticoIniciado'
+      DiagnosticoConcluido:
+        $ref: '#/components/messages/DiagnosticoConcluido'
+      DiagnosticoDescartado:
+        $ref: '#/components/messages/DiagnosticoDescartado'
+      OrcamentoGerado:
+        $ref: '#/components/messages/OrcamentoGerado'
+      GeracaoDeOrcamentoFalhou:
+        $ref: '#/components/messages/GeracaoDeOrcamentoFalhou'
+      OrcamentoAprovado:
+        $ref: '#/components/messages/OrcamentoAprovado'
+      OrcamentoRecusado:
+        $ref: '#/components/messages/OrcamentoRecusado'
+      OrcamentoExpirado:
+        $ref: '#/components/messages/OrcamentoExpirado'
+      OrcamentoCancelado:
+        $ref: '#/components/messages/OrcamentoCancelado'
+      PecasReservadas:
+        $ref: '#/components/messages/PecasReservadas'
+      ReservaDePecasFalhou:
+        $ref: '#/components/messages/ReservaDePecasFalhou'
+      ReservaLiberada:
+        $ref: '#/components/messages/ReservaLiberada'
+      PagamentoSolicitado:
+        $ref: '#/components/messages/PagamentoSolicitado'
+      PagamentoConfirmado:
+        $ref: '#/components/messages/PagamentoConfirmado'
+      PagamentoRecusado:
+        $ref: '#/components/messages/PagamentoRecusado'
+      PagamentoExpirado:
+        $ref: '#/components/messages/PagamentoExpirado'
+      PagamentoEstornado:
+        $ref: '#/components/messages/PagamentoEstornado'
+      EstornoDePagamentoFalhou:
+        $ref: '#/components/messages/EstornoDePagamentoFalhou'
+      PagamentoCancelado:
+        $ref: '#/components/messages/PagamentoCancelado'
+      ExecucaoAgendada:
+        $ref: '#/components/messages/ExecucaoAgendada'
+      ExecucaoCancelada:
+        $ref: '#/components/messages/ExecucaoCancelada'
+      ExecucaoIniciada:
+        $ref: '#/components/messages/ExecucaoIniciada'
+      ExecucaoFinalizada:
+        $ref: '#/components/messages/ExecucaoFinalizada'
+    bindings:
+      amqp:
+        is: queue
+        queue:
+          name: os.eventos
+          durable: true
+          exclusive: false
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+operations:
+  publicarSolicitarDiagnostico:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.solicitar_diagnostico'
+    summary: "os-service publica SolicitarDiagnostico."
+    messages:
+      - $ref: '#/channels/comando.execucao.solicitar_diagnostico/messages/SolicitarDiagnostico'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarDiagnosticoIniciado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.diagnostico_iniciado'
+    summary: "execution-service publica DiagnosticoIniciado."
+    messages:
+      - $ref: '#/channels/evento.execucao.diagnostico_iniciado/messages/DiagnosticoIniciado'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarDiagnosticoConcluido:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.diagnostico_concluido'
+    summary: "execution-service publica DiagnosticoConcluido."
+    messages:
+      - $ref: '#/channels/evento.execucao.diagnostico_concluido/messages/DiagnosticoConcluido'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarDescartarDiagnostico:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.descartar_diagnostico'
+    summary: "os-service publica DescartarDiagnostico."
+    messages:
+      - $ref: '#/channels/comando.execucao.descartar_diagnostico/messages/DescartarDiagnostico'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarDiagnosticoDescartado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.diagnostico_descartado'
+    summary: "execution-service publica DiagnosticoDescartado."
+    messages:
+      - $ref: '#/channels/evento.execucao.diagnostico_descartado/messages/DiagnosticoDescartado'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarGerarOrcamento:
+    action: send
+    channel:
+      $ref: '#/channels/comando.billing.gerar_orcamento'
+    summary: "os-service publica GerarOrcamento."
+    messages:
+      - $ref: '#/channels/comando.billing.gerar_orcamento/messages/GerarOrcamento'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarOrcamentoGerado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.orcamento_gerado'
+    summary: "billing-service publica OrcamentoGerado."
+    messages:
+      - $ref: '#/channels/evento.billing.orcamento_gerado/messages/OrcamentoGerado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarGeracaoDeOrcamentoFalhou:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.geracao_de_orcamento_falhou'
+    summary: "billing-service publica GeracaoDeOrcamentoFalhou."
+    messages:
+      - $ref: '#/channels/evento.billing.geracao_de_orcamento_falhou/messages/GeracaoDeOrcamentoFalhou'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarOrcamentoAprovado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.orcamento_aprovado'
+    summary: "billing-service publica OrcamentoAprovado."
+    messages:
+      - $ref: '#/channels/evento.billing.orcamento_aprovado/messages/OrcamentoAprovado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarOrcamentoRecusado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.orcamento_recusado'
+    summary: "billing-service publica OrcamentoRecusado."
+    messages:
+      - $ref: '#/channels/evento.billing.orcamento_recusado/messages/OrcamentoRecusado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarOrcamentoExpirado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.orcamento_expirado'
+    summary: "billing-service publica OrcamentoExpirado."
+    messages:
+      - $ref: '#/channels/evento.billing.orcamento_expirado/messages/OrcamentoExpirado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarCancelarOrcamento:
+    action: send
+    channel:
+      $ref: '#/channels/comando.billing.cancelar_orcamento'
+    summary: "os-service publica CancelarOrcamento."
+    messages:
+      - $ref: '#/channels/comando.billing.cancelar_orcamento/messages/CancelarOrcamento'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarOrcamentoCancelado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.orcamento_cancelado'
+    summary: "billing-service publica OrcamentoCancelado."
+    messages:
+      - $ref: '#/channels/evento.billing.orcamento_cancelado/messages/OrcamentoCancelado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarReservarPecas:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.reservar_pecas'
+    summary: "os-service publica ReservarPecas."
+    messages:
+      - $ref: '#/channels/comando.execucao.reservar_pecas/messages/ReservarPecas'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarPecasReservadas:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.pecas_reservadas'
+    summary: "execution-service publica PecasReservadas."
+    messages:
+      - $ref: '#/channels/evento.execucao.pecas_reservadas/messages/PecasReservadas'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarReservaDePecasFalhou:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.reserva_de_pecas_falhou'
+    summary: "execution-service publica ReservaDePecasFalhou."
+    messages:
+      - $ref: '#/channels/evento.execucao.reserva_de_pecas_falhou/messages/ReservaDePecasFalhou'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarLiberarReserva:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.liberar_reserva'
+    summary: "os-service publica LiberarReserva."
+    messages:
+      - $ref: '#/channels/comando.execucao.liberar_reserva/messages/LiberarReserva'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarReservaLiberada:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.reserva_liberada'
+    summary: "execution-service publica ReservaLiberada."
+    messages:
+      - $ref: '#/channels/evento.execucao.reserva_liberada/messages/ReservaLiberada'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarSolicitarPagamento:
+    action: send
+    channel:
+      $ref: '#/channels/comando.billing.solicitar_pagamento'
+    summary: "os-service publica SolicitarPagamento."
+    messages:
+      - $ref: '#/channels/comando.billing.solicitar_pagamento/messages/SolicitarPagamento'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarPagamentoSolicitado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.pagamento_solicitado'
+    summary: "billing-service publica PagamentoSolicitado."
+    messages:
+      - $ref: '#/channels/evento.billing.pagamento_solicitado/messages/PagamentoSolicitado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarPagamentoConfirmado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.pagamento_confirmado'
+    summary: "billing-service publica PagamentoConfirmado."
+    messages:
+      - $ref: '#/channels/evento.billing.pagamento_confirmado/messages/PagamentoConfirmado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarPagamentoRecusado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.pagamento_recusado'
+    summary: "billing-service publica PagamentoRecusado."
+    messages:
+      - $ref: '#/channels/evento.billing.pagamento_recusado/messages/PagamentoRecusado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarPagamentoExpirado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.pagamento_expirado'
+    summary: "billing-service publica PagamentoExpirado."
+    messages:
+      - $ref: '#/channels/evento.billing.pagamento_expirado/messages/PagamentoExpirado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarEstornarPagamento:
+    action: send
+    channel:
+      $ref: '#/channels/comando.billing.estornar_pagamento'
+    summary: "os-service publica EstornarPagamento."
+    messages:
+      - $ref: '#/channels/comando.billing.estornar_pagamento/messages/EstornarPagamento'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarPagamentoEstornado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.pagamento_estornado'
+    summary: "billing-service publica PagamentoEstornado."
+    messages:
+      - $ref: '#/channels/evento.billing.pagamento_estornado/messages/PagamentoEstornado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarEstornoDePagamentoFalhou:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.estorno_de_pagamento_falhou'
+    summary: "billing-service publica EstornoDePagamentoFalhou."
+    messages:
+      - $ref: '#/channels/evento.billing.estorno_de_pagamento_falhou/messages/EstornoDePagamentoFalhou'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarPagamentoCancelado:
+    action: send
+    channel:
+      $ref: '#/channels/evento.billing.pagamento_cancelado'
+    summary: "billing-service publica PagamentoCancelado."
+    messages:
+      - $ref: '#/channels/evento.billing.pagamento_cancelado/messages/PagamentoCancelado'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: billing
+        bindingVersion: 0.3.0
+  publicarAgendarExecucao:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.agendar_execucao'
+    summary: "os-service publica AgendarExecucao."
+    messages:
+      - $ref: '#/channels/comando.execucao.agendar_execucao/messages/AgendarExecucao'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarExecucaoAgendada:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.execucao_agendada'
+    summary: "execution-service publica ExecucaoAgendada."
+    messages:
+      - $ref: '#/channels/evento.execucao.execucao_agendada/messages/ExecucaoAgendada'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarCancelarExecucao:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.cancelar_execucao'
+    summary: "os-service publica CancelarExecucao."
+    messages:
+      - $ref: '#/channels/comando.execucao.cancelar_execucao/messages/CancelarExecucao'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  publicarExecucaoCancelada:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.execucao_cancelada'
+    summary: "execution-service publica ExecucaoCancelada."
+    messages:
+      - $ref: '#/channels/evento.execucao.execucao_cancelada/messages/ExecucaoCancelada'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarExecucaoIniciada:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.execucao_iniciada'
+    summary: "execution-service publica ExecucaoIniciada."
+    messages:
+      - $ref: '#/channels/evento.execucao.execucao_iniciada/messages/ExecucaoIniciada'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarExecucaoFinalizada:
+    action: send
+    channel:
+      $ref: '#/channels/evento.execucao.execucao_finalizada'
+    summary: "execution-service publica ExecucaoFinalizada."
+    messages:
+      - $ref: '#/channels/evento.execucao.execucao_finalizada/messages/ExecucaoFinalizada'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: execucao
+        bindingVersion: 0.3.0
+  publicarAnonimizarVeiculo:
+    action: send
+    channel:
+      $ref: '#/channels/comando.execucao.anonimizar_veiculo'
+    summary: "os-service publica AnonimizarVeiculo."
+    messages:
+      - $ref: '#/channels/comando.execucao.anonimizar_veiculo/messages/AnonimizarVeiculo'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        deliveryMode: 2
+        userId: os
+        bindingVersion: 0.3.0
+  consumirExecucaoComandos:
+    action: receive
+    channel:
+      $ref: '#/channels/execucao.comandos'
+    summary: "execution-service consome a fila execucao.comandos (ack manual, prefetch por consumidor)."
+    messages:
+      - $ref: '#/channels/execucao.comandos/messages/SolicitarDiagnostico'
+      - $ref: '#/channels/execucao.comandos/messages/DescartarDiagnostico'
+      - $ref: '#/channels/execucao.comandos/messages/ReservarPecas'
+      - $ref: '#/channels/execucao.comandos/messages/LiberarReserva'
+      - $ref: '#/channels/execucao.comandos/messages/AgendarExecucao'
+      - $ref: '#/channels/execucao.comandos/messages/CancelarExecucao'
+      - $ref: '#/channels/execucao.comandos/messages/AnonimizarVeiculo'
+    tags:
+      - name: execution-service
+    bindings:
+      amqp:
+        ack: true
+        bindingVersion: 0.3.0
+  consumirBillingComandos:
+    action: receive
+    channel:
+      $ref: '#/channels/billing.comandos'
+    summary: "billing-service consome a fila billing.comandos (ack manual, prefetch por consumidor)."
+    messages:
+      - $ref: '#/channels/billing.comandos/messages/GerarOrcamento'
+      - $ref: '#/channels/billing.comandos/messages/CancelarOrcamento'
+      - $ref: '#/channels/billing.comandos/messages/SolicitarPagamento'
+      - $ref: '#/channels/billing.comandos/messages/EstornarPagamento'
+    tags:
+      - name: billing-service
+    bindings:
+      amqp:
+        ack: true
+        bindingVersion: 0.3.0
+  consumirOsEventos:
+    action: receive
+    channel:
+      $ref: '#/channels/os.eventos'
+    summary: "os-service consome a fila os.eventos (ack manual, prefetch por consumidor)."
+    messages:
+      - $ref: '#/channels/os.eventos/messages/DiagnosticoIniciado'
+      - $ref: '#/channels/os.eventos/messages/DiagnosticoConcluido'
+      - $ref: '#/channels/os.eventos/messages/DiagnosticoDescartado'
+      - $ref: '#/channels/os.eventos/messages/OrcamentoGerado'
+      - $ref: '#/channels/os.eventos/messages/GeracaoDeOrcamentoFalhou'
+      - $ref: '#/channels/os.eventos/messages/OrcamentoAprovado'
+      - $ref: '#/channels/os.eventos/messages/OrcamentoRecusado'
+      - $ref: '#/channels/os.eventos/messages/OrcamentoExpirado'
+      - $ref: '#/channels/os.eventos/messages/OrcamentoCancelado'
+      - $ref: '#/channels/os.eventos/messages/PecasReservadas'
+      - $ref: '#/channels/os.eventos/messages/ReservaDePecasFalhou'
+      - $ref: '#/channels/os.eventos/messages/ReservaLiberada'
+      - $ref: '#/channels/os.eventos/messages/PagamentoSolicitado'
+      - $ref: '#/channels/os.eventos/messages/PagamentoConfirmado'
+      - $ref: '#/channels/os.eventos/messages/PagamentoRecusado'
+      - $ref: '#/channels/os.eventos/messages/PagamentoExpirado'
+      - $ref: '#/channels/os.eventos/messages/PagamentoEstornado'
+      - $ref: '#/channels/os.eventos/messages/EstornoDePagamentoFalhou'
+      - $ref: '#/channels/os.eventos/messages/PagamentoCancelado'
+      - $ref: '#/channels/os.eventos/messages/ExecucaoAgendada'
+      - $ref: '#/channels/os.eventos/messages/ExecucaoCancelada'
+      - $ref: '#/channels/os.eventos/messages/ExecucaoIniciada'
+      - $ref: '#/channels/os.eventos/messages/ExecucaoFinalizada'
+    tags:
+      - name: os-service
+    bindings:
+      amqp:
+        ack: true
+        bindingVersion: 0.3.0
+components:
+  messages:
+    SolicitarDiagnostico:
+      name: SolicitarDiagnostico
+      title: "Solicitar diagnóstico"
+      summary: "Abre o passo T2 da saga: coloca o veículo na fila de diagnóstico da Execução."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: SolicitarDiagnostico
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/SolicitarDiagnostico.schema.json
+      bindings:
+        amqp:
+          messageType: SolicitarDiagnostico
+          bindingVersion: 0.3.0
+    DiagnosticoIniciado:
+      name: DiagnosticoIniciado
+      title: "Diagnóstico iniciado"
+      summary: "Um mecânico pegou a OS na fila de diagnóstico; a OS passa a EM_DIAGNOSTICO."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: DiagnosticoIniciado
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/DiagnosticoIniciado.schema.json
+      bindings:
+        amqp:
+          messageType: DiagnosticoIniciado
+          bindingVersion: 0.3.0
+    DiagnosticoConcluido:
+      name: DiagnosticoConcluido
+      title: "Diagnóstico concluído"
+      summary: "Diagnóstico registrado com os serviços e peças necessários; o OS pede o orçamento ao Billing."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: DiagnosticoConcluido
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/DiagnosticoConcluido.schema.json
+      bindings:
+        amqp:
+          messageType: DiagnosticoConcluido
+          bindingVersion: 0.3.0
+    DescartarDiagnostico:
+      name: DescartarDiagnostico
+      title: "Descartar diagnóstico"
+      summary: "Compensação do passo T2: a Execução descarta o diagnóstico da OS cancelada."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: DescartarDiagnostico
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/DescartarDiagnostico.schema.json
+      bindings:
+        amqp:
+          messageType: DescartarDiagnostico
+          bindingVersion: 0.3.0
+    DiagnosticoDescartado:
+      name: DiagnosticoDescartado
+      title: "Diagnóstico descartado"
+      summary: "Confirma a compensação DescartarDiagnostico."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: DiagnosticoDescartado
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/DiagnosticoDescartado.schema.json
+      bindings:
+        amqp:
+          messageType: DiagnosticoDescartado
+          bindingVersion: 0.3.0
+    GerarOrcamento:
+      name: GerarOrcamento
+      title: "Gerar orçamento"
+      summary: "Passo T3: o Billing precifica os itens do diagnóstico e gera o orçamento."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: GerarOrcamento
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/GerarOrcamento.schema.json
+      bindings:
+        amqp:
+          messageType: GerarOrcamento
+          bindingVersion: 0.3.0
+    OrcamentoGerado:
+      name: OrcamentoGerado
+      title: "Orçamento gerado"
+      summary: "Orçamento pronto, com o link de decisão; a OS passa a AGUARDANDO_APROVACAO, e o OS avisa o cliente por e-mail."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: OrcamentoGerado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/OrcamentoGerado.schema.json
+      bindings:
+        amqp:
+          messageType: OrcamentoGerado
+          bindingVersion: 0.3.0
+    GeracaoDeOrcamentoFalhou:
+      name: GeracaoDeOrcamentoFalhou
+      title: "Geração de orçamento falhou"
+      summary: "O Billing não conseguiu precificar os itens (código sem preço, por exemplo); o OS compensa a saga."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: GeracaoDeOrcamentoFalhou
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/GeracaoDeOrcamentoFalhou.schema.json
+      bindings:
+        amqp:
+          messageType: GeracaoDeOrcamentoFalhou
+          bindingVersion: 0.3.0
+    OrcamentoAprovado:
+      name: OrcamentoAprovado
+      title: "Orçamento aprovado"
+      summary: "Decisão do cliente (pelo link ou pelo atendente) aprovando o orçamento; passo T4."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: OrcamentoAprovado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/OrcamentoAprovado.schema.json
+      bindings:
+        amqp:
+          messageType: OrcamentoAprovado
+          bindingVersion: 0.3.0
+    OrcamentoRecusado:
+      name: OrcamentoRecusado
+      title: "Orçamento recusado"
+      summary: "Decisão do cliente (pelo link ou pelo atendente) recusando o orçamento; o OS compensa a saga e cancela a OS."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: OrcamentoRecusado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/OrcamentoRecusado.schema.json
+      bindings:
+        amqp:
+          messageType: OrcamentoRecusado
+          bindingVersion: 0.3.0
+    OrcamentoExpirado:
+      name: OrcamentoExpirado
+      title: "Orçamento expirado"
+      summary: "O prazo de decisão (ORCAMENTO_VALIDADE_HORAS) venceu sem resposta do cliente."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: OrcamentoExpirado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/OrcamentoExpirado.schema.json
+      bindings:
+        amqp:
+          messageType: OrcamentoExpirado
+          bindingVersion: 0.3.0
+    CancelarOrcamento:
+      name: CancelarOrcamento
+      title: "Cancelar orçamento"
+      summary: "Compensação do passo T3: o Billing cancela o orçamento da OS; sem orcamento_id (GerarOrcamento em voo), localiza pelo ordem_id."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: CancelarOrcamento
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/CancelarOrcamento.schema.json
+      bindings:
+        amqp:
+          messageType: CancelarOrcamento
+          bindingVersion: 0.3.0
+    OrcamentoCancelado:
+      name: OrcamentoCancelado
+      title: "Orçamento cancelado"
+      summary: "Confirma a compensação CancelarOrcamento."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: OrcamentoCancelado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/OrcamentoCancelado.schema.json
+      bindings:
+        amqp:
+          messageType: OrcamentoCancelado
+          bindingVersion: 0.3.0
+    ReservarPecas:
+      name: ReservarPecas
+      title: "Reservar peças"
+      summary: "Passo T5: a Execução reserva no estoque as peças do orçamento aprovado. Lista vazia vale (orçamento só de serviços)."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ReservarPecas
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/ReservarPecas.schema.json
+      bindings:
+        amqp:
+          messageType: ReservarPecas
+          bindingVersion: 0.3.0
+    PecasReservadas:
+      name: PecasReservadas
+      title: "Peças reservadas"
+      summary: "Reserva feita; a OS passa a AGUARDANDO_PAGAMENTO, e o OS pede o pagamento ao Billing."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PecasReservadas
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/PecasReservadas.schema.json
+      bindings:
+        amqp:
+          messageType: PecasReservadas
+          bindingVersion: 0.3.0
+    ReservaDePecasFalhou:
+      name: ReservaDePecasFalhou
+      title: "Reserva de peças falhou"
+      summary: "Estoque insuficiente para ao menos uma peça; o OS compensa a saga."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ReservaDePecasFalhou
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/ReservaDePecasFalhou.schema.json
+      bindings:
+        amqp:
+          messageType: ReservaDePecasFalhou
+          bindingVersion: 0.3.0
+    LiberarReserva:
+      name: LiberarReserva
+      title: "Liberar reserva"
+      summary: "Compensação do passo T5: a Execução devolve ao estoque as peças reservadas."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: LiberarReserva
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/LiberarReserva.schema.json
+      bindings:
+        amqp:
+          messageType: LiberarReserva
+          bindingVersion: 0.3.0
+    ReservaLiberada:
+      name: ReservaLiberada
+      title: "Reserva liberada"
+      summary: "Confirma a compensação LiberarReserva."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ReservaLiberada
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/ReservaLiberada.schema.json
+      bindings:
+        amqp:
+          messageType: ReservaLiberada
+          bindingVersion: 0.3.0
+    SolicitarPagamento:
+      name: SolicitarPagamento
+      title: "Solicitar pagamento"
+      summary: "Passo T6: o Billing cria a cobrança do orçamento aprovado no Mercado Pago (ou no simulador)."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: SolicitarPagamento
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/SolicitarPagamento.schema.json
+      bindings:
+        amqp:
+          messageType: SolicitarPagamento
+          bindingVersion: 0.3.0
+    PagamentoSolicitado:
+      name: PagamentoSolicitado
+      title: "Pagamento solicitado"
+      summary: "Cobrança criada, com o link de checkout; o OS guarda o resumo e avisa o cliente por e-mail (a OS já está em AGUARDANDO_PAGAMENTO desde PecasReservadas)."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PagamentoSolicitado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/PagamentoSolicitado.schema.json
+      bindings:
+        amqp:
+          messageType: PagamentoSolicitado
+          bindingVersion: 0.3.0
+    PagamentoConfirmado:
+      name: PagamentoConfirmado
+      title: "Pagamento confirmado"
+      summary: "Pagamento aprovado pelo provedor (confirmado por consulta, nunca só pelo corpo do webhook); a OS passa a AGUARDANDO_EXECUCAO, e o OS agenda a execução."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PagamentoConfirmado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/PagamentoConfirmado.schema.json
+      bindings:
+        amqp:
+          messageType: PagamentoConfirmado
+          bindingVersion: 0.3.0
+    PagamentoRecusado:
+      name: PagamentoRecusado
+      title: "Pagamento recusado"
+      summary: "Esgotadas as recusas permitidas, o pagamento passou a RECUSADO; o OS compensa a saga."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PagamentoRecusado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/PagamentoRecusado.schema.json
+      bindings:
+        amqp:
+          messageType: PagamentoRecusado
+          bindingVersion: 0.3.0
+    PagamentoExpirado:
+      name: PagamentoExpirado
+      title: "Pagamento expirado"
+      summary: "O prazo de pagamento (PAGAMENTO_VALIDADE_MINUTOS) venceu; o OS compensa a saga."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PagamentoExpirado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/PagamentoExpirado.schema.json
+      bindings:
+        amqp:
+          messageType: PagamentoExpirado
+          bindingVersion: 0.3.0
+    EstornarPagamento:
+      name: EstornarPagamento
+      title: "Estornar pagamento"
+      summary: "Compensação do passo T6, em qualquer estado do pagamento: com a cobrança em aberto, o Billing a cancela e responde PagamentoCancelado; com o pagamento confirmado, estorna no provedor com a chave de idempotência estorno-{pagamento_id} e responde PagamentoEstornado. O id da mensagem só deduplica a entrega."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: EstornarPagamento
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/EstornarPagamento.schema.json
+      bindings:
+        amqp:
+          messageType: EstornarPagamento
+          bindingVersion: 0.3.0
+    PagamentoEstornado:
+      name: PagamentoEstornado
+      title: "Pagamento estornado"
+      summary: "Pagamento estornado no provedor; o motivo diz a origem do estorno."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PagamentoEstornado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/PagamentoEstornado.schema.json
+      bindings:
+        amqp:
+          messageType: PagamentoEstornado
+          bindingVersion: 0.3.0
+    EstornoDePagamentoFalhou:
+      name: EstornoDePagamentoFalhou
+      title: "Estorno de pagamento falhou"
+      summary: "O provedor recusou o estorno; a saga vai para FALHA_NA_COMPENSACAO e pede intervenção manual."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: EstornoDePagamentoFalhou
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/EstornoDePagamentoFalhou.schema.json
+      bindings:
+        amqp:
+          messageType: EstornoDePagamentoFalhou
+          bindingVersion: 0.3.0
+    PagamentoCancelado:
+      name: PagamentoCancelado
+      title: "Pagamento cancelado"
+      summary: "Resposta ao EstornarPagamento quando o pagamento ainda estava SOLICITADO: o Billing cancela a cobrança (o checkout deixa de valer) em vez de estornar."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: PagamentoCancelado
+                versao:
+                  const: 1
+                origem:
+                  const: billing-service
+                dados:
+                  $ref: ./schemas/PagamentoCancelado.schema.json
+      bindings:
+        amqp:
+          messageType: PagamentoCancelado
+          bindingVersion: 0.3.0
+    AgendarExecucao:
+      name: AgendarExecucao
+      title: "Agendar execução"
+      summary: "Passo T7: com o pagamento confirmado, a OS entra na fila de execução."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: AgendarExecucao
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/AgendarExecucao.schema.json
+      bindings:
+        amqp:
+          messageType: AgendarExecucao
+          bindingVersion: 0.3.0
+    ExecucaoAgendada:
+      name: ExecucaoAgendada
+      title: "Execução agendada"
+      summary: "OS na fila de execução; a posição informada fica só no passo da saga, e a posição atual se consulta na fila da Execução (a OS já está em AGUARDANDO_EXECUCAO desde PagamentoConfirmado)."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ExecucaoAgendada
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/ExecucaoAgendada.schema.json
+      bindings:
+        amqp:
+          messageType: ExecucaoAgendada
+          bindingVersion: 0.3.0
+    CancelarExecucao:
+      name: CancelarExecucao
+      title: "Cancelar execução"
+      summary: "Compensação do passo T7: a Execução tira a OS da fila (só antes do início físico, o pivot da saga)."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: CancelarExecucao
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/CancelarExecucao.schema.json
+      bindings:
+        amqp:
+          messageType: CancelarExecucao
+          bindingVersion: 0.3.0
+    ExecucaoCancelada:
+      name: ExecucaoCancelada
+      title: "Execução cancelada"
+      summary: "Confirma a compensação CancelarExecucao."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ExecucaoCancelada
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/ExecucaoCancelada.schema.json
+      bindings:
+        amqp:
+          messageType: ExecucaoCancelada
+          bindingVersion: 0.3.0
+    ExecucaoIniciada:
+      name: ExecucaoIniciada
+      title: "Execução iniciada"
+      summary: "Pivot da saga (T8): o mecânico começou o serviço e não há mais compensação; a OS passa a EM_EXECUCAO."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ExecucaoIniciada
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/ExecucaoIniciada.schema.json
+      bindings:
+        amqp:
+          messageType: ExecucaoIniciada
+          bindingVersion: 0.3.0
+    ExecucaoFinalizada:
+      name: ExecucaoFinalizada
+      title: "Execução finalizada"
+      summary: "Serviço concluído e peças baixadas do estoque; a OS passa a FINALIZADA."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: ExecucaoFinalizada
+                versao:
+                  const: 1
+                origem:
+                  const: execution-service
+                dados:
+                  $ref: ./schemas/ExecucaoFinalizada.schema.json
+      bindings:
+        amqp:
+          messageType: ExecucaoFinalizada
+          bindingVersion: 0.3.0
+    AnonimizarVeiculo:
+      name: AnonimizarVeiculo
+      title: "Anonimizar veículo"
+      summary: "LGPD, fora da saga: a Execução troca a placa guardada do veículo pelo marcador ANONIMIZADO:{veiculo_id}."
+      traits:
+        - $ref: '#/components/messageTraits/envelope'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          allOf:
+            - $ref: ./schemas/envelope.schema.json
+            - type: object
+              properties:
+                tipo:
+                  const: AnonimizarVeiculo
+                versao:
+                  const: 1
+                origem:
+                  const: os-service
+                dados:
+                  $ref: ./schemas/AnonimizarVeiculo.schema.json
+      bindings:
+        amqp:
+          messageType: AnonimizarVeiculo
+          bindingVersion: 0.3.0
+  messageTraits:
+    envelope:
+      contentType: application/json
+      correlationId:
+        description: "Id da ordem de serviço, que também identifica a instância da saga; em mensagem fora da saga, o id do agregado tratado (AnonimizarVeiculo: veiculo_id)."
+        location: $message.payload#/correlation_id
+      headers:
+        type: object
+        properties:
+          traceparent:
+            type: string
+            description: "Contexto W3C Trace Context do span que publicou; o consumidor abre o span dele como filho."
+          tracestate:
+            type: string
+            description: "Estado W3C Trace Context que acompanha o traceparent."
+          x-tentativa:
+            type: integer
+            minimum: 1
+            maximum: 5
+            description: "Número da republicação (1 a 5), que escolhe a fila de retry: 1 em <fila>.retry.1s, 2 em .retry.5s, 3 em .retry.15s, 4 em .retry.60s e 5 em .retry.300s; ausente na primeira entrega. A cópia leva o user_id do consumidor que a republicou."

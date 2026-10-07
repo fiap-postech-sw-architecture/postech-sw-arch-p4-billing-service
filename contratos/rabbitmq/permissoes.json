@@ -1,0 +1,69 @@
+{
+  "permissions": [
+    {
+      "user": "os",
+      "vhost": "/",
+      "configure": "^\\z",
+      "write": "^(pytstop\\.comandos|pytstop\\.retry)\\z",
+      "read": "^os\\.eventos\\z"
+    },
+    {
+      "user": "billing",
+      "vhost": "/",
+      "configure": "^\\z",
+      "write": "^(pytstop\\.eventos|pytstop\\.retry)\\z",
+      "read": "^billing\\.comandos\\z"
+    },
+    {
+      "user": "execucao",
+      "vhost": "/",
+      "configure": "^\\z",
+      "write": "^(pytstop\\.eventos|pytstop\\.retry)\\z",
+      "read": "^execucao\\.comandos\\z"
+    }
+  ],
+  "topic_permissions": [
+    {
+      "user": "os",
+      "vhost": "/",
+      "exchange": "pytstop.comandos",
+      "write": "^comando\\.(billing|execucao)\\.",
+      "read": "^\\z"
+    },
+    {
+      "user": "os",
+      "vhost": "/",
+      "exchange": "pytstop.retry",
+      "write": "^os\\.eventos\\.retry\\.(1|5|15|60|300)s\\z",
+      "read": "^\\z"
+    },
+    {
+      "user": "billing",
+      "vhost": "/",
+      "exchange": "pytstop.eventos",
+      "write": "^evento\\.billing\\.",
+      "read": "^\\z"
+    },
+    {
+      "user": "billing",
+      "vhost": "/",
+      "exchange": "pytstop.retry",
+      "write": "^billing\\.comandos\\.retry\\.(1|5|15|60|300)s\\z",
+      "read": "^\\z"
+    },
+    {
+      "user": "execucao",
+      "vhost": "/",
+      "exchange": "pytstop.eventos",
+      "write": "^evento\\.execucao\\.",
+      "read": "^\\z"
+    },
+    {
+      "user": "execucao",
+      "vhost": "/",
+      "exchange": "pytstop.retry",
+      "write": "^execucao\\.comandos\\.retry\\.(1|5|15|60|300)s\\z",
+      "read": "^\\z"
+    }
+  ]
+}

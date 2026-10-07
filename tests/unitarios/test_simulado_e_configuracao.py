@@ -13,9 +13,9 @@ from src.configuracao import (
     ConfiguracaoDosPrazos,
     ModoMercadoPago,
 )
-from src.main import criar_gateway
 from src.pagamento.aplicacao.ports import GatewayPagamentoRecusouError
 from src.pagamento.dominio.estados import StatusNoProvedor
+from src.pagamento.infraestrutura.gateway import criar_gateway
 from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from tests.factories import AGORA, dinheiro
@@ -209,7 +209,7 @@ class TestConfiguracao:
             config.mp_notification_url
             == "http://localhost:8002/api/v1/webhooks/mercadopago"
         )
-        assert isinstance(criar_gateway(config), GatewayPagamentoSimulado)
+        assert isinstance(criar_gateway(config.comandos), GatewayPagamentoSimulado)
 
     def test_segredos_fora_do_repr(self) -> None:
         texto = repr(
@@ -304,7 +304,7 @@ class TestConfiguracao:
         assert config.mp_modo is ModoMercadoPago.MERCADOPAGO
         assert config.mp_notification_url == "https://publico/webhook"
         assert str(config.mp_timeout_segundos) == "2.5"
-        gateway = criar_gateway(config)
+        gateway = criar_gateway(config.comandos)
         assert isinstance(gateway, MercadoPagoGateway)
         gateway.fechar()
 
@@ -395,4 +395,4 @@ class TestConfiguracao:
         config = Configuracao.do_ambiente(DEV)
         object.__setattr__(config, "mp_modo", ModoMercadoPago.MERCADOPAGO)
         with pytest.raises(ValueError, match="MP_ACCESS_TOKEN"):
-            criar_gateway(config)
+            criar_gateway(config.comandos)

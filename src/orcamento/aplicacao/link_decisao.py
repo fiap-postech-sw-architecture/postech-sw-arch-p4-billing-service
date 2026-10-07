@@ -8,7 +8,7 @@ uma credencial: nao vai para log (mascarado no scrubber) e qualquer falha
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from src.compartilhado.aplicacao.token_assinado import TokenAssinado
 from src.orcamento.dominio.exceptions import LinkDeDecisaoInvalidoError
@@ -18,11 +18,14 @@ if TYPE_CHECKING:
     from uuid import UUID
 
 _DOMINIO_DE_ASSINATURA = "link-de-decisao"
+# Caminho da rota publica que o link abre: a API a monta (router_publico) e o
+# consumidor dos comandos gera os links com ele, sem carregar a pilha HTTP.
+CAMINHO_DO_LINK: Final = "/api/v1/publico/orcamentos"
 
 
 class LinkDeDecisao:
     def __init__(self, *, segredo: str, url_base: str) -> None:
-        """``url_base`` ja traz o caminho da rota publica (a borda HTTP o define)."""
+        """``url_base``: a URL publica do Billing seguida de ``CAMINHO_DO_LINK``."""
         self._token = TokenAssinado(segredo=segredo, dominio=_DOMINIO_DE_ASSINATURA)
         self._url_base = url_base.rstrip("/")
 

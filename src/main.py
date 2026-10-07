@@ -12,24 +12,20 @@ from fastapi import FastAPI
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
+from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
 from src.compartilhado.interfaces.router_saude import router as router_saude
 from src.configuracao import Configuracao, ModoMercadoPago
-from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
+from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK, LinkDeDecisao
 from src.orcamento.interfaces.router import router as router_orcamentos
-from src.orcamento.interfaces.router_publico import PREFIXO as PREFIXO_DO_LINK
 from src.orcamento.interfaces.router_publico import router as router_publico
-from src.pagamento.infraestrutura.mercadopago import (
-    ConfiguracaoMercadoPago,
-    MercadoPagoGateway,
-)
+from src.pagamento.infraestrutura.gateway import criar_gateway
+from src.pagamento.infraestrutura.mercadopago import MercadoPagoGateway
 from src.pagamento.infraestrutura.metricas import MetricasPrometheus
-from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 from src.pagamento.interfaces.router import router as router_pagamentos
-from src.pagamento.interfaces.router_simulador import CAMINHO_CHECKOUT
 from src.pagamento.interfaces.router_simulador import router as router_simulador
 from src.precos.interfaces.router import router as router_precos
 
@@ -46,30 +42,6 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
-def criar_gateway(config: Configuracao) -> GatewayPagamento:
-    """``MP_MODE=mercadopago`` liga o Checkout Pro real; ``simulado``, o simulador.
-
-    O simulador assina o ``checkout_url`` com o segredo do link de decisao, em
-    dominio proprio (um token nao vale no lugar do outro).
-    """
-    if config.mp_modo is ModoMercadoPago.MERCADOPAGO:
-        if not config.mp_access_token:  # garantido pela Configuracao
-            msg = "MP_ACCESS_TOKEN ausente"
-            raise ValueError(msg)
-        return MercadoPagoGateway(
-            ConfiguracaoMercadoPago(
-                access_token=config.mp_access_token,
-                notification_url=config.mp_notification_url,
-                base_url=config.mp_api_url,
-                timeout_segundos=config.mp_timeout_segundos,
-            )
-        )
-    return GatewayPagamentoSimulado(
-        url_checkout=f"{config.url_publica}{CAMINHO_CHECKOUT}",
-        segredo=config.link_segredo,
-    )
-
-
 def criar_app(
     config: Configuracao | None = None,
     *,
@@ -84,7 +56,8 @@ def criar_app(
     """
     configurar_logging()
     config = config or Configuracao.do_ambiente()
-    gateway = gateway or criar_gateway(config)
+    contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
+    gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
 
     @asynccontextmanager
@@ -134,7 +107,7 @@ def _montar_estado(
     app.state.gateway_pagamento = gateway
     app.state.metricas_pagamento = MetricasPrometheus()
     app.state.link_decisao = LinkDeDecisao(
-        segredo=config.link_segredo, url_base=f"{config.url_publica}{PREFIXO_DO_LINK}"
+        segredo=config.link_segredo, url_base=f"{config.url_publica}{CAMINHO_DO_LINK}"
     )
     app.state.validador_de_token = ValidadorDeTokenJWKS(config.jwks_url)
 

@@ -49,7 +49,7 @@
         "null"
       ],
       "format": "uuid",
-      "description": "Id da mensagem que causou esta: a resposta a um comando leva o id do comando; null só quando a causa é uma requisição HTTP, um webhook ou um prazo."
+      "description": "Id da mensagem que causou esta. Resposta a comando, inclusive o desfecho republicado para comando repetido: o id do comando respondido. Evento espontâneo (decisão do cliente, webhook ou conciliação, prazo do Billing, ação do mecânico): o id do comando que abriu o fluxo, como o do GerarOrcamento em OrcamentoAprovado. Comando do orquestrador: o id do evento que o disparou, ou null quando a causa é uma requisição HTTP (abertura, cancelamento, retomada, eliminação de dados) ou o prazo técnico (reenvio ou esgotamento). Evento nunca leva null: o orquestrador reconhece por este campo a resposta ao comando em voo."
     },
     "ocorrido_em": {
       "type": "string",

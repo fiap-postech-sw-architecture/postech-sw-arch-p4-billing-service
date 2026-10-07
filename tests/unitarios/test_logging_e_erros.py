@@ -4,6 +4,7 @@ import importlib
 import io
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -219,10 +220,48 @@ class TestLogging:
         # Alem do limite de profundidade o valor segue sem varredura.
         assert "123.456.789-09" in json.dumps(evento["profundo"])
 
+    @pytest.mark.parametrize(
+        ("entrada", "saida"),
+        [
+            ("fulano@exemplo.com", "f***@exemplo.com"),
+            (
+                "x=maria.silva+tag@mail.empresa.com.br fim",
+                "x=m***@mail.empresa.com.br fim",
+            ),
+            ("(ana_b@ex.co)", "(a***@ex.co)"),
+        ],
+        ids=["simples", "subdominios-e-tag", "entre-parenteses"],
+    )
+    def test_email_e_mascarado(self, entrada: str, saida: str) -> None:
+        assert scrub_pii(None, "info", {"event": entrada})["event"] == saida
+
+    @pytest.mark.parametrize(
+        "hostil",
+        ["a." * 40_000, "x@" + "a." * 40_000, "x@" + "a-" * 40_000, "a" * 80_000 + "@"],
+        ids=["pontos", "dominio-com-pontos", "dominio-com-hifens", "local-sem-fim"],
+    )
+    def test_texto_hostil_de_80_kb_e_varrido_em_menos_de_100_ms(
+        self, hostil: str
+    ) -> None:
+        # O id de uma mensagem chega de fora: o scrub nao pode travar o processo.
+        inicio = time.perf_counter()
+        scrub_pii(None, "info", {"event": hostil})
+        assert time.perf_counter() - inicio < 0.1
+
     def test_redigir_trunca_e_mascara(self) -> None:
         texto = redigir_pii_erro("cpf 123.456.789-09 " + "x" * 300)
         assert "123.456" not in texto
         assert len(texto) == 201
+
+
+def test_logger_do_pika_so_deixa_passar_erro(saida_de_log: io.StringIO) -> None:
+    pika = logging.getLogger("pika.adapters.blocking_connection")
+    pika.warning("Published message was returned: body_prefix=%r", b"dados")
+    pika.error("connection lost")
+
+    assert [linha["event"] for linha in linhas_json(saida_de_log)] == [
+        "connection lost"
+    ]
 
 
 class Corpo(BaseModel):

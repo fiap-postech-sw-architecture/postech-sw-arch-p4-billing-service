@@ -1,0 +1,33 @@
+{
+  "id": "101fe164-6fa4-4503-b60e-8db718fbfd52",
+  "tipo": "OrcamentoGerado",
+  "versao": 1,
+  "origem": "billing-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "aab90131-077c-473b-8f58-84287532cb38",
+  "ocorrido_em": "2026-10-06T12:46:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "orcamento_id": "8605886c-3bb2-4165-8f1d-2368c87022e9",
+    "linhas": [
+      {
+        "codigo": "SRV-SUSPENSAO",
+        "descricao": "Revisão da suspensão dianteira",
+        "quantidade": 1,
+        "preco_unitario": "180.00",
+        "subtotal": "180.00"
+      },
+      {
+        "codigo": "PEC-AMORTECEDOR-D",
+        "descricao": "Amortecedor dianteiro",
+        "quantidade": 2,
+        "preco_unitario": "320.00",
+        "subtotal": "640.00"
+      }
+    ],
+    "total": "820.00",
+    "moeda": "BRL",
+    "valido_ate": "2026-10-09T12:46:00Z",
+    "link_decisao": "http://localhost/billing/api/v1/publico/orcamentos/eyJvIjoiOGYyZCJ9.Zk9yQ2FtZW50bw"
+  }
+}

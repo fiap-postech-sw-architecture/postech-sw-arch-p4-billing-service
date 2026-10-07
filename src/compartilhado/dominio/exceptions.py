@@ -30,6 +30,12 @@ class DomainException(Exception):
         self.mensagem = mensagem or self.mensagem_padrao
         super().__init__(self.mensagem)
 
+    @property
+    def detalhe_de_log(self) -> dict[str, str]:
+        """O que pode ir para o log: so o codigo (a mensagem pode trazer texto
+        de fora, como a recusa do provedor de pagamento)."""
+        return {"codigo": self.codigo}
+
 
 class EntidadeNaoEncontradaError(DomainException):
     codigo = "ENTIDADE_NAO_ENCONTRADA"

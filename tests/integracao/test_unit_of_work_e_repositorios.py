@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
@@ -12,10 +13,16 @@ from uuid import uuid4
 
 import pytest
 from bson.decimal128 import Decimal128
+from pymongo.errors import ExecutionTimeout, OperationFailure
 
 from src.compartilhado.dominio.exceptions import ValorInvalidoError
+from src.compartilhado.infraestrutura import unit_of_work
 from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
-from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
+from src.compartilhado.infraestrutura.unit_of_work import (
+    MensagemRecebida,
+    MongoUnitOfWork,
+    processar_mensagem,
+)
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.exceptions import OrcamentoJaGeradoError
 from src.orcamento.dominio.orcamento import CanalDecisao, Orcamento, StatusOrcamento
@@ -210,6 +217,35 @@ class TestUnidadeDeTrabalho:
         final = repo.obter_por_id(gerado.id)
         assert final is not None
         assert final.status.value == "APROVADO"
+
+    @pytest.mark.parametrize("caminho", ["api", "mensagem"])
+    def test_falha_transitoria_que_nao_passa_estoura_o_teto_da_transacao(
+        self, banco: Banco, monkeypatch: pytest.MonkeyPatch, caminho: str
+    ) -> None:
+        monkeypatch.setattr(unit_of_work, "LIMITE_DA_TRANSACAO_SEGUNDOS", 0.3)
+        chamadas: list[float] = []
+
+        def conflito() -> None:
+            chamadas.append(time.monotonic())
+            raise OperationFailure(
+                "conflito",
+                code=112,
+                details={"errorLabels": ["TransientTransactionError"]},
+            )
+
+        inicio = time.monotonic()
+        with pytest.raises(ExecutionTimeout):
+            if caminho == "api":
+                MongoUnitOfWork(banco).executar(conflito)
+            else:
+                comando = MensagemRecebida(
+                    id=uuid4(), tipo="GerarOrcamento", correlation_id=uuid4()
+                )
+                processar_mensagem(banco, comando, lambda uow: uow.executar(conflito))
+
+        # Repetiu, mas so ate o teto: sem ele o with_transaction iria a 120 s.
+        assert len(chamadas) > 1
+        assert time.monotonic() - inicio < 5
 
 
 class TestRepositorioDeOrcamento:

@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from src.compartilhado.dominio.dinheiro import Dinheiro
     from src.pagamento.aplicacao.ports import ItemCobranca
 
+# Pagina do checkout simulado, servida pela API (fora de /api/v1, ADR-038).
+CAMINHO_CHECKOUT = "/simulador/checkout"
 _DOMINIO_DE_ASSINATURA = "checkout-simulado"
 _PREFIXO_PREFERENCIA = "sim-pref-"
 
