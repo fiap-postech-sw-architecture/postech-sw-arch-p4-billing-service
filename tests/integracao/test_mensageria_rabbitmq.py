@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+import httpx
 import pika
 import pytest
 from opentelemetry import trace
@@ -43,10 +44,12 @@ from src.seed import semear
 from tests.factories import orcamento
 from tests.integracao.apoio import (
     SEGREDO_LINK,
+    SENHA_DO_ADMIN,
     BrokerDeTeste,
     GatewayRoteirizado,
     comando,
     configuracao,
+    definicoes_de_teste,
 )
 
 if TYPE_CHECKING:
@@ -402,6 +405,62 @@ def test_excecao_nao_classificada_vai_direto_para_a_dlq(
     assert banco["mensagens_processadas"].count_documents({}) == 0
 
 
+@contextmanager
+def retry_negado(broker: BrokerDeTeste) -> Iterator[None]:
+    """Permissao de topico do billing no pytstop.retry como na topologia antiga
+    (so a chave ``billing.comandos``): o broker recusa toda copia de retry."""
+    url = f"{broker.api}/topic-permissions/%2F/billing"
+    with httpx.Client(auth=("admin", SENHA_DO_ADMIN), timeout=10) as http:
+        http.put(
+            url,
+            json={
+                "exchange": "pytstop.retry",
+                "write": "^billing\\.comandos$",
+                "read": "^$",
+            },
+        ).raise_for_status()
+        try:
+            yield
+        finally:
+            [original] = [
+                permissao
+                for permissao in definicoes_de_teste()["topic_permissions"]
+                if (permissao["user"], permissao["exchange"])
+                == ("billing", "pytstop.retry")
+            ]
+            http.put(
+                url,
+                json={
+                    chave: original[chave] for chave in ("exchange", "write", "read")
+                },
+            ).raise_for_status()
+
+
+def test_copia_de_retry_recusada_leva_a_original_direto_para_a_dlq(
+    banco: Banco, broker: BrokerDeTeste, tmp_path: Path
+) -> None:
+    handler = FalhaTransitoria(vezes=99)
+    mensagem = _cancelar()
+    with (
+        retry_negado(broker),
+        processos(
+            banco,
+            broker,
+            tmp_path,
+            handlers={"CancelarOrcamento": handler},
+            relay=False,
+        ),
+    ):
+        publicar_comando(broker, mensagem)
+        props, morta = esperar_mensagem(broker, "billing.comandos.dlq")
+
+    # O canal de consumo segue aberto: a original vai para a DLQ na hora, sem
+    # voltar para a fila em laco ate o limite de entregas.
+    assert morta == mensagem
+    assert "x-tentativa" not in (props.headers or {})
+    assert handler.chamadas == 1
+
+
 def _gravar_evento(banco: Banco) -> None:
     uow = MongoUnitOfWork(banco)
     uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(orcamento()))
@@ -430,25 +489,36 @@ class TestRelayNoBroker:
         assert (linha["status"], linha["tentativas"]) == ("pendente", 1)
         assert linha["ultimo_erro"] == "UnroutableError"
 
-    def test_routing_key_sem_permissao_conta_tentativa_e_reconecta(
+    def test_routing_key_sem_permissao_conta_tentativa_e_segue_na_mesma_conexao(
         self, banco: Banco, broker: BrokerDeTeste
     ) -> None:
         _gravar_evento(banco)
-        # Outro servico: a permissao de topico do billing recusa (403).
-        banco["outbox"].update_one({}, {"$set": {"routing_key": "evento.os.alheio"}})
+        _gravar_evento(banco)
+        # A primeira linha vai para outro servico: a permissao de topico do
+        # billing recusa (403) e o broker fecha o canal de publicacao.
+        primeira = banco["outbox"].find_one(sort=[("_id", 1)])
+        assert primeira is not None
+        banco["outbox"].update_one(
+            {"_id": primeira["_id"]}, {"$set": {"routing_key": "evento.os.alheio"}}
+        )
         canal = CanalAmqp(
             parametros(broker.url("billing"), nome="teste-sem-permissao"),
             exchanges=(contratos.EXCHANGE_EVENTOS,),
         )
         canal.abrir()
         try:
-            RelayDaOutbox(banco, canal, usuario="billing").entregar_pendentes(1)
+            # A segunda sai num canal de publicacao reaberto, sem reconectar.
+            assert (
+                RelayDaOutbox(banco, canal, usuario="billing").entregar_pendentes(2)
+                == 2
+            )
         finally:
             canal.fechar()
 
-        [linha] = banco["outbox"].find()
-        assert (linha["status"], linha["tentativas"]) == ("pendente", 1)
-        assert linha["ultimo_erro"] == "canal fechado pelo broker (403)"
+        recusada, entregue = banco["outbox"].find().sort("_id")
+        assert (recusada["status"], recusada["tentativas"]) == ("pendente", 1)
+        assert recusada["ultimo_erro"] == "canal fechado pelo broker (403)"
+        assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
 
     def test_broker_parado_nao_gasta_tentativa_e_entrega_na_volta(
         self, banco: Banco, broker: BrokerDeTeste, tmp_path: Path

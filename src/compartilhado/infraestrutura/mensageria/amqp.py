@@ -1,8 +1,11 @@
 """Conexao AMQP bloqueante (pika) do relay e do consumidor.
 
-Um canal com publisher confirms: ``basic_publish`` com ``mandatory`` so volta
-quando o broker confirma, e levanta erro na devolucao (sem rota) ou no nack.
-A declaracao e sempre passiva: a topologia vem do ``definitions.json`` da
+Publicacao num canal proprio com publisher confirms: ``basic_publish`` com
+``mandatory`` so volta quando o broker confirma, e levanta erro na devolucao
+(sem rota) ou no nack. Separado do canal de consumo, o canal que o broker fecha
+por causa de uma publicacao (permissao, ``user_id``) nao leva junto o ack e o
+reject das mensagens consumidas; ele e reaberto na publicacao seguinte. A
+declaracao e sempre passiva: a topologia vem do ``definitions.json`` da
 plataforma, e no RabbitMQ 4.3.6 a passiva tambem exige permissao no recurso,
 entao cada processo confere so o que o usuario do servico alcanca (ADR-036).
 """
@@ -51,7 +54,7 @@ def parametros(url: str, *, nome: str) -> pika.URLParameters:
 
 
 class CanalAmqp:
-    """Conexao com um canal em modo confirm.
+    """Conexao com o canal de consumo e o de publicacao (modo confirm).
 
     ``abrir`` (re)conecta e confere por declaracao passiva as filas e os
     exchanges informados; erro de conexao (``AMQPConnectionError``) sobe para
@@ -70,24 +73,27 @@ class CanalAmqp:
         self._exchanges = tuple(exchanges)
         self._conexao: Any = None
         self._canal: Any = None
+        self._publicacao: Any = None
 
     @property
     def canal(self) -> Any:  # noqa: ANN401 - BlockingChannel do pika, sem tipos
-        """Canal aberto (consumo, ack e reject do consumidor)."""
+        """Canal de consumo (consume, ack e reject do consumidor)."""
         return self._canal
 
     def abrir(self) -> None:
         self.fechar()
         self._conexao = pika.BlockingConnection(self._parametros)
-        self._abrir_canal()
+        self._canal = self._conexao.channel()
         for fila in self._filas:
             self._canal.queue_declare(fila, passive=True)
         for exchange in self._exchanges:
             self._canal.exchange_declare(exchange, passive=True)
 
-    def _abrir_canal(self) -> None:
-        self._canal = self._conexao.channel()
-        self._canal.confirm_delivery()
+    def _canal_de_publicacao(self) -> Any:  # noqa: ANN401 - BlockingChannel do pika
+        if self._publicacao is None or not self._publicacao.is_open:
+            self._publicacao = self._conexao.channel()
+            self._publicacao.confirm_delivery()
+        return self._publicacao
 
     def publicar(
         self,
@@ -103,15 +109,16 @@ class CanalAmqp:
                 pelo broker por causa dela (permissao, ``user_id``).
             AMQPError: conexao perdida (o chamador reconecta).
         """
+        canal = self._canal_de_publicacao()
         try:
-            self._canal.basic_publish(
+            canal.basic_publish(
                 exchange, routing_key, corpo, propriedades, mandatory=True
             )
         except (UnroutableError, NackError) as exc:
+            # Texto fixo: a excecao do pika carrega a mensagem devolvida.
             raise MensagemRecusadaError(type(exc).__name__) from exc
         except ChannelClosedByBroker as exc:
-            # O canal fica fechado: a proxima operacao falha e o laco do
-            # processo reconecta (sem contar tentativa para outra mensagem).
+            # So o canal de publicacao fecha; a proxima publicacao o reabre.
             msg = f"canal fechado pelo broker ({exc.reply_code})"
             raise MensagemRecusadaError(msg) from exc
 
@@ -127,7 +134,8 @@ class CanalAmqp:
         self._conexao.process_data_events(time_limit=segundos)
 
     def fechar(self) -> None:
-        conexao, self._conexao, self._canal = self._conexao, None, None
+        conexao, self._conexao = self._conexao, None
+        self._canal = self._publicacao = None
         if conexao is not None and conexao.is_open:
             with suppress(AMQPError):
                 conexao.close()
@@ -158,10 +166,16 @@ def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos 
         sinalizar(heartbeat, pronto=False)
         try:
             canal.abrir()
-        except AMQPError:
+        except AMQPError as exc:
+            # So o tipo: autenticacao recusada ou 403/404 na declaracao passiva
+            # nao se confundem com o broker fora do ar.
             _log.warning(
                 "broker_unavailable",
-                extra={"processo": processo, "espera_segundos": espera},
+                extra={
+                    "processo": processo,
+                    "espera_segundos": espera,
+                    "erro": type(exc).__name__,
+                },
             )
         else:
             _log.info("broker_connected", extra={"processo": processo})
@@ -174,8 +188,11 @@ def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos 
                     _log.warning(
                         "broker_cancelled_consumer", extra={"processo": processo}
                     )
-            except AMQPError:
-                _log.warning("broker_connection_lost", extra={"processo": processo})
+            except AMQPError as exc:
+                _log.warning(
+                    "broker_connection_lost",
+                    extra={"processo": processo, "erro": type(exc).__name__},
+                )
             finally:
                 canal.fechar()
             if cronometro() - inicio >= espera_maxima:
