@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PagamentoConfirmado (dados)",
-  "description": "Campo dados da mensagem PagamentoConfirmado (evento, billing-service -> os-service). Pagamento aprovado pelo provedor (confirmado por consulta, nunca só pelo corpo do webhook).) Pagamento aprovado pelo provedor (confirmado por consulta, nunca só pelo corpo do webhook); a OS passa a AGUARDANDO_EXECUCAO, e o OS agenda a execução.",
+  "description": "Campo dados da mensagem PagamentoConfirmado (evento, billing-service -> os-service). Pagamento aprovado pelo provedor (confirmado por consulta, nunca só pelo corpo do webhook); a OS passa a AGUARDANDO_EXECUCAO, e o OS agenda a execução.",
   "type": "object",
   "required": [
     "ordem_id",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "OrcamentoRecusado (dados)",
-  "description": "Campo dados da mensagem OrcamentoRecusado (evento, billing-service -> os-service). Decisão do cliente recusando o orçamento; o OS cancela a OS e compensa a saga.) Decisão do cliente (pelo link ou pelo atendente) recusando o orçamento; o OS compensa a saga e cancela a OS.",
+  "description": "Campo dados da mensagem OrcamentoRecusado (evento, billing-service -> os-service). Decisão do cliente (pelo link ou pelo atendente) recusando o orçamento; o OS compensa a saga e cancela a OS.",
   "type": "object",
   "required": [
     "ordem_id",

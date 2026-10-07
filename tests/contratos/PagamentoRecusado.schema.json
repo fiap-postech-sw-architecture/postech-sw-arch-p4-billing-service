@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PagamentoRecusado (dados)",
-  "description": "Campo dados da mensagem PagamentoRecusado (evento, billing-service -> os-service). O provedor recusou o pagamento; o OS compensa a saga.) Esgotadas as recusas permitidas, o pagamento passou a RECUSADO; o OS compensa a saga.",
+  "description": "Campo dados da mensagem PagamentoRecusado (evento, billing-service -> os-service). Esgotadas as recusas permitidas, o pagamento passou a RECUSADO; o OS compensa a saga.",
   "type": "object",
   "required": [
     "ordem_id",

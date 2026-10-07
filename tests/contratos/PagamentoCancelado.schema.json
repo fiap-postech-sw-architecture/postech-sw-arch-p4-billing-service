@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PagamentoCancelado (dados)",
-  "description": "Campo dados da mensagem PagamentoCancelado (evento, billing-service -> os-service). Resposta ao EstornarPagamento quando o pagamento ainda estava pendente: o Billing cancela a cobrança no provedor em vez de estornar.) Resposta ao EstornarPagamento quando o pagamento ainda estava SOLICITADO: o Billing cancela a cobrança (o checkout deixa de valer) em vez de estornar.",
+  "description": "Campo dados da mensagem PagamentoCancelado (evento, billing-service -> os-service). Resposta ao EstornarPagamento quando o pagamento ainda estava SOLICITADO: o Billing cancela a cobrança (o checkout deixa de valer) em vez de estornar.",
   "type": "object",
   "required": [
     "ordem_id",

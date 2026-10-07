@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "OrcamentoGerado (dados)",
-  "description": "Campo dados da mensagem OrcamentoGerado (evento, billing-service -> os-service). Orçamento pronto e enviado ao cliente; a OS passa a AGUARDANDO_APROVACAO.) Orçamento pronto, com o link de decisão; a OS passa a AGUARDANDO_APROVACAO, e o OS avisa o cliente por e-mail.",
+  "description": "Campo dados da mensagem OrcamentoGerado (evento, billing-service -> os-service). Orçamento pronto, com o link de decisão; a OS passa a AGUARDANDO_APROVACAO, e o OS avisa o cliente por e-mail.",
   "type": "object",
   "required": [
     "ordem_id",

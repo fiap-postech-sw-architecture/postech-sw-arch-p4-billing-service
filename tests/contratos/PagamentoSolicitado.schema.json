@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PagamentoSolicitado (dados)",
-  "description": "Campo dados da mensagem PagamentoSolicitado (evento, billing-service -> os-service). Cobrança criada, com o link de checkout para o cliente; a OS passa a AGUARDANDO_PAGAMENTO.) Cobrança criada, com o link de checkout; o OS guarda o resumo e avisa o cliente por e-mail (a OS já está em AGUARDANDO_PAGAMENTO desde PecasReservadas).",
+  "description": "Campo dados da mensagem PagamentoSolicitado (evento, billing-service -> os-service). Cobrança criada, com o link de checkout; o OS guarda o resumo e avisa o cliente por e-mail (a OS já está em AGUARDANDO_PAGAMENTO desde PecasReservadas).",
   "type": "object",
   "required": [
     "ordem_id",

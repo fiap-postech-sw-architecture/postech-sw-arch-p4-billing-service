@@ -70,6 +70,7 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Tech debt / TODO
 
+- 2026-10-06 - RESOLVIDO - Contradiz a entrada de `tests/contratos` abaixo: a plataforma publicou os schemas na main (PR de infraestrutura mergeado) e a copia foi atualizada para contratos/schemas @ 4a1fed2; so mudou o texto de `description` de 7 schemas, a estrutura (propriedades e obrigatorios) e a mesma
 - 2026-10-06 - LOW - `PUT /checkout/preferences/{id}` com `expiration_date_to = agora` so foi provado com respx. Se o Mercado Pago recusar data nao futura, toda compensacao de cobranca aberta conclui sem fechar o checkout (a aprovacao tardia e estornada e a metrica `pytstop_cancelamentos_de_cobranca_recusados_total` cresce): validar na sandbox junto da evidencia do RF-034
 - 2026-10-06 - LOW - Contradiz a entrada da classe `Pagamento` abaixo: o historico do provedor e os estornos automaticos sairam para `historico.py` (classe de 433 para 410 linhas), mas ela segue acima do limite de 300 linhas e 10 metodos do checklist: 13 dos 25 membros publicos sao leituras e o resto e a maquina de estados da RFC (solicitar, aplicar tentativa, estornar automaticamente, expirar, compensar), que fica no agregado porque as invariantes vivem nele. Nova extracao so se a maquina crescer
 - 2026-10-06 - RESOLVIDO - Contradiz as entradas do estorno automatico e da saude abaixo: estorno automatico recusado tem marca no agregado e a metrica `pytstop_estornos_automaticos_recusados_total`; a readiness com o MongoDB existe (`/api/v1/saude/pronto`)

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PagamentoEstornado (dados)",
-  "description": "Campo dados da mensagem PagamentoEstornado (evento, billing-service -> os-service). Confirma a compensação EstornarPagamento.) Pagamento estornado no provedor: em resposta ao EstornarPagamento (motivo compensacao) ou por iniciativa do Billing, quando a aprovação chega depois do cancelamento, da expiração ou da recusa (motivo pagamento_apos_encerramento, que a saga encerrada ignora).",
+  "description": "Campo dados da mensagem PagamentoEstornado (evento, billing-service -> os-service). Pagamento estornado no provedor: em resposta ao EstornarPagamento (motivo compensacao) ou por iniciativa do Billing, quando a aprovação chega depois do cancelamento, da expiração ou da recusa (motivo pagamento_apos_encerramento, que a saga encerrada ignora).",
   "type": "object",
   "required": [
     "ordem_id",

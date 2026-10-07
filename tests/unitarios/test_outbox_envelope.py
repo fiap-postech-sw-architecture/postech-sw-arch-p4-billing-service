@@ -29,7 +29,7 @@ from tests.factories import (
 )
 
 # JSON Schemas do catalogo (RFC-004, secao 5.3) copiados do repositorio da
-# plataforma (postech-sw-arch-p4-platform, contratos/schemas @ 99c6ca6): uma
+# plataforma (postech-sw-arch-p4-platform, contratos/schemas @ 4a1fed2): uma
 # mensagem que o Billing publica precisa validar no schema que os
 # consumidores usam.
 CONTRATOS = Path(__file__).parent.parent / "contratos"
