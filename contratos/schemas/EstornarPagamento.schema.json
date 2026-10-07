@@ -31,7 +31,7 @@
         "cancelamento",
         "prazo_tecnico"
       ],
-      "description": "Código da compensação, o mesmo label motivo de pytstop_saga_compensacoes_total; o texto do atendente fica só no histórico da OS."
+      "description": "Código da compensação, o mesmo label motivo de pytstop_saga_compensacoes_total; o texto do atendente fica só na OS."
     },
     "uuid": {
       "type": "string",

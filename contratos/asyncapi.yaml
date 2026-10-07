@@ -1884,7 +1884,7 @@ components:
     PagamentoEstornado:
       name: PagamentoEstornado
       title: "Pagamento estornado"
-      summary: "Pagamento estornado no provedor: em resposta ao EstornarPagamento (motivo compensacao) ou por iniciativa do Billing, quando a aprovação chega depois do cancelamento, da expiração ou da recusa (motivo pagamento_apos_encerramento, que a saga encerrada ignora)."
+      summary: "Pagamento estornado no provedor; o motivo diz a origem do estorno."
       traits:
         - $ref: '#/components/messageTraits/envelope'
       payload:
@@ -1984,7 +1984,7 @@ components:
     ExecucaoAgendada:
       name: ExecucaoAgendada
       title: "Execução agendada"
-      summary: "OS na fila de execução; o OS guarda a posição (a OS já está em AGUARDANDO_EXECUCAO desde PagamentoConfirmado)."
+      summary: "OS na fila de execução; a posição informada fica só no passo da saga, e a posição atual se consulta na fila da Execução (a OS já está em AGUARDANDO_EXECUCAO desde PagamentoConfirmado)."
       traits:
         - $ref: '#/components/messageTraits/envelope'
       payload:
