@@ -11,7 +11,7 @@ scripts/
 *.md
 Makefile
 docker-compose.yml
-rabbitmq/
+contratos/rabbitmq/
 .gitleaks.toml
 .coveragerc
 sonar-project.properties

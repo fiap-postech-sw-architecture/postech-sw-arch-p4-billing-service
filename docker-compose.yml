@@ -1,7 +1,7 @@
 # Ambiente de desenvolvimento do Billing (RFC-004, secao 10.1): API, prazos,
 # relay da outbox, consumidor dos comandos da saga, MongoDB 7 em replica set de
 # um no (transacoes exigem replica set) e RabbitMQ 4 com a topologia do
-# platform (rabbitmq/, copiada com o init de usuarios). Sem credencial externa:
+# platform (contratos/rabbitmq/, copiada com o init de usuarios). Sem credencial externa:
 # o Mercado Pago roda no modo simulado. A stack completa (OS, Execucao, Kong)
 # fica no compose do repo platform.
 name: pytstop-billing
@@ -161,7 +161,7 @@ services:
     restart: unless-stopped
 
   # Mesmo broker da plataforma (versao, conf, plugins e definitions copiados
-  # em rabbitmq/). Nome do no fixo e usuario 999 pelos mesmos motivos de la.
+  # em contratos/rabbitmq/). Nome do no fixo e usuario 999 pelos mesmos motivos de la.
   rabbitmq:
     image: rabbitmq:4.3.6-management
     hostname: rabbitmq
@@ -175,10 +175,10 @@ services:
         hard: 65536
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
-      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-pytstop.conf:ro
-      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions/definitions.json:ro
-      - ./rabbitmq/admin.json:/etc/rabbitmq/definitions/admin.json:ro
+      - ./contratos/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-pytstop.conf:ro
+      - ./contratos/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./contratos/rabbitmq/definitions.json:/etc/rabbitmq/definitions/definitions.json:ro
+      - ./contratos/rabbitmq/rabbitmq-admin.json:/etc/rabbitmq/definitions/admin.json:ro
     healthcheck:
       # A fila de retry de 1 s so existe se o definitions.json entrou.
       test: ["CMD-SHELL", "rabbitmqctl -s list_queues name | grep -qx billing.comandos.retry.1s && rabbitmq-diagnostics -q check_port_connectivity"]
@@ -188,7 +188,7 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # Usuarios os, billing e execucao com as permissoes de rabbitmq/permissoes.json,
+  # Usuarios os, billing e execucao com as permissoes de contratos/rabbitmq/permissoes.json,
   # pelo script do platform. Fica parado depois do script: o `up --wait` trata
   # container que terminou como falha.
   rabbitmq-usuarios:
@@ -197,8 +197,8 @@ services:
     init: true
     entrypoint: ["sh", "-c", "sh /scripts/criar-usuarios.sh && touch /tmp/usuarios-criados && exec sleep infinity"]
     volumes:
-      - ./rabbitmq/criar-usuarios.sh:/scripts/criar-usuarios.sh:ro
-      - ./rabbitmq/permissoes.json:/scripts/permissoes.json:ro
+      - ./contratos/rabbitmq/criar-usuarios.sh:/scripts/criar-usuarios.sh:ro
+      - ./contratos/rabbitmq/permissoes.json:/scripts/permissoes.json:ro
     environment:
       RABBITMQADMIN_TARGET_HOST: rabbitmq
       RABBITMQADMIN_TARGET_PORT: "15672"

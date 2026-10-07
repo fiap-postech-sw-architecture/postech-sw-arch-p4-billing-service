@@ -1,18 +1,25 @@
 """Copia dos contratos de mensageria do platform (ADR-036; RFC-004, secao 5.5).
 
 ``contratos/`` guarda os schemas e exemplos das mensagens que o Billing produz e
-consome e o ``asyncapi.yaml``, copiados do repositorio da plataforma no commit
-gravado em ``contratos/ORIGEM``; ``rabbitmq/`` guarda a topologia do broker
-(compose e testes), com o commit de origem em ``rabbitmq/ORIGEM``. A copia tem
-de ser identica a origem (o CI baixa cada arquivo pelo raw do GitHub, o
-repositorio e publico), e todo exemplo do platform tem de passar na validacao
-que o servico aplica.
+consome, o ``asyncapi.yaml`` e, em ``contratos/rabbitmq/``, a topologia do
+broker que o compose e os testes sobem, todos copiados do repositorio da
+plataforma no commit gravado em ``contratos/ORIGEM``. A copia tem de ser
+identica a origem: o teste baixa o tarball do platform nesse SHA (repositorio
+publico) uma vez, com novas tentativas, e compara byte a byte. Todo exemplo do
+platform tem de passar na validacao que o servico aplica.
+
+Sem rede, o teste de checksum falha no CI e e pulado fora dele (com o motivo);
+para rodar a suite offline de proposito: ``uv run pytest -m "not rede"``.
 """
 
 from __future__ import annotations
 
-import hashlib
+import io
 import json
+import os
+import re
+import tarfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,29 +28,21 @@ import pytest
 import yaml
 
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.consumidor import NIVEIS_DE_RETRY
+from src.consumidor import FILA
 from src.main import criar_app
 from tests.integracao.apoio import configuracao
 
 RAIZ = contratos.diretorio()
 ORIGEM = (RAIZ / "ORIGEM").read_text(encoding="utf-8").strip()
-PLATFORM = (
-    "https://raw.githubusercontent.com/fiap-postech-sw-architecture/"
-    "postech-sw-arch-p4-platform"
+TOPOLOGIA = RAIZ / "rabbitmq"
+TARBALL = (
+    "https://codeload.github.com/fiap-postech-sw-architecture/"
+    "postech-sw-arch-p4-platform/tar.gz/{sha}"
 )
-URL_DO_PLATFORM = f"{PLATFORM}/{ORIGEM}/contratos"
-TOPOLOGIA = RAIZ.parent / "rabbitmq"
-ORIGEM_DA_TOPOLOGIA = (TOPOLOGIA / "ORIGEM").read_text(encoding="utf-8").strip()
-# Arquivo de rabbitmq/ -> caminho no platform.
-ARQUIVOS_DA_TOPOLOGIA = {
-    "definitions.json": "k8s/base/rabbitmq/definitions.json",
-    "permissoes.json": "k8s/base/rabbitmq/permissoes.json",
-    "rabbitmq.conf": "k8s/base/rabbitmq/rabbitmq.conf",
-    "criar-usuarios.sh": "k8s/base/rabbitmq/criar-usuarios.sh",
-    "enabled_plugins": "k8s/base/rabbitmq/enabled_plugins",
-    "admin.json": "compose/rabbitmq-admin.json",
-}
+TENTATIVAS = 3
 COPIADOS = sorted(
-    caminho.relative_to(RAIZ).as_posix()
+    caminho
     for caminho in RAIZ.rglob("*")
     if caminho.is_file() and caminho.name != "ORIGEM"
 )
@@ -55,57 +54,125 @@ COMANDOS = {
 }
 
 
-def _sha256(conteudo: bytes) -> str:
-    return hashlib.sha256(conteudo).hexdigest()
+def _no_platform(copia: Path) -> str:
+    """Caminho do arquivo no platform: a topologia vem de k8s/ e do compose."""
+    relativo = copia.relative_to(RAIZ).as_posix()
+    if not relativo.startswith("rabbitmq/"):
+        return f"contratos/{relativo}"
+    if copia.name == "rabbitmq-admin.json":
+        return "compose/rabbitmq-admin.json"
+    return f"k8s/base/rabbitmq/{copia.name}"
 
 
-@pytest.mark.parametrize("origem", [ORIGEM, ORIGEM_DA_TOPOLOGIA])
-def test_origem_e_um_sha_completo(origem: str) -> None:
-    assert len(origem) == 40
-    assert int(origem, 16) >= 0
+def _platform(sha: str) -> dict[str, bytes]:
+    """Arquivos do platform no ``sha``, pelo caminho a partir da raiz do repo.
 
-
-def _divergentes(pares: dict[str, tuple[str, bytes]]) -> list[str]:
-    """Arquivos cuja copia local difere do platform (sha256 do conteudo)."""
-    divergentes = []
-    # Retentativas de conexao: um reset do raw.githubusercontent.com nao e
-    # divergencia da copia (aconteceu no CI).
-    transporte = httpx.HTTPTransport(retries=3)
-    with httpx.Client(
-        transport=transporte, timeout=15, follow_redirects=True
-    ) as cliente:
-        for nome, (url, local) in pares.items():
-            resposta = cliente.get(url)
+    Repete erro de rede e resposta 429 ou 5xx (um reset do GitHub nao e
+    divergencia da copia). Esgotadas as tentativas, falha no CI e pula fora
+    dele.
+    """
+    falha: httpx.HTTPError | None = None
+    for tentativa in range(TENTATIVAS):
+        if tentativa:
+            time.sleep(2**tentativa)
+        try:
+            resposta = httpx.get(TARBALL.format(sha=sha), timeout=30)
             resposta.raise_for_status()
-            if _sha256(resposta.content) != _sha256(local):
-                divergentes.append(nome)
-    return divergentes
+        except httpx.HTTPError as exc:
+            falha = exc
+            continue
+        with tarfile.open(fileobj=io.BytesIO(resposta.content), mode="r:gz") as tar:
+            return {
+                membro.name.split("/", 1)[1]: arquivo.read()
+                for membro in tar.getmembers()
+                if (arquivo := tar.extractfile(membro)) is not None
+            }
+    motivo = (
+        f"sem acesso ao platform no SHA {sha} depois de {TENTATIVAS} tentativas "
+        f"({type(falha).__name__}); offline, rode com -m 'not rede'"
+    )
+    if os.environ.get("CI"):
+        pytest.fail(motivo, pytrace=False)
+    pytest.skip(motivo)
 
 
-def test_copia_bate_com_o_platform_no_sha_de_origem() -> None:
-    pares = {
-        relativo: (f"{URL_DO_PLATFORM}/{relativo}", (RAIZ / relativo).read_bytes())
-        for relativo in COPIADOS
+def test_origem_e_um_sha_completo() -> None:
+    assert len(ORIGEM) == 40
+    assert int(ORIGEM, 16) >= 0
+
+
+@pytest.mark.rede
+def test_copia_e_identica_a_do_platform_no_sha_de_origem() -> None:
+    platform = _platform(ORIGEM)
+
+    divergentes = [
+        copia.relative_to(RAIZ).as_posix()
+        for copia in COPIADOS
+        if platform.get(_no_platform(copia)) != copia.read_bytes()
+    ]
+
+    assert {c.name for c in TOPOLOGIA.iterdir()} == {
+        "definitions.json",
+        "permissoes.json",
+        "rabbitmq.conf",
+        "criar-usuarios.sh",
+        "enabled_plugins",
+        "rabbitmq-admin.json",
     }
-    assert _divergentes(pares) == []
+    assert divergentes == []
 
 
-def test_topologia_bate_com_o_platform_no_sha_de_origem() -> None:
-    copiados = {c.name for c in TOPOLOGIA.iterdir() if c.name != "ORIGEM"}
-    assert copiados == set(ARQUIVOS_DA_TOPOLOGIA)
-    pares = {
-        nome: (
-            f"{PLATFORM}/{ORIGEM_DA_TOPOLOGIA}/{caminho}",
-            (TOPOLOGIA / nome).read_bytes(),
-        )
-        for nome, caminho in ARQUIVOS_DA_TOPOLOGIA.items()
-    }
-    assert _divergentes(pares) == []
+def test_cada_nivel_de_retry_do_consumidor_tem_fila_ttl_e_permissao() -> None:
+    """O consumidor publica a copia em ``pytstop.retry`` com a chave do nivel:
+    a topologia a leva a uma fila com esse TTL, que a devolve a fila de
+    comandos, e o usuario ``billing`` pode usar a chave (e so ela)."""
+    definicoes = json.loads((TOPOLOGIA / "definitions.json").read_text())
+    permissoes = json.loads((TOPOLOGIA / "permissoes.json").read_text())
+    filas = {fila["name"]: fila for fila in definicoes["queues"]}
+    [escrita] = [
+        p["write"]
+        for p in permissoes["topic_permissions"]
+        if (p["user"], p["exchange"]) == ("billing", "pytstop.retry")
+    ]
+    [politica] = [
+        p for p in definicoes["policies"] if re.search(p["pattern"], f"{FILA}.retry.1s")
+    ]
+
+    for nivel in NIVEIS_DE_RETRY:
+        nome = f"{FILA}.retry.{nivel}"
+        assert filas[nome]["arguments"] == {
+            "x-queue-type": "quorum",
+            "x-message-ttl": int(nivel.removesuffix("s")) * 1000,
+        }
+        assert {
+            "source": "pytstop.retry",
+            "vhost": "/",
+            "destination": nome,
+            "destination_type": "queue",
+            "routing_key": nome,
+            "arguments": {},
+        } in definicoes["bindings"]
+        assert re.search(escrita, nome)
+        # \z e nao $: o $ do PCRE aceitaria a chave seguida de quebra de linha.
+        assert not re.search(escrita, f"{nome}\n")
+    assert politica["definition"]["dead-letter-routing-key"] == FILA
+    assert not re.search(escrita, FILA)
+
+
+def test_politica_da_fila_de_comandos_limita_as_entregas() -> None:
+    """Com prefetch 1 no consumidor, o limite de entregas da policy isola a
+    mensagem que derruba a conexao a cada entrega (RFC-004, secao 5.1)."""
+    definicoes = json.loads((TOPOLOGIA / "definitions.json").read_text())
+    [politica] = [p for p in definicoes["policies"] if re.search(p["pattern"], FILA)]
+
+    assert politica["definition"]["delivery-limit"] == 5
+    assert politica["definition"]["dead-letter-exchange"] == "pytstop.dlx"
 
 
 def test_copia_tem_o_envelope_e_os_tipos_do_billing() -> None:
-    schemas = {r for r in COPIADOS if r.startswith("schemas/")}
-    exemplos = {r for r in COPIADOS if r.startswith("exemplos/")}
+    relativos = {c.relative_to(RAIZ).as_posix() for c in COPIADOS}
+    schemas = {r for r in relativos if r.startswith("schemas/")}
+    exemplos = {r for r in relativos if r.startswith("exemplos/")}
     tipos = {r.removeprefix("schemas/").removesuffix(".schema.json") for r in schemas}
     assert "envelope" in tipos
     assert tipos - {"envelope"} == contratos.tipos_com_contrato()

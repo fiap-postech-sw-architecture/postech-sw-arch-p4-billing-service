@@ -1,7 +1,7 @@
 """Relay e consumidor contra RabbitMQ 4.3.6 real com a topologia do platform.
 
-As definitions copiadas em ``rabbitmq/`` sobem com TTL de 100 ms nas filas de
-retry; cada teste comeca com as filas vazias e o banco limpo.
+As definitions copiadas em ``contratos/rabbitmq/`` sobem com TTL de 100 ms nas
+filas de retry; cada teste comeca com as filas vazias e o banco limpo.
 """
 
 from __future__ import annotations
@@ -415,8 +415,8 @@ def retry_negado(broker: BrokerDeTeste) -> Iterator[None]:
             url,
             json={
                 "exchange": "pytstop.retry",
-                "write": "^billing\\.comandos$",
-                "read": "^$",
+                "write": "^billing\\.comandos\\z",
+                "read": "^\\z",
             },
         ).raise_for_status()
         try:

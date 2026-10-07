@@ -155,7 +155,7 @@ def cabecalhos(emitir_token: Callable[..., str]) -> Callable[[str], dict[str, st
 
 @pytest.fixture(scope="session")
 def _broker_da_sessao() -> Iterator[BrokerDeTeste]:
-    """RabbitMQ 4.3.6 com a topologia do platform (copiada em ``rabbitmq/``),
+    """RabbitMQ 4.3.6 com a topologia do platform (``contratos/rabbitmq/``),
     carregada pela API de gerenciamento com o TTL de retry de 100 ms."""
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.wait_strategies import LogMessageWaitStrategy

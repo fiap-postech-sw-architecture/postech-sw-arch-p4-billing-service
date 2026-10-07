@@ -260,7 +260,8 @@
         "dead-letter-routing-key": "billing.comandos",
         "dead-letter-strategy": "at-least-once",
         "overflow": "reject-publish",
-        "max-length": 10000
+        "max-length": 10000,
+        "delivery-limit": 5
       }
     },
     {
@@ -274,7 +275,8 @@
         "dead-letter-routing-key": "execucao.comandos",
         "dead-letter-strategy": "at-least-once",
         "overflow": "reject-publish",
-        "max-length": 10000
+        "max-length": 10000,
+        "delivery-limit": 5
       }
     },
     {
@@ -288,7 +290,8 @@
         "dead-letter-routing-key": "os.eventos",
         "dead-letter-strategy": "at-least-once",
         "overflow": "reject-publish",
-        "max-length": 10000
+        "max-length": 10000,
+        "delivery-limit": 5
       }
     },
     {

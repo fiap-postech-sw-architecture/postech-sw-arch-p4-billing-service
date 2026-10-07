@@ -3,23 +3,23 @@
     {
       "user": "os",
       "vhost": "/",
-      "configure": "^$",
-      "write": "^(pytstop\\.comandos|pytstop\\.retry)$",
-      "read": "^os\\.eventos$"
+      "configure": "^\\z",
+      "write": "^(pytstop\\.comandos|pytstop\\.retry)\\z",
+      "read": "^os\\.eventos\\z"
     },
     {
       "user": "billing",
       "vhost": "/",
-      "configure": "^$",
-      "write": "^(pytstop\\.eventos|pytstop\\.retry)$",
-      "read": "^billing\\.comandos$"
+      "configure": "^\\z",
+      "write": "^(pytstop\\.eventos|pytstop\\.retry)\\z",
+      "read": "^billing\\.comandos\\z"
     },
     {
       "user": "execucao",
       "vhost": "/",
-      "configure": "^$",
-      "write": "^(pytstop\\.eventos|pytstop\\.retry)$",
-      "read": "^execucao\\.comandos$"
+      "configure": "^\\z",
+      "write": "^(pytstop\\.eventos|pytstop\\.retry)\\z",
+      "read": "^execucao\\.comandos\\z"
     }
   ],
   "topic_permissions": [
@@ -28,42 +28,42 @@
       "vhost": "/",
       "exchange": "pytstop.comandos",
       "write": "^comando\\.(billing|execucao)\\.",
-      "read": "^$"
+      "read": "^\\z"
     },
     {
       "user": "os",
       "vhost": "/",
       "exchange": "pytstop.retry",
-      "write": "^os\\.eventos\\.retry\\.(1|5|15|60|300)s$",
-      "read": "^$"
+      "write": "^os\\.eventos\\.retry\\.(1|5|15|60|300)s\\z",
+      "read": "^\\z"
     },
     {
       "user": "billing",
       "vhost": "/",
       "exchange": "pytstop.eventos",
       "write": "^evento\\.billing\\.",
-      "read": "^$"
+      "read": "^\\z"
     },
     {
       "user": "billing",
       "vhost": "/",
       "exchange": "pytstop.retry",
-      "write": "^billing\\.comandos\\.retry\\.(1|5|15|60|300)s$",
-      "read": "^$"
+      "write": "^billing\\.comandos\\.retry\\.(1|5|15|60|300)s\\z",
+      "read": "^\\z"
     },
     {
       "user": "execucao",
       "vhost": "/",
       "exchange": "pytstop.eventos",
       "write": "^evento\\.execucao\\.",
-      "read": "^$"
+      "read": "^\\z"
     },
     {
       "user": "execucao",
       "vhost": "/",
       "exchange": "pytstop.retry",
-      "write": "^execucao\\.comandos\\.retry\\.(1|5|15|60|300)s$",
-      "read": "^$"
+      "write": "^execucao\\.comandos\\.retry\\.(1|5|15|60|300)s\\z",
+      "read": "^\\z"
     }
   ]
 }

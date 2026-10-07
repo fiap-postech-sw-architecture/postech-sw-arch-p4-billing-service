@@ -289,9 +289,9 @@ FILAS_DO_BILLING = (
 
 
 def definicoes_de_teste() -> dict[str, Any]:
-    """``rabbitmq/definitions.json`` com TTL curto nas filas de retry, mais os
-    usuarios dos servicos e as permissoes de ``rabbitmq/permissoes.json``."""
-    pasta = RAIZ_DO_REPO / "rabbitmq"
+    """``contratos/rabbitmq/definitions.json`` com TTL curto nas filas de retry,
+    mais os usuarios dos servicos e as permissoes de ``permissoes.json``."""
+    pasta = RAIZ_DO_REPO / "contratos" / "rabbitmq"
     definicoes: dict[str, Any] = json.loads((pasta / "definitions.json").read_text())
     permissoes: dict[str, Any] = json.loads((pasta / "permissoes.json").read_text())
     for fila in definicoes["queues"]:

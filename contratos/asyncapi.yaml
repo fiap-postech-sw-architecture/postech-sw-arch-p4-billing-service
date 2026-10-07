@@ -12,11 +12,16 @@ info:
     segue schemas/<tipo>.schema.json. Exemplos completos em exemplos/.
     Routing key: comando.<servico de destino>.<acao> ou
     evento.<servico de origem>.<fato>, com o nome da mensagem em snake_case.
-    Retry: o consumidor republica a cópia no exchange pytstop.retry (topic, com
-    permissão de tópico só para a própria fila) com a routing key igual ao nome da
-    fila; a <fila>.retry devolve a mensagem para a fila
-    quando o TTL da mensagem vence. Falha definitiva vai para <fila>.dlq pelo
-    pytstop.dlx. Topologia completa em k8s/base/rabbitmq/definitions.json.
+    Retry: cada fila tem cinco filas de retry, uma por atraso, <fila>.retry.1s,
+    .retry.5s, .retry.15s, .retry.60s e .retry.300s, com o TTL fixo na fila. O
+    consumidor republica a cópia, sem expiration, no exchange pytstop.retry
+    (topic, com permissão de tópico só para as filas de retry da própria fila),
+    com a routing key igual ao nome da fila de retry do nível da nova tentativa:
+    x-tentativa 1 vai para <fila>.retry.1s, 2 para .retry.5s, 3 para .retry.15s,
+    4 para .retry.60s e 5 para .retry.300s. Quando o TTL vence, a fila de retry
+    devolve a mensagem para a fila. A falha seguinte à quinta tentativa e a falha
+    definitiva vão para <fila>.dlq pelo pytstop.dlx. Topologia completa em
+    k8s/base/rabbitmq/definitions.json.
 
     Origem: o produtor preenche a propriedade AMQP user_id com o próprio usuário
     (o userId de cada operação de envio), e o broker recusa valor diferente do
@@ -617,7 +622,7 @@ channels:
   execucao.comandos:
     address: execucao.comandos
     title: "Fila de comandos da Execução"
-    description: "Fila quorum ligada por comando.execucao.#. Retry pelo exchange pytstop.retry (routing key execucao.comandos) e DLQ em execucao.comandos.dlq."
+    description: "Fila quorum ligada por comando.execucao.#. Retry pelo exchange pytstop.retry nas filas execucao.comandos.retry.1s, execucao.comandos.retry.5s, execucao.comandos.retry.15s, execucao.comandos.retry.60s e execucao.comandos.retry.300s (uma por atraso; routing key = nome da fila de retry) e DLQ em execucao.comandos.dlq."
     messages:
       SolicitarDiagnostico:
         $ref: '#/components/messages/SolicitarDiagnostico'
@@ -646,7 +651,7 @@ channels:
   billing.comandos:
     address: billing.comandos
     title: "Fila de comandos do Billing"
-    description: "Fila quorum ligada por comando.billing.#. Retry pelo exchange pytstop.retry (routing key billing.comandos) e DLQ em billing.comandos.dlq."
+    description: "Fila quorum ligada por comando.billing.#. Retry pelo exchange pytstop.retry nas filas billing.comandos.retry.1s, billing.comandos.retry.5s, billing.comandos.retry.15s, billing.comandos.retry.60s e billing.comandos.retry.300s (uma por atraso; routing key = nome da fila de retry) e DLQ em billing.comandos.dlq."
     messages:
       GerarOrcamento:
         $ref: '#/components/messages/GerarOrcamento'
@@ -669,7 +674,7 @@ channels:
   os.eventos:
     address: os.eventos
     title: "Fila de eventos do OS Service"
-    description: "Fila quorum ligada por evento.billing.# e evento.execucao.#. Retry pelo exchange pytstop.retry (routing key os.eventos) e DLQ em os.eventos.dlq."
+    description: "Fila quorum ligada por evento.billing.# e evento.execucao.#. Retry pelo exchange pytstop.retry nas filas os.eventos.retry.1s, os.eventos.retry.5s, os.eventos.retry.15s, os.eventos.retry.60s e os.eventos.retry.300s (uma por atraso; routing key = nome da fila de retry) e DLQ em os.eventos.dlq."
     messages:
       DiagnosticoIniciado:
         $ref: '#/components/messages/DiagnosticoIniciado'
@@ -2145,4 +2150,4 @@ components:
             type: integer
             minimum: 1
             maximum: 5
-            description: "Número da republicação na fila .retry (1 a 5); ausente na primeira entrega. A cópia leva o user_id do consumidor que a republicou."
+            description: "Número da republicação (1 a 5), que escolhe a fila de retry: 1 em <fila>.retry.1s, 2 em .retry.5s, 3 em .retry.15s, 4 em .retry.60s e 5 em .retry.300s; ausente na primeira entrega. A cópia leva o user_id do consumidor que a republicou."
