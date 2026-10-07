@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import errno
 import logging
+import os
 import socket
 import ssl
 import threading
+import time
 from typing import TYPE_CHECKING
 
 import pika
@@ -31,13 +33,14 @@ if TYPE_CHECKING:
 
 
 class EsperaAnotada(threading.Event):
-    """``parar`` que anota cada espera (e o arquivo de vida nela) e pede a
-    parada na de numero ``ate``."""
+    """``parar`` que anota cada espera (e o arquivo de vida nela: conteudo e
+    idade) e pede a parada na de numero ``ate``."""
 
     def __init__(self, ate: int, arquivo_de_vida: Path | None = None) -> None:
         super().__init__()
         self.esperas: list[float | None] = []
         self.estados_na_espera: list[str] = []
+        self.idades_na_espera: list[float] = []
         self.ate = ate
         self.arquivo_de_vida = arquivo_de_vida
 
@@ -45,6 +48,9 @@ class EsperaAnotada(threading.Event):
         self.esperas.append(timeout)
         if self.arquivo_de_vida is not None:
             self.estados_na_espera.append(self.arquivo_de_vida.read_text())
+            self.idades_na_espera.append(
+                time.time() - self.arquivo_de_vida.stat().st_mtime
+            )
         if len(self.esperas) >= self.ate:
             self.set()
         return self.is_set()
@@ -253,6 +259,30 @@ def test_nome_do_broker_some_do_dns_depois_de_conectar_e_a_volta_reconecta(
     assert (canal.aberturas, len(chamadas)) == (4, 2)
     assert parar.esperas[:3] == [1.0, 2.0, 4.0]
     assert parar.estados_na_espera == ["conectando"] * len(parar.esperas)
+
+
+def test_abertura_lenta_que_falha_toca_o_arquivo_de_vida_antes_da_espera(
+    tmp_path: Path, sorteio: SorteioAnotado
+) -> None:
+    arquivo = tmp_path / "hb"
+
+    class ResolucaoLenta(CanalSemBroker):
+        def abrir(self) -> None:
+            # O pika nao poe prazo na resolucao do nome: com o DNS mudo a
+            # tentativa leva dezenas de segundos, e o arquivo, tocado antes
+            # dela, envelhece enquanto ela dura.
+            antigo = time.time() - 120
+            os.utime(arquivo, (antigo, antigo))
+            msg = "Temporary failure in name resolution"
+            raise socket.gaierror(socket.EAI_AGAIN, msg)
+
+    parar = EsperaAnotada(ate=1, arquivo_de_vida=arquivo)
+
+    _rodar(ResolucaoLenta(), lambda: None, parar, arquivo)
+
+    # A idade na espera e so a da espera: a da tentativa nao se soma a ela.
+    [idade] = parar.idades_na_espera
+    assert idade < 5
 
 
 def test_broker_que_aceita_o_tcp_e_nao_responde_espera_com_backoff_fora_da_prontidao(

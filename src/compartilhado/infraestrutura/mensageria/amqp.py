@@ -276,13 +276,16 @@ def _conectar_e_trabalhar(
     Devolve quanto ela durou (``None`` quando nem abriu). O arquivo de vida so
     diz ``pronto`` dentro do ``trabalho``: fora dele, inclusive na espera antes
     da proxima tentativa, diz ``conectando`` (readiness falsa, liveness pela
-    idade do arquivo). So a abertura trata erro fora de ``AMQPError`` como broker
-    fora, e so dois, que o pika deixa sair crus: o ``socket.gaierror`` do nome sem
-    resolucao e o ``AMQPConnectorStackTimeout`` (o broker aceitou o TCP e nao
-    respondeu o AMQP no prazo). Outro ``OSError`` da abertura (descritores
-    esgotados, falha de TLS) e defeito e derruba o processo, como o ``OSError``
-    do ``trabalho`` ou do arquivo de vida (disco): com a conexao aberta o pika ja
-    embrulha o erro de socket em ``AMQPError``.
+    idade do arquivo). A abertura que falha toca o arquivo de novo: o pika nao
+    poe prazo na resolucao do nome, e a tentativa pode demorar.
+
+    So a abertura trata erro fora de ``AMQPError`` como broker fora, e so dois,
+    que o pika deixa sair crus: o ``socket.gaierror`` do nome sem resolucao e o
+    ``AMQPConnectorStackTimeout`` (o broker aceitou o TCP e nao respondeu o AMQP
+    no prazo). Outro ``OSError`` da abertura (descritores esgotados, falha de
+    TLS) e defeito e derruba o processo, como o ``OSError`` do ``trabalho`` ou
+    do arquivo de vida (disco): com a conexao aberta o pika ja embrulha o erro
+    de socket em ``AMQPError``.
     """
     sinalizar(heartbeat, pronto=False)
     try:
@@ -299,6 +302,8 @@ def _conectar_e_trabalhar(
             "broker_unavailable",
             extra={"processo": processo, "erro": type(exc).__name__},
         )
+        # A idade do arquivo na espera nao soma a duracao da tentativa.
+        sinalizar(heartbeat, pronto=False)
         return None
     _log.info("broker_connected", extra={"processo": processo})
     inicio = cronometro()
