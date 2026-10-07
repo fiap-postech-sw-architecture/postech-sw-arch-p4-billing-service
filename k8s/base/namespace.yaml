@@ -1,0 +1,15 @@
+# Namespace do Billing Service. O make deploy do platform o cria vazio antes
+# dos manifests (Role do Kong e os Secrets que gera); este repositorio continua
+# dono dele e liga o Pod Security restricted em enforce: pod fora do perfil
+# nem sobe (ADR-042).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pytstop-billing
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest

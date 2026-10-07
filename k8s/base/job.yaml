@@ -1,0 +1,143 @@
+# Inicializacao do banco, a cada deploy (idempotente; o implantar-servicos.sh
+# do platform apaga os Jobs com este rotulo antes do apply, porque Job e
+# imutavel, e espera ele completar antes dos Deployments). Na ordem:
+#   1. replica-set (initContainer, mongosh com replica-set.js): espera o mongod,
+#      inicia o replica set e cria os usuarios billing e exporter, como root;
+#   2. banco (initContainer): indices, validadores e a versao do banco
+#      (python -m src.banco), com o usuario billing;
+#   3. seed: os precos de demonstracao que faltam (python -m src.seed).
+# Os Deployments esperam a versao no initContainer aguarda-banco.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: billing-inicializacao
+  labels:
+    app.kubernetes.io/component: inicializacao
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app: billing-inicializacao
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: replica-set
+          image: mongo:7.0.43
+          imagePullPolicy: IfNotPresent
+          command: [mongosh, --nodb, --quiet, --file, /scripts/replica-set.js]
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MONGO_MEMBRO
+              value: billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGO_EXPORTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_EXPORTER_PASSWORD
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        - name: banco
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [banco]
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: seed
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, src.seed]
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: billing-mongo-scripts
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

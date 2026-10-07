@@ -1,0 +1,137 @@
+# Processo prazos: expira orcamentos e pagamentos vencidos e, com o Mercado
+# Pago real, concilia os pagamentos solicitados, a cada
+# PRAZOS_INTERVALO_SEGUNDOS. Uma replica (cada mudanca rele o agregado: mais de
+# uma tambem seria segura). Sem conexao para provar, o arquivo de vida e so
+# tocado a cada ciclo: existir e a readiness e a startup, e a idade, a
+# liveness (120 s, quatro ciclos do padrao).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service-prazos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-service-prazos
+  template:
+    metadata:
+      labels:
+        app: billing-service-prazos
+        processo: prazos
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # O SIGTERM encerra no fim do ciclo em curso.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: aguarda-banco
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [aguarda-banco]
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: prazos
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [prazos]
+          ports:
+            - name: metrics
+              containerPort: 9100
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+            # Conciliacao com o Mercado Pago real (so com o MP_MODE=mercadopago).
+            - name: MP_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mercadopago
+                  key: MP_ACCESS_TOKEN
+                  optional: true
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys;sys.exit(not os.path.exists('/tmp/prazos-heartbeat'))
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/prazos-heartbeat')>120)
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys;sys.exit(not os.path.exists('/tmp/prazos-heartbeat'))
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

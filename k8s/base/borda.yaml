@@ -1,0 +1,247 @@
+# Borda do Billing Service no Kong (prefixo /billing): os objetos sao copia, sem
+# mudanca, de k8s/exemplos/borda-billing-service.yaml do platform (main
+# 5b8b7f1), que o make smoke de la prova no kind; os plugins sao os
+# KongClusterPlugin do platform, so referenciados por anotacao. Segue o molde
+# do OS Service (um Service por prefixo publicado, /metrics e /api/v1/admin/*
+# em 404) e acrescenta o que so o Billing publica, todos sem JWT na borda (o
+# servico se protege por token ou assinatura):
+#
+#   - o link de decisao do cliente, /api/v1/publico/orcamentos/<token>: 10/min
+#     por IP (rate-limiting-publico);
+#   - o webhook do Mercado Pago, POST /api/v1/webhooks/mercadopago, que o
+#     servico confere pela x-signature: balde proprio de 120/min, para as
+#     rajadas e os reenvios do provedor (rate-limiting-webhook);
+#   - o simulador do checkout, so com MP_MODE=simulado: a pagina
+#     /simulador/checkout/<id>, fora de /api/v1 (ADR-038), e as acoes em
+#     /api/v1/simulador/*: 10/min por IP (rate-limiting-publico).
+#
+# Caminho com %2F ou %5C nao chega a nenhum destes: o plugin global
+# bloqueia-barra-codificada responde 404 antes de qualquer rota.
+#
+# strip-path tira do caminho tudo o que a regra casou: /billing/api/v1/x chega
+# ao upstream como <konghq.com/path do Service> + /x. Por isso cada prefixo tem
+# um Service proprio, todos com os mesmos pods, com o konghq.com/path que
+# devolve o prefixo. O Service interno do servico (o do BILLING_URL da
+# Execucao) fica sem anotacao.
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-api
+  annotations:
+    konghq.com/path: /api/v1
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-docs
+  annotations:
+    konghq.com/path: /docs
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-openapi
+  annotations:
+    konghq.com/path: /openapi.json
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-publico
+  annotations:
+    konghq.com/path: /api/v1/publico
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-webhook
+  annotations:
+    konghq.com/path: /api/v1/webhooks/mercadopago
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-simulador-api
+  annotations:
+    konghq.com/path: /api/v1/simulador
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service-borda-simulador-checkout
+  annotations:
+    konghq.com/path: /simulador/checkout
+spec:
+  selector:
+    app: billing-service-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# API, Swagger e OpenAPI, com o rate limiting global.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing-service-borda
+  annotations:
+    konghq.com/strip-path: "true"
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /billing/api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-api
+                port:
+                  number: 8000
+          - path: /billing/docs
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-docs
+                port:
+                  number: 8000
+          - path: /billing/openapi.json
+            pathType: Exact
+            backend:
+              service:
+                name: billing-service-borda-openapi
+                port:
+                  number: 8000
+---
+# Link de decisao do cliente (consulta e decisao): 10/min por IP.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing-service-borda-publico
+  annotations:
+    konghq.com/strip-path: "true"
+    konghq.com/plugins: rate-limiting-publico
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /billing/api/v1/publico
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-publico
+                port:
+                  number: 8000
+---
+# Webhook do Mercado Pago: 120/min por IP, em balde proprio.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing-service-borda-webhook
+  annotations:
+    konghq.com/strip-path: "true"
+    konghq.com/plugins: rate-limiting-webhook
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /billing/api/v1/webhooks/mercadopago
+            pathType: Exact
+            backend:
+              service:
+                name: billing-service-borda-webhook
+                port:
+                  number: 8000
+---
+# Simulador do checkout (so com MP_MODE=simulado): a pagina, fora de /api/v1, e
+# as acoes de aprovar e recusar. 10/min por IP em cada um dos dois caminhos.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing-service-borda-simulador
+  annotations:
+    konghq.com/strip-path: "true"
+    konghq.com/plugins: rate-limiting-publico
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /billing/simulador/checkout
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-simulador-checkout
+                port:
+                  number: 8000
+          - path: /billing/api/v1/simulador
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-simulador-api
+                port:
+                  number: 8000
+---
+# Bloqueio: o Kong responde 404 sem chamar o servico.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing-service-fora-da-borda
+  annotations:
+    konghq.com/plugins: fora-da-borda
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /billing/api/v1/admin
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-api
+                port:
+                  number: 8000
+          - path: /billing/metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: billing-service-borda-api
+                port:
+                  number: 8000

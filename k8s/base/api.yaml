@@ -1,0 +1,133 @@
+# API do Billing (uvicorn), atras do Kong (borda.yaml). Sem replicas: quem
+# decide e o HPA (hpa.yaml), e o apply nao briga com ele. /metrics na propria
+# porta http (8000), anotada para o Prometheus (ADR-043).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service-api
+spec:
+  selector:
+    matchLabels:
+      app: billing-service-api
+  template:
+    metadata:
+      labels:
+        app: billing-service-api
+        processo: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Espera o Job de inicializacao preparar o banco desta versao.
+        - name: aguarda-banco
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [aguarda-banco]
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            # Montada no pod: o describe mostra o molde, nao a senha.
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: api
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [api]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+            - name: ORCAMENTO_LINK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: billing-link
+                  key: ORCAMENTO_LINK_SECRET
+            # Credenciais do provedor: so existem no k3s (ou criadas a mao);
+            # sem elas, o MP_MODE=simulado do ConfigMap.
+            - name: MP_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mercadopago
+                  key: MP_ACCESS_TOKEN
+                  optional: true
+            - name: MP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mercadopago
+                  key: MP_WEBHOOK_SECRET
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /api/v1/saude
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/saude/pronto
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

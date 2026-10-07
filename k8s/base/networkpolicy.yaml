@@ -1,0 +1,91 @@
+# Entrada negada a todo pod do namespace, e liberado so o previsto (ADR-042):
+# o Kong e o Prometheus na API, a API da Execucao (validacao de precos) na API,
+# o Prometheus nas metricas dos processos e do banco, e os pods do proprio
+# namespace no MongoDB. Sondas do kubelet, port-forward e exec nao passam por
+# NetworkPolicy. So entrada: a saida (JWKS do OS, RabbitMQ, Jaeger, Mercado
+# Pago) fica livre.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nega-entrada
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: billing-service-api
+spec:
+  podSelector:
+    matchLabels:
+      app: billing-service-api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pytstop-plataforma
+          podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [kong, prometheus]
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pytstop-execucao
+          podSelector:
+            matchLabels:
+              app: execution-service-api
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: billing-service-metricas
+spec:
+  podSelector:
+    matchExpressions:
+      - key: processo
+        operator: In
+        values: [relay, consumidor, prazos]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pytstop-plataforma
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9100
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: billing-mongo
+spec:
+  podSelector:
+    matchLabels:
+      app: billing-mongo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 27017
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pytstop-plataforma
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9216

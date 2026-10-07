@@ -1,0 +1,138 @@
+# Relay da outbox (MongoDB -> RabbitMQ). Uma replica: o fencing por token da
+# reivindicacao deixa dois relays seguros no rolling update, mas um basta.
+# Sondas pelo arquivo de vida (README, Mensageria > Saude): a idade dele e a
+# liveness (90 s, com margem sobre a espera do backoff e a resolucao do DNS),
+# e o conteudo "pronto", a readiness. A startup confere a idade, nao o
+# "pronto": com o broker fora no boot o processo fica fora da prontidao e
+# reconecta, em vez de reiniciar.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-service-relay
+  template:
+    metadata:
+      labels:
+        app: billing-service-relay
+        processo: relay
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Margem sobre a consulta de DNS que o SIGTERM nao interrompe (20 s
+      # medidos com o resolv.conf do Kubernetes).
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: aguarda-banco
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [aguarda-banco]
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: relay
+          image: pytstop-billing-service
+          imagePullPolicy: IfNotPresent
+          args: [relay]
+          ports:
+            - name: metrics
+              containerPort: 9100
+          envFrom:
+            - configMapRef:
+                name: billing-service
+          env:
+            - name: MONGO_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: billing-mongo
+                  key: MONGO_BILLING_PASSWORD
+            - name: MONGODB_URI
+              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+            # Do platform (Secret derivado, regravado a cada deploy).
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq
+                  key: RABBITMQ_URL
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/relay-heartbeat')>90)
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/relay-heartbeat')>90)
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import sys;sys.exit(open('/tmp/relay-heartbeat').read()!='pronto')
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
