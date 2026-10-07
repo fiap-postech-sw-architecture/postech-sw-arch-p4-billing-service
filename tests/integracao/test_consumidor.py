@@ -280,7 +280,7 @@ class TestEntradaHostil:
         )
 
     def test_json_aninhado_alem_da_pilha_do_parser_vai_para_a_dlq(
-        self, consumidor: ConsumidorDeComandos
+        self, consumidor: ConsumidorDeComandos, caplog: pytest.LogCaptureFixture
     ) -> None:
         # Numa thread de pilha curta o parser do json estoura a pilha
         # (RecursionError) antes do teto de tamanho do corpo.
@@ -294,14 +294,22 @@ class TestEntradaHostil:
             )
 
         thread = threading.Thread(target=tratar)
-        anterior = threading.stack_size(256 * 1024)
-        try:
-            thread.start()
-        finally:
-            threading.stack_size(anterior)
-        thread.join(timeout=30)
+        with caplog.at_level(logging.ERROR):
+            anterior = threading.stack_size(256 * 1024)
+            try:
+                thread.start()
+            finally:
+                threading.stack_size(anterior)
+            thread.join(timeout=30)
 
         assert (resultados, canal.rejeitadas) == (["dlq"], [1])
+        # Entrada hostil e erro da mensagem, nao defeito: texto fixo no log, sem
+        # o traceback de um RecursionError.
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "command_dead_lettered"
+        ]
+        assert registro.__dict__["detalhe"] == "corpo nao e JSON"
+        assert registro.exc_info is None
 
     def test_campo_fora_do_contrato_nao_vai_inteiro_para_o_log_nem_para_o_span(
         self,
