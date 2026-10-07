@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	check audit smoke manifests run compose-up compose-down compose-logs seed
+	check audit smoke manifests kind-deploy run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -121,6 +121,17 @@ manifests:
 			--ignore-policy /trivy-ignore.rego /tmp/manifests.yaml' \
 			< reports/k8s-$$overlay.yaml || exit 1; \
 	done
+
+# Implanta o servico no kind da plataforma pelo script do CD do platform:
+# constroi a imagem com o commit como tag, carrega no kind e aplica o overlay
+# na ordem do contrato (Job de inicializacao, banco e rollouts). Antes, a
+# plataforma no ar: make -C $(PLATFORM_DIR) kind-up deploy (README, Implantacao).
+PLATFORM_DIR ?= ../postech-sw-arch-p4-platform
+OVERLAY ?= kind
+
+kind-deploy:
+	$(PLATFORM_DIR)/scripts/ci/implantar-servicos.sh --overlay $(OVERLAY) \
+		billing-service=$(CURDIR)
 
 # API local apontando para o MongoDB do compose (make compose-up).
 run:
