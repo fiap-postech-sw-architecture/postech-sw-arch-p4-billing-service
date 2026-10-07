@@ -6,6 +6,7 @@ from __future__ import annotations
 import errno
 import logging
 import socket
+import ssl
 import threading
 from typing import TYPE_CHECKING
 
@@ -255,24 +256,39 @@ def test_nome_do_broker_some_do_dns_depois_de_conectar_e_a_volta_reconecta(
 
 
 @pytest.mark.parametrize(
-    ("arquivo", "erro"),
+    ("falha_ao_abrir", "arquivo", "erro"),
     [
-        pytest.param("hb", r"No space left", id="trabalho"),
-        pytest.param("sem-diretorio/hb", r"No such file", id="arquivo-de-vida"),
+        pytest.param(None, "hb", r"No space left", id="trabalho"),
+        pytest.param(None, "sem-diretorio/hb", r"No such file", id="arquivo-de-vida"),
+        pytest.param(
+            OSError(errno.EMFILE, "Too many open files"),
+            "hb",
+            r"Too many open files",
+            id="abertura-sem-descritores",
+        ),
+        pytest.param(
+            ssl.SSLCertVerificationError(1, "certificate verify failed"),
+            "hb",
+            r"certificate verify failed",
+            id="abertura-com-falha-de-tls",
+        ),
     ],
 )
-def test_oserror_que_nao_e_do_broker_derruba_o_processo_em_vez_de_reconectar(
-    tmp_path: Path, arquivo: str, erro: str
+def test_oserror_que_nao_e_do_nome_do_broker_derruba_o_processo_em_vez_de_reconectar(
+    tmp_path: Path, falha_ao_abrir: Exception | None, arquivo: str, erro: str
 ) -> None:
-    # Disco cheio ou sem o diretorio do arquivo de vida nao e broker fora:
-    # reconectar esconderia o defeito, e o processo cai para ser reiniciado.
+    # Disco cheio, sem o diretorio do arquivo de vida, sem descritores ou com o
+    # certificado recusado nao e broker fora: reconectar esconderia o defeito, e
+    # o processo cai para ser reiniciado. So o nome sem resolucao conta.
     def disco_cheio() -> None:
         raise OSError(errno.ENOSPC, "No space left on device")
 
+    # Um laco que engolisse o erro reabriria (e esperaria) ate a terceira espera.
+    canal = CanalRoteirizado([falha_ao_abrir] * 3)
     parar = EsperaAnotada(ate=3)
 
     with pytest.raises(OSError, match=erro):
-        _rodar(CanalSemBroker(), disco_cheio, parar, tmp_path / arquivo)
+        _rodar(canal, disco_cheio, parar, tmp_path / arquivo)
 
     assert parar.esperas == []
 

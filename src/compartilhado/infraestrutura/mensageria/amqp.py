@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import socket
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -272,20 +273,23 @@ def _conectar_e_trabalhar(
     Devolve quanto ela durou (``None`` quando nem abriu). O arquivo de vida so
     diz ``pronto`` dentro do ``trabalho``: fora dele, inclusive na espera antes
     da proxima tentativa, diz ``conectando`` (readiness falsa, liveness pela
-    idade do arquivo). So a abertura trata ``OSError`` como broker fora, porque
-    e nela que o pika deixa passar o do nome sem resolucao; durante o
-    ``trabalho`` ele ja embrulha o erro de socket em ``AMQPError``, e um
-    ``OSError`` ali ou no arquivo de vida e de outra origem (disco) e derruba o
-    processo.
+    idade do arquivo). So a abertura trata erro fora de ``AMQPError`` como broker
+    fora, e so o ``socket.gaierror`` do nome sem resolucao, que o pika deixa sair
+    cru. Outro ``OSError`` da abertura (descritores esgotados, falha de TLS) e
+    defeito e derruba o processo, como o ``OSError`` do ``trabalho`` ou do
+    arquivo de vida (disco): com a conexao aberta o pika ja embrulha o erro de
+    socket em ``AMQPError``.
     """
     sinalizar(heartbeat, pronto=False)
     try:
         canal.abrir()
-    except (AMQPError, OSError) as exc:
+    except (AMQPError, socket.gaierror) as exc:
         # So o tipo: autenticacao recusada ou 403/404 na declaracao passiva nao
-        # se confundem com o broker fora do ar. OSError: o socket.gaierror do
-        # nome do broker sem resolucao (Service headless sem pod pronto, no
-        # boot ou depois de uma queda), que o pika nao embrulha.
+        # se confundem com o broker fora do ar. gaierror: o nome do broker sem
+        # resolucao (Service headless sem pod pronto, no boot ou depois de uma
+        # queda), que o pika nao embrulha. Nao e todo OSError: descritores
+        # esgotados e falha de TLS tambem saem crus da abertura, e reconectar
+        # esconderia o defeito.
         _log.warning(
             "broker_unavailable",
             extra={"processo": processo, "erro": type(exc).__name__},
