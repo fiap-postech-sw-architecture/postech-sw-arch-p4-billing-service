@@ -15,9 +15,11 @@ from uuid import uuid4
 import pytest
 from opentelemetry import trace
 
+from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mensageria.contratos import (
     MensagemForaDoContratoError,
 )
+from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_de
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
     MongoUnitOfWork,
@@ -28,7 +30,12 @@ from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from tests.factories import AGORA, orcamento
-from tests.integracao.apoio import RelogioFixo, eventos_do_outbox
+from tests.integracao.apoio import (
+    INDICES_TTL,
+    RelogioFixo,
+    cliente_espiado,
+    eventos_do_outbox,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,6 +43,7 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
+    from pymongo import MongoClient
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
@@ -259,6 +267,52 @@ class TestTransacaoDaMensagem:
         assert banco["mensagens_processadas"].count_documents({}) == 0
 
 
+class TestTransacaoNoBanco:
+    def test_efeito_outbox_e_mensagem_vao_na_mesma_transacao(
+        self, banco: Banco, mongo_uri: str
+    ) -> None:
+        with cliente_espiado(mongo_uri) as (cliente, espia):
+            _salvar_no_comando(
+                cliente[banco.name],
+                _comando(),
+                lambda uow: MongoOrcamentoRepository(uow).salvar(orcamento()),
+            )
+
+        estado, outbox, processada = espia.escritas
+        assert (estado[0], outbox[0], processada[0]) == (
+            "orcamentos",
+            "outbox",
+            "mensagens_processadas",
+        )
+        # Mesma sessao e mesmo numero de transacao, nenhum autocommit.
+        assert estado[1:] == outbox[1:] == processada[1:]
+        assert processada[2] is not None
+        assert processada[3] is False
+
+    def test_transacao_le_em_snapshot_e_comita_com_majority_mesmo_recomecada(
+        self, banco: Banco, mongo_uri: str
+    ) -> None:
+        def handler(uow: UnidadeDaMensagem) -> None:
+            repo = MongoOrcamentoRepository(uow)
+
+            def ler_e_falhar() -> None:
+                repo.obter_por_ordem(uuid4())
+                raise LookupError("conflito")
+
+            with pytest.raises(LookupError):
+                uow.executar(ler_e_falhar)
+            uow.executar(lambda: repo.salvar(orcamento()))
+
+        with cliente_espiado(mongo_uri) as (cliente, espia):
+            processar_mensagem(cliente[banco.name], _comando(), handler)
+
+        inicios = [c for _, c in espia.comandos if c.get("startTransaction")]
+        commits = [c for nome, c in espia.comandos if nome == "commitTransaction"]
+        # A primeira transacao (descartada) e a recomecada leem em snapshot.
+        assert [c["readConcern"]["level"] for c in inicios] == ["snapshot"] * 2
+        assert [c["writeConcern"]["w"] for c in commits] == ["majority"]
+
+
 class TestEventoSemComando:
     def test_causa_e_trace_de_quem_abriu_o_registro(
         self, banco: Banco, spans: InMemorySpanExporter
@@ -319,6 +373,37 @@ class TestEventoSemComando:
         assert linha["traceparent"] == _traceparent(saga)
         assert linha["retomado_por"] == {"traceparent": _traceparent(requisicao)}
 
+    def test_evento_sem_comando_leva_o_tracestate_de_quem_abriu(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        gerado = orcamento()
+        pai = contexto_de(
+            {
+                "traceparent": (
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                ),
+                "tracestate": "pytstop=abc",
+            }
+        )
+        with _tracer.start_as_current_span("process GerarOrcamento", context=pai):
+            _salvar_no_comando(
+                banco,
+                _comando(),
+                lambda uow: MongoOrcamentoRepository(uow).salvar(gerado),
+            )
+        uow = MongoUnitOfWork(banco)
+        repo = MongoOrcamentoRepository(uow)
+
+        def aprovar() -> None:
+            atual = repo.obter_por_id(gerado.id)
+            assert atual is not None
+            atual.aprovar(canal=CanalDecisao.LINK, agora=AGORA + timedelta(hours=1))
+            repo.salvar(atual)
+
+        uow.executar(aprovar)
+
+        assert _linha(banco, "OrcamentoAprovado")["tracestate"] == "pytstop=abc"
+
     def test_registro_criado_por_outro_comando_guarda_o_primeiro(
         self, banco: Banco
     ) -> None:
@@ -345,15 +430,32 @@ class TestEventoSemComando:
 
 
 class TestIndices:
-    def test_retencao_por_indice_ttl(self, banco: Banco) -> None:
-        outbox = banco["outbox"].index_information()["entregue_em_1"]
-        assert outbox["expireAfterSeconds"] == 7 * 24 * 3600
-        assert outbox["partialFilterExpression"] == {"status": "entregue"}
-        mortas = banco["outbox"].index_information()["morta_em_1"]
-        assert mortas["expireAfterSeconds"] == 30 * 24 * 3600
-        assert mortas["partialFilterExpression"] == {"status": "dead"}
-        processadas = banco["mensagens_processadas"].index_information()
+    def test_retencao_por_indice_ttl(
+        self, cliente_mongo: MongoClient[dict[str, Any]]
+    ) -> None:
+        # Banco proprio: a suite roda sem os indices TTL (conftest).
+        nome = f"indices_{uuid4().hex}"
+        preparar_banco(cliente_mongo[nome])
+        try:
+            outbox = cliente_mongo[nome]["outbox"].index_information()
+            processadas = cliente_mongo[nome][
+                "mensagens_processadas"
+            ].index_information()
+        finally:
+            cliente_mongo.drop_database(nome)
+
+        assert outbox["entregue_em_1"]["expireAfterSeconds"] == 7 * 24 * 3600
+        assert outbox["entregue_em_1"]["partialFilterExpression"] == {
+            "status": "entregue"
+        }
+        assert outbox["morta_em_1"]["expireAfterSeconds"] == 30 * 24 * 3600
+        assert outbox["morta_em_1"]["partialFilterExpression"] == {"status": "dead"}
         assert processadas["processada_em_1"]["expireAfterSeconds"] == 30 * 24 * 3600
+        assert {indice for indices in INDICES_TTL.values() for indice in indices} == {
+            "entregue_em_1",
+            "morta_em_1",
+            "processada_em_1",
+        }
 
     def test_indice_do_claim_do_relay(self, banco: Banco) -> None:
         indice = banco["outbox"].index_information()[

@@ -27,6 +27,7 @@ from tests.integracao.apoio import (
     RelogioFixo,
     configuracao,
     definicoes_de_teste,
+    sem_indices_ttl,
 )
 
 if TYPE_CHECKING:
@@ -116,6 +117,7 @@ def banco_da_sessao(
     nome = f"teste_{uuid4().hex}"
     banco = cliente_mongo[nome]
     preparar_banco(banco)
+    sem_indices_ttl(banco)
     yield banco
     cliente_mongo.drop_database(nome)
 

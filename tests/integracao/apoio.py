@@ -90,12 +90,24 @@ class EscritasEspiadas(monitoring.CommandListener):
         return None
 
 
+class ComandosEspiados(EscritasEspiadas):
+    """Guarda tambem o nome e o documento de cada comando enviado."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.comandos: list[tuple[str, dict[str, Any]]] = []
+
+    def started(self, event: monitoring.CommandStartedEvent) -> None:
+        super().started(event)
+        self.comandos.append((event.command_name, dict(event.command)))
+
+
 @contextmanager
 def cliente_espiado(
     mongo_uri: str,
-) -> Iterator[tuple[MongoClient[dict[str, Any]], EscritasEspiadas]]:
-    """Cliente do mesmo banco de teste que registra todo insert e update."""
-    espia = EscritasEspiadas()
+) -> Iterator[tuple[MongoClient[dict[str, Any]], ComandosEspiados]]:
+    """Cliente do mesmo banco de teste que registra todo comando enviado."""
+    espia = ComandosEspiados()
     cliente: MongoClient[dict[str, Any]] = MongoClient(
         mongo_uri,
         uuidRepresentation="standard",
@@ -106,6 +118,22 @@ def cliente_espiado(
         yield cliente, espia
     finally:
         cliente.close()
+
+
+# O RelogioFixo grava no passado (06/10/2026): com os indices TTL reais, o
+# monitor do mongod apagaria as linhas no meio do teste depois de 7 ou 30 dias
+# de calendario. A suite roda sem eles; test_outbox confere a especificacao
+# deles num banco proprio.
+INDICES_TTL = {
+    "outbox": ("entregue_em_1", "morta_em_1"),
+    "mensagens_processadas": ("processada_em_1",),
+}
+
+
+def sem_indices_ttl(banco: Database[dict[str, Any]]) -> None:
+    for colecao, indices in INDICES_TTL.items():
+        for indice in indices:
+            banco[colecao].drop_index(indice)
 
 
 class RelogioFixo:
