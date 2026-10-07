@@ -303,6 +303,44 @@ class TestDoisRelays:
         assert _linhas(banco) == [retomada]
         assert retomada["tentativas"] == 0
 
+    @pytest.mark.parametrize(
+        "erro_do_primeiro",
+        [None, MensagemRecusadaError("NackError")],
+        ids=["primeiro-confirma", "primeiro-falha"],
+    )
+    def test_relay_atrasado_nao_mexe_na_linha_que_outro_esta_entregando(
+        self, banco: Banco, erro_do_primeiro: Exception | None
+    ) -> None:
+        """Os dois em voo ao mesmo tempo: so o token distingue o dono da linha."""
+        _gravar_orcamentos(banco)
+        relogio = RelogioFixo()
+        solta_o_primeiro, solta_o_segundo = threading.Event(), threading.Event()
+        primeiro = PublicadorFalso(erro_do_primeiro, segura=solta_o_primeiro)
+        segundo = PublicadorFalso(segura=solta_o_segundo)
+        thread_do_primeiro = threading.Thread(
+            target=_relay(banco, primeiro, relogio).entregar_pendentes, args=(1,)
+        )
+        thread_do_primeiro.start()
+        assert primeiro.entrou.wait(10)
+        relogio.avancar(seconds=31)
+        thread_do_segundo = threading.Thread(
+            target=_relay(banco, segundo, relogio).entregar_pendentes, args=(1,)
+        )
+        thread_do_segundo.start()
+        assert segundo.entrou.wait(10)
+        [do_segundo] = _linhas(banco)
+
+        solta_o_primeiro.set()
+        thread_do_primeiro.join(timeout=10)
+        # O primeiro terminou (publicou ou falhou), e a linha segue do segundo.
+        assert _linhas(banco) == [do_segundo]
+        assert do_segundo["status"] == "em_entrega"
+
+        solta_o_segundo.set()
+        thread_do_segundo.join(timeout=10)
+        [entregue] = _linhas(banco)
+        assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
+
 
 class CanalFalso(CanalAmqp):
     """``CanalAmqp`` sem broker: falha ao abrir N vezes, pode publicar com erro

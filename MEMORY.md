@@ -106,6 +106,7 @@ Updated by AI agents at task end per `postech-ai-helper/ai/canonical/task-end-re
 
 ## Review lessons
 
+- 2026-10-06 - Teste de fencing precisa dos dois relays em voo ao mesmo tempo: com o segundo ja concluido, o filtro por status basta e o token nao e exercido (o mutante sem o token sobreviveu ao teste de lease ate entrar o caso com os dois em entrega)
 - 2026-10-06 - Docstring ou README que promete um desfecho (`EstornoDePagamentoFalhou` ao fechar o checkout) precisa de teste do ramo: a promessa nunca foi exercida e o codigo propagava a excecao, travando a saga
 - 2026-10-06 - Regex de mascaramento de PII precisa de teste pelos dois lados: a classe inteira de valores legitimos que passam por ele (10 mil UUID v4, em caixa baixa e alta) e as formas de PII coladas a hifen e a palavra. O falso positivo de 1,4% passou por 100% de cobertura, e a primeira correcao trocou o falso positivo por um falso negativo
 - 2026-10-06 - Mutacao achou lacunas que 100% de cobertura nao viu: laco sem espera (observar o `wait` com um Event espiao), "nao gravou" (contar os comandos do banco, nao comparar o documento), ordem de consulta que o indice ja entrega, opcoes do cliente (ler `cliente.options`) e classes de status do adapter (4xx fora do 404 e 3xx onde o corpo e ignorado)
