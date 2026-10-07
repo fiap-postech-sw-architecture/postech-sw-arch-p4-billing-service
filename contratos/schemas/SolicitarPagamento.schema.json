@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SolicitarPagamento (dados)",
+  "description": "Campo dados da mensagem SolicitarPagamento (comando, os-service -> billing-service). Passo T6: o Billing cria a cobrança do orçamento aprovado no Mercado Pago (ou no simulador).",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "orcamento_id"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "orcamento_id": {
+      "$ref": "#/$defs/uuid"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

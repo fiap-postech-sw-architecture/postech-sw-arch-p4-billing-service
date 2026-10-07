@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CancelarOrcamento (dados)",
+  "description": "Campo dados da mensagem CancelarOrcamento (comando, os-service -> billing-service). Compensação do passo T3: o Billing cancela o orçamento da OS; sem orcamento_id (GerarOrcamento em voo), localiza pelo ordem_id.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "motivo"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "orcamento_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "Ausente quando o GerarOrcamento ainda estava em voo; o Billing localiza o orçamento pelo ordem_id."
+    },
+    "motivo": {
+      "$ref": "#/$defs/motivo_compensacao"
+    }
+  },
+  "$defs": {
+    "motivo_compensacao": {
+      "enum": [
+        "orcamento_recusado",
+        "orcamento_expirado",
+        "geracao_falhou",
+        "reserva_falhou",
+        "pagamento_recusado",
+        "pagamento_expirado",
+        "cancelamento",
+        "prazo_tecnico"
+      ],
+      "description": "Código da compensação, o mesmo label motivo de pytstop_saga_compensacoes_total; o texto do atendente fica só no histórico da OS."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

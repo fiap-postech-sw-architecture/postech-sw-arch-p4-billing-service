@@ -16,6 +16,17 @@ dependencies = [
     "structlog>=26.1.0,<27",
     # Transitiva do starlette; piso explicito pelo advisory de out/2026.
     "anyio>=4.15.1,<5",
+    # Mensageria (ADR-036): relay e consumidor sobre RabbitMQ.
+    "pika>=1.4.4,<2",
+    # Contratos das mensagens (copiados do platform em contratos/): o envelope e
+    # o dados sao validados na gravacao da outbox e no consumo; o
+    # rfc3339-validator liga a checagem de date-time, que o FormatChecker pularia.
+    "jsonschema>=4.26.0,<5",
+    "rfc3339-validator>=0.1.4,<1",
+    # Contexto W3C pela outbox e pelo AMQP; exportacao OTLP/gRPC para o Jaeger
+    # (ADR-043), ligada por OTEL_ENABLED.
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
 ]
 
 [dependency-groups]
@@ -34,12 +45,10 @@ dev = [
     "mypy>=2.4.0",
     "bandit>=1.9.4",
     "import-linter>=2.15",
-    # Contrato dos eventos: cada mensagem valida contra os JSON Schemas da
-    # plataforma copiados em tests/contratos/ (o rfc3339-validator liga a
-    # checagem de date-time, que o FormatChecker pularia sem ele).
-    "jsonschema>=4.25",
     "types-jsonschema>=4.25",
-    "rfc3339-validator>=0.1.4",
+    # Teste de contrato le o produtor de cada tipo no asyncapi.yaml copiado.
+    "pyyaml>=6.0.3",
+    "types-pyyaml>=6.0.12",
 ]
 
 [build-system]

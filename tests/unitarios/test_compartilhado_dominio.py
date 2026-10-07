@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, dataclass
+from dataclasses import FrozenInstanceError, dataclass, fields
 from datetime import UTC
 from decimal import Decimal
 from uuid import uuid4
@@ -138,11 +138,9 @@ class TestEventoDeIntegracao:
 
         assert PagamentoConfirmadoEvent(ordem_id=uuid4()).tipo == "PagamentoConfirmado"
 
-    def test_ocorrido_em_fica_fora_da_igualdade(self) -> None:
-        ordem_id = uuid4()
-        primeiro = IntegrationEvent(ordem_id=ordem_id)
-        segundo = IntegrationEvent(ordem_id=ordem_id, ocorrido_em=agora_utc())
-        assert primeiro == segundo
+    def test_campos_do_evento_sao_so_o_dados(self) -> None:
+        # ocorrido_em e causation_id sao de quem grava a outbox, nao do evento.
+        assert [campo.name for campo in fields(IntegrationEvent)] == ["ordem_id"]
 
 
 class TestExcecoes:

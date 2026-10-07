@@ -52,16 +52,19 @@ RUN groupadd -r -g 1001 pytstop \
 RUN python -m pip uninstall -y pip
 
 WORKDIR /app
-# Venv e entrypoint ficam do root (so leitura para o processo): o usuario 1001
-# executa, mas nao altera o proprio codigo.
+# Venv, contratos e entrypoint ficam do root (so leitura para o processo): o
+# usuario 1001 executa, mas nao altera o proprio codigo. Os contratos (JSON
+# Schema das mensagens, copiados do platform) validam a outbox e o consumo.
 COPY --from=builder /app/.venv /app/.venv
+COPY contratos ./contratos
 COPY --chmod=755 entrypoint.sh ./
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTSTOP_GIT_SHA="${GIT_SHA}" \
-    PYTSTOP_GIT_DATE="${GIT_DATE}"
+    PYTSTOP_GIT_DATE="${GIT_DATE}" \
+    CONTRATOS_DIR=/app/contratos
 
 # Imagem slim sem curl: probe em Python na readiness (banco no ar e preparado).
 # Vale para o processo `api`; o compose da ao `prazos` o heartbeat, e o

@@ -6,15 +6,15 @@ import json
 from dataclasses import dataclass, fields
 from datetime import timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
 from src.compartilhado.aplicacao.outbox import para_envelope
 from src.compartilhado.dominio.events import IntegrationEvent
+from src.compartilhado.infraestrutura.mensageria import contratos
 from src.orcamento.dominio import events as eventos_orcamento
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.pagamento.dominio import events as eventos_pagamento
@@ -29,15 +29,27 @@ from tests.factories import (
 )
 
 # JSON Schemas do catalogo (RFC-004, secao 5.3) copiados do repositorio da
-# plataforma (postech-sw-arch-p4-platform, contratos/schemas @ 4a1fed2): uma
-# mensagem que o Billing publica precisa validar no schema que os
-# consumidores usam.
-CONTRATOS = Path(__file__).parent.parent / "contratos"
+# plataforma (contratos/, SHA em contratos/ORIGEM): uma mensagem que o Billing
+# publica precisa validar no schema que os consumidores usam.
 SCHEMAS = {
     caminho.name.removesuffix(".schema.json"): json.loads(caminho.read_text())
-    for caminho in CONTRATOS.glob("*.schema.json")
+    for caminho in (contratos.diretorio() / "schemas").glob("*.schema.json")
 }
-CATALOGO_DO_BILLING = set(SCHEMAS) - {"envelope"}
+COMANDOS_CONSUMIDOS = {
+    "GerarOrcamento",
+    "CancelarOrcamento",
+    "SolicitarPagamento",
+    "EstornarPagamento",
+}
+CATALOGO_DO_BILLING = set(SCHEMAS) - {"envelope"} - COMANDOS_CONSUMIDOS
+
+
+def _envelope(
+    evento: IntegrationEvent, *, causation_id: UUID | None = None
+) -> dict[str, Any]:
+    return para_envelope(
+        evento, mensagem_id=uuid4(), causation_id=causation_id, ocorrido_em=AGORA
+    )
 
 
 def _classe_do_evento(tipo: str) -> type[IntegrationEvent]:
@@ -66,7 +78,7 @@ def test_classes_de_evento_cobrem_exatamente_o_catalogo() -> None:
 def test_campos_de_cada_evento_sao_os_do_contrato(tipo: str) -> None:
     campos = {campo.name for campo in fields(_classe_do_evento(tipo))}
     schema = SCHEMAS[tipo]
-    assert campos - {"ocorrido_em"} == set(schema["properties"])
+    assert campos == set(schema["properties"])
     assert set(schema["required"]) <= campos
 
 
@@ -173,34 +185,41 @@ def test_os_exemplos_cobrem_todo_o_catalogo() -> None:
 
 @pytest.mark.parametrize("exemplo", list(EXEMPLOS))
 def test_cada_evento_valida_no_contrato_da_plataforma(exemplo: str) -> None:
-    envelope = para_envelope(EXEMPLOS[exemplo], mensagem_id=uuid4())
+    envelope = _envelope(EXEMPLOS[exemplo], causation_id=uuid4())
     assert _violacoes(envelope) == []
 
 
-def test_ocorrido_em_do_evento_vai_para_o_envelope() -> None:
+def test_ocorrido_em_vem_do_relogio_de_quem_grava() -> None:
     evento = eventos_orcamento.OrcamentoExpiradoEvent(
-        ordem_id=uuid4(),
-        orcamento_id=uuid4(),
+        ordem_id=uuid4(), orcamento_id=uuid4()
+    )
+    envelope = para_envelope(
+        evento,
+        mensagem_id=uuid4(),
+        causation_id=None,
         ocorrido_em=AGORA + timedelta(seconds=5, microseconds=123456),
     )
-    envelope = para_envelope(evento, mensagem_id=uuid4())
     assert envelope["ocorrido_em"] == "2026-10-06T12:00:05.123Z"
+    assert envelope["causation_id"] is None
 
 
 def test_envelope_do_orcamento_gerado() -> None:
     gerado = orcamento()
     evento = gerado.coletar_eventos()[0]
     mensagem_id = uuid4()
+    comando_id = uuid4()
 
-    envelope = para_envelope(evento, mensagem_id=mensagem_id)
+    envelope = para_envelope(
+        evento, mensagem_id=mensagem_id, causation_id=comando_id, ocorrido_em=AGORA
+    )
 
     assert envelope["id"] == str(mensagem_id)
     assert envelope["tipo"] == "OrcamentoGerado"
     assert envelope["versao"] == 1
     assert envelope["origem"] == "billing-service"
     assert envelope["correlation_id"] == str(gerado.ordem_id)
-    assert envelope["causation_id"] is None
-    assert envelope["ocorrido_em"].endswith("Z")
+    assert envelope["causation_id"] == str(comando_id)
+    assert envelope["ocorrido_em"] == "2026-10-06T12:00:00.000Z"
     assert envelope["dados"] == {
         "ordem_id": str(gerado.ordem_id),
         "orcamento_id": str(gerado.id),
@@ -244,7 +263,7 @@ def test_enum_vira_valor_e_tupla_vira_lista() -> None:
         canal=CanalDecisao.ATENDENTE,
         decidido_por=ATENDENTE_SUB,
     )
-    dados = para_envelope(evento, mensagem_id=uuid4())["dados"]
+    dados = _envelope(evento)["dados"]
     assert dados["canal"] == "atendente"
     assert dados["decidido_em"] == "2026-10-06T12:00:00.000Z"
     assert dados["decidido_por"] == ATENDENTE_SUB
@@ -252,9 +271,7 @@ def test_enum_vira_valor_e_tupla_vira_lista() -> None:
     falha = eventos_orcamento.GeracaoDeOrcamentoFalhouEvent(
         ordem_id=uuid4(), motivo="x", codigos_invalidos=("SRV-X",)
     )
-    assert para_envelope(falha, mensagem_id=uuid4())["dados"]["codigos_invalidos"] == [
-        "SRV-X"
-    ]
+    assert _envelope(falha)["dados"]["codigos_invalidos"] == ["SRV-X"]
 
 
 def test_float_nunca_entra_no_envelope() -> None:
@@ -263,9 +280,7 @@ def test_float_nunca_entra_no_envelope() -> None:
         valor: float
 
     with pytest.raises(TypeError, match="float"):
-        para_envelope(
-            ValorEmFloatEvent(ordem_id=uuid4(), valor=1.5), mensagem_id=uuid4()
-        )
+        _envelope(ValorEmFloatEvent(ordem_id=uuid4(), valor=1.5))
 
 
 def test_decimal_preserva_a_escala() -> None:
@@ -273,9 +288,7 @@ def test_decimal_preserva_a_escala() -> None:
     class ValorEvent(IntegrationEvent):
         valor: Decimal
 
-    dados = para_envelope(
-        ValorEvent(ordem_id=uuid4(), valor=Decimal("350.00")), mensagem_id=uuid4()
-    )["dados"]
+    dados = _envelope(ValorEvent(ordem_id=uuid4(), valor=Decimal("350.00")))["dados"]
     assert dados["valor"] == "350.00"
 
 
@@ -286,7 +299,7 @@ def test_str_enum_sai_como_str_puro() -> None:
         decidido_em=AGORA,
         canal=CanalDecisao.LINK,
     )
-    canal = para_envelope(evento, mensagem_id=uuid4())["dados"]["canal"]
+    canal = _envelope(evento)["dados"]["canal"]
     assert type(canal) is str
 
 
@@ -298,4 +311,4 @@ def test_campo_opcional_sem_valor_fica_fora_de_dados() -> None:
         decidido_em=AGORA,
         canal=CanalDecisao.LINK,
     )
-    assert "decidido_por" not in para_envelope(evento, mensagem_id=uuid4())["dados"]
+    assert "decidido_por" not in _envelope(evento)["dados"]

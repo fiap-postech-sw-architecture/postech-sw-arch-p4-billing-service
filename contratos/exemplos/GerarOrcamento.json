@@ -1,0 +1,24 @@
+{
+  "id": "aab90131-077c-473b-8f58-84287532cb38",
+  "tipo": "GerarOrcamento",
+  "versao": 1,
+  "origem": "os-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "29dad220-15fd-463d-816d-b3f537bc7c43",
+  "ocorrido_em": "2026-10-06T12:45:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "itens": [
+      {
+        "tipo": "servico",
+        "codigo": "SRV-SUSPENSAO",
+        "quantidade": 1
+      },
+      {
+        "tipo": "peca",
+        "codigo": "PEC-AMORTECEDOR-D",
+        "quantidade": 2
+      }
+    ]
+  }
+}

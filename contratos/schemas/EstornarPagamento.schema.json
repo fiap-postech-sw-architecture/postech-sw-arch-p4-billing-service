@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EstornarPagamento (dados)",
+  "description": "Campo dados da mensagem EstornarPagamento (comando, os-service -> billing-service). Compensação do passo T6, em qualquer estado do pagamento: com a cobrança em aberto, o Billing a cancela e responde PagamentoCancelado; com o pagamento confirmado, estorna no provedor com a chave de idempotência estorno-{pagamento_id} e responde PagamentoEstornado. O id da mensagem só deduplica a entrega.",
+  "type": "object",
+  "required": [
+    "ordem_id",
+    "motivo"
+  ],
+  "properties": {
+    "ordem_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "pagamento_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "Ausente quando o SolicitarPagamento ainda estava em voo; o Billing localiza o pagamento pelo ordem_id."
+    },
+    "motivo": {
+      "$ref": "#/$defs/motivo_compensacao"
+    }
+  },
+  "$defs": {
+    "motivo_compensacao": {
+      "enum": [
+        "orcamento_recusado",
+        "orcamento_expirado",
+        "geracao_falhou",
+        "reserva_falhou",
+        "pagamento_recusado",
+        "pagamento_expirado",
+        "cancelamento",
+        "prazo_tecnico"
+      ],
+      "description": "Código da compensação, o mesmo label motivo de pytstop_saga_compensacoes_total; o texto do atendente fica só no histórico da OS."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

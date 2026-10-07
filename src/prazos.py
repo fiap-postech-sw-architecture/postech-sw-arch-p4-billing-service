@@ -92,7 +92,7 @@ def executar_ciclo(
     limite: int = LIMITE_POR_CICLO,
 ) -> ResultadoDoCiclo:
     """Um ciclo: concilia (se houver ``gateway``) e expira orcamentos e pagamentos."""
-    uow = MongoUnitOfWork(banco)
+    uow = MongoUnitOfWork(banco, relogio=relogio)
     pagamentos = MongoPagamentoRepository(uow)
     conciliados = 0
     if gateway is not None:

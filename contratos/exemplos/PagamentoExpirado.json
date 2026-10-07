@@ -1,0 +1,14 @@
+{
+  "id": "76b85dc7-1c9b-48a0-b8ff-e990212e3e79",
+  "tipo": "PagamentoExpirado",
+  "versao": 1,
+  "origem": "billing-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": null,
+  "ocorrido_em": "2026-10-06T14:32:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "pagamento_id": "8b7fdbea-b573-47c6-8654-df9ea01818c8",
+    "motivo": "Prazo de pagamento de 60 minutos esgotado."
+  }
+}

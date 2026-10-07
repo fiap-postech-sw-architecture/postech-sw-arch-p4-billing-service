@@ -1,0 +1,9 @@
+{
+  "vhosts": [{"name": "/"}],
+  "users": [
+    {"name": "admin", "password": "pytstop-rabbitmq-admin-demo-2026", "tags": ["administrator"]}
+  ],
+  "permissions": [
+    {"user": "admin", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*"}
+  ]
+}

@@ -34,7 +34,8 @@ _TIMEOUT_OPERACAO_MS: Final = 10_000
 _MAX_CONEXOES: Final = 50
 
 COLECAO_VERSAO: Final = "versao_do_banco"
-VERSAO_DO_BANCO: Final = 1
+# 2: outbox com exchange, routing key e indice de claim; mensagens_processadas.
+VERSAO_DO_BANCO: Final = 2
 
 # Dinheiro como subdocumento {valor: Decimal128, moeda} (nunca double).
 ESQUEMA_DINHEIRO: Final[Documento] = {

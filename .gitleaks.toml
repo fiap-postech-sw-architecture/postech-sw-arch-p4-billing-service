@@ -5,3 +5,17 @@ title = "PytStop fase 4 gitleaks config"
 # segredo (mesmo padrao da fase 3).
 [extend]
 useDefault = true
+
+# Copias do platform, que nao aceitam marcador (JSON sem comentario, e o teste
+# de contrato exige a copia identica a origem), com as mesmas regras de la:
+# - senhas pytstop-<componente>-demo-2026 do RabbitMQ do compose (no cluster as
+#   senhas sao geradas no deploy, ADR-042);
+# - link de decisao e checkout dos exemplos de contrato, que apontam para
+#   http://localhost e carregam um token ilustrativo.
+[allowlist]
+description = "Valores de demonstracao e exemplos de contrato"
+regexTarget = "line"
+regexes = [
+  '''pytstop-[a-z-]+-demo-2026''',
+  '''"(link_decisao|checkout_url)": "http://localhost/''',
+]

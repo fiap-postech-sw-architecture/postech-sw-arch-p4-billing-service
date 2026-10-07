@@ -1,0 +1,14 @@
+{
+  "id": "a7a790a1-3e90-49c6-afed-972fa14765c2",
+  "tipo": "CancelarOrcamento",
+  "versao": 1,
+  "origem": "os-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "87d7fc6d-1dfa-4f1c-adbc-5c1459ed2abd",
+  "ocorrido_em": "2026-10-06T14:14:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "orcamento_id": "8605886c-3bb2-4165-8f1d-2368c87022e9",
+    "motivo": "cancelamento"
+  }
+}

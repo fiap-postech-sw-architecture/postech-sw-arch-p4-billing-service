@@ -1,4 +1,4 @@
-"""Fixtures compartilhadas: chave RSA de teste, JWKS e emissor de JWT."""
+"""Fixtures compartilhadas: chave RSA de teste, JWKS, emissor de JWT e spans."""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -66,3 +72,20 @@ def emitir_token(chave_rsa: rsa.RSAPrivateKey) -> Callable[..., str]:
         )
 
     return emitir
+
+
+@pytest.fixture(scope="session")
+def _exportador_de_spans() -> InMemorySpanExporter:
+    # O provider global do OpenTelemetry so e instalado uma vez por processo.
+    exportador = InMemorySpanExporter()
+    provedor = TracerProvider()
+    provedor.add_span_processor(SimpleSpanProcessor(exportador))
+    trace.set_tracer_provider(provedor)
+    return exportador
+
+
+@pytest.fixture
+def spans(_exportador_de_spans: InMemorySpanExporter) -> InMemorySpanExporter:
+    """Spans terminados durante o teste (provider do SDK em memoria)."""
+    _exportador_de_spans.clear()
+    return _exportador_de_spans

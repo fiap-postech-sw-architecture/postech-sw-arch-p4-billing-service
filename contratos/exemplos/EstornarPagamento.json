@@ -1,0 +1,14 @@
+{
+  "id": "7e75d816-1b35-4a02-871f-a5fe089eddb7",
+  "tipo": "EstornarPagamento",
+  "versao": 1,
+  "origem": "os-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "4121f5b1-9c05-4fc3-b7b8-f2e0f1f1bf6c",
+  "ocorrido_em": "2026-10-06T14:11:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "pagamento_id": "8b7fdbea-b573-47c6-8654-df9ea01818c8",
+    "motivo": "cancelamento"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "947bc2d1-54b0-4972-900a-bc62b2e45922",
+  "tipo": "SolicitarPagamento",
+  "versao": 1,
+  "origem": "os-service",
+  "correlation_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+  "causation_id": "e8e7cb31-c7b6-4fa6-91c0-083d7f015860",
+  "ocorrido_em": "2026-10-06T13:31:00Z",
+  "dados": {
+    "ordem_id": "495db021-ac8d-4a7e-94d1-734c7eab475c",
+    "orcamento_id": "8605886c-3bb2-4165-8f1d-2368c87022e9"
+  }
+}
