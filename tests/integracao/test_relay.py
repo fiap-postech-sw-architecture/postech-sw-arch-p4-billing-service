@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import socket
 import threading
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -513,19 +514,22 @@ class TestDoisRelays:
 
 
 class CanalFalso(CanalAmqp):
-    """``CanalAmqp`` sem broker: falha ao abrir N vezes, pode publicar com erro
-    ate uma abertura dada e para o laco na segunda espera."""
+    """``CanalAmqp`` sem broker: falha ao abrir N vezes (com ``erro_ao_abrir``,
+    o broker fora por padrao), pode publicar com erro ate uma abertura dada e
+    para o laco na segunda espera."""
 
     def __init__(
         self,
         parar: threading.Event,
         *,
         falhas_ao_abrir: int = 0,
+        erro_ao_abrir: Exception | None = None,
         erro_ate_a_abertura: int = 0,
         bloqueada_nas_esperas: int = 0,
     ) -> None:
         super().__init__(pika.ConnectionParameters())
         self.falhas_ao_abrir = falhas_ao_abrir
+        self.erro_ao_abrir = erro_ao_abrir or AMQPConnectionError("broker fora")
         self.erro_ate_a_abertura = erro_ate_a_abertura
         self.bloqueada_nas_esperas = bloqueada_nas_esperas
         self.aberturas = 0
@@ -537,7 +541,7 @@ class CanalFalso(CanalAmqp):
     def abrir(self) -> None:
         self.aberturas += 1
         if self.aberturas <= self.falhas_ao_abrir:
-            raise AMQPConnectionError("broker fora")
+            raise self.erro_ao_abrir
         self.publicador.erro = (
             StreamLostError("caiu")
             if self.aberturas <= self.erro_ate_a_abertura
@@ -585,12 +589,21 @@ def _banco_inalcancavel() -> MongoClient[dict[str, Any]]:
 
 
 class TestLacoDoProcesso:
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            AMQPConnectionError("broker fora"),
+            # O pika nao embrulha o gaierror do nome do broker sem resolucao.
+            socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
+        ],
+        ids=["broker-fora", "nome-sem-resolucao"],
+    )
     def test_sem_conexao_nao_reivindica_e_reconecta(
-        self, banco: Banco, tmp_path: Path
+        self, banco: Banco, tmp_path: Path, erro: Exception
     ) -> None:
         _gravar_orcamentos(banco)
         parar = threading.Event()
-        canal = CanalFalso(parar, falhas_ao_abrir=3)
+        canal = CanalFalso(parar, falhas_ao_abrir=3, erro_ao_abrir=erro)
         heartbeat = tmp_path / "relay-heartbeat"
         relay = RelayEspiado(banco, canal, heartbeat)
 

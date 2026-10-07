@@ -6,6 +6,7 @@ filas de retry; cada teste comeca com as filas vazias e o banco limpo.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import logging
@@ -73,6 +74,7 @@ if TYPE_CHECKING:
 
     from src.compartilhado.infraestrutura.mensageria.consumidor import Handler
     from src.compartilhado.infraestrutura.unit_of_work import UnidadeDaMensagem
+    from tests.conftest import DnsDeTeste
 
     Banco = Database[dict[str, Any]]
 
@@ -910,6 +912,62 @@ class TestRelayNoBroker:
         assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
         assert evento["id"] == str(entregue["_id"])
 
+    def test_nome_do_broker_sem_dns_depois_de_conectar_nao_gasta_tentativa(
+        self,
+        banco: Banco,
+        broker: BrokerDeTeste,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        dns: DnsDeTeste,
+    ) -> None:
+        def sem_resolucao(processo: str) -> int:
+            return sum(
+                1
+                for r in caplog.records
+                if r.getMessage() == "broker_unavailable"
+                and r.__dict__.get("processo") == processo
+                and r.__dict__.get("erro") == "gaierror"
+            )
+
+        dns.nomes["rabbitmq.teste"] = broker.host
+        pelo_nome = dataclasses.replace(broker, host="rabbitmq.teste")
+
+        with caplog.at_level(logging.INFO), processos(banco, pelo_nome, tmp_path):
+            # Os dois conectados antes de cortar o nome: o que o teste prova e a
+            # conexao de pe que cai, nao a que nunca abriu.
+            esperar(lambda: _pronto(tmp_path / "relay"))
+            esperar(lambda: _pronto(tmp_path / "consumidor"))
+            # O broker cai e, com ele, o nome: o Service headless fica sem pod
+            # pronto e o DNS deixa de resolver.
+            dns.nomes["rabbitmq.teste"] = None
+            codigo, saida = broker.container.exec(["rabbitmqctl", "stop_app"])
+            assert codigo == 0, saida
+            try:
+                esperar(lambda: sem_resolucao("relay") >= 1)
+                _gravar_evento(banco)
+                antes = sem_resolucao("relay")
+                # Duas tentativas depois da gravacao: o relay tentou conectar e,
+                # sem conexao, nao reivindicou a linha. Nenhum dos dois processos
+                # fica pronto nem cai.
+                esperar(lambda: sem_resolucao("relay") >= antes + 2)
+                esperar(lambda: sem_resolucao("consumidor") >= 2)
+                [parada] = banco["outbox"].find()
+                assert (parada["status"], parada["tentativas"]) == ("pendente", 0)
+                # Esperar o conteudo, e nao ler uma vez: os processos regravam o
+                # arquivo (truncar e escrever), e a leitura no meio devolve vazio.
+                esperar(lambda: (tmp_path / "relay").read_text() == "conectando")
+                esperar(lambda: (tmp_path / "consumidor").read_text() == "conectando")
+            finally:
+                codigo, saida = broker.container.exec(["rabbitmqctl", "start_app"])
+                assert codigo == 0, saida
+                dns.nomes["rabbitmq.teste"] = broker.host
+            _, evento = esperar_mensagem(broker, "os.eventos")
+            esperar(lambda: _pronto(tmp_path / "consumidor"))
+
+        [entregue] = banco["outbox"].find()
+        assert (entregue["status"], entregue["tentativas"]) == ("entregue", 0)
+        assert evento["id"] == str(entregue["_id"])
+
 
 @contextmanager
 def fila_cheia(broker: BrokerDeTeste, fila: str, *, maximo: int) -> Iterator[None]:
@@ -1204,6 +1262,50 @@ class TestFiacaoDosProcessos:
             ("register", "ColetorDaOutbox"),
             ("unregister", "ColetorDaOutbox"),
         ]
+
+    @pytest.mark.parametrize(
+        ("processo", "arquivo"),
+        [(processo_relay, "relay"), (processo_consumidor, "consumidor")],
+        ids=["relay", "consumidor"],
+    )
+    def test_nome_do_broker_sem_resolucao_no_boot_nao_derruba_o_processo(
+        self,
+        banco: Banco,
+        ambiente: ServidorFalso,
+        processo: Any,
+        arquivo: str,
+        dns: DnsDeTeste,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        marcar_versao(banco)
+        dns.nomes["rabbitmq.teste"] = None
+        monkeypatch.setenv(
+            "RABBITMQ_URL",
+            "amqp://billing:x@rabbitmq.teste:5672/%2F",  # gitleaks:allow (teste)
+        )
+        parar = threading.Event()
+        quedas: list[BaseException] = []
+
+        def subir() -> None:
+            try:
+                processo.main(parar)
+            except BaseException as exc:
+                quedas.append(exc)
+
+        thread = threading.Thread(target=subir)
+        thread.start()
+        try:
+            # Duas consultas ao nome: o processo esperou o backoff e tentou de novo.
+            esperar(lambda: bool(quedas) or len(dns.consultas) >= 2)
+        finally:
+            parar.set()
+            thread.join(timeout=10)
+
+        assert quedas == []
+        assert not thread.is_alive()
+        assert (tmp_path / arquivo).read_text() == "conectando"
+        assert ambiente.desligado
 
     def test_boot_que_falha_fecha_o_que_ja_abriu(self, ambiente: ServidorFalso) -> None:
         # Sem o init do banco (a fixture banco limpa a marca de versao).
