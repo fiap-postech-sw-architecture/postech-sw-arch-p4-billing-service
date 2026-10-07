@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import threading
 import time
 from contextlib import contextmanager
@@ -374,6 +375,92 @@ class TestRetryEDlq:
         assert morta["id"] == mensagem["id"]
         assert "x-tentativa" not in (props.headers or {})
         assert handler.chamadas == 0
+
+
+def _propriedades_com_timestamp_em_ms(envelope: dict[str, Any]) -> Any:
+    """Header ``timestamp`` do tipo AMQP T com epoch em milissegundos, como
+    alguns clientes publicam. O decoder do pika do consumidor falha nele (o
+    ano passa de 9999) e derruba a conexao a cada entrega; o encoder do pika
+    nao o gera, entao a tabela dos headers sai codificada aqui."""
+    propriedades = pika.BasicProperties(
+        message_id=envelope["id"],
+        correlation_id=envelope["correlation_id"],
+        type=envelope["tipo"],
+        user_id="os",
+        delivery_mode=2,
+        headers={},
+    )
+    codificar = propriedades.encode
+
+    def encode() -> list[bytes]:
+        pecas: list[bytes] = codificar()
+        chave = b"timestamp"
+        valor = struct.pack(">cQ", b"T", 1_760_000_000_000)
+        entrada = bytes([len(chave)]) + chave + valor
+        # Sem content_type nem content_encoding, a tabela vem logo depois das
+        # flags (uma peca so, vazia).
+        assert pecas[1] == struct.pack(">I", 0)
+        pecas[1] = struct.pack(">I", len(entrada)) + entrada
+        return pecas
+
+    propriedades.encode = encode
+    return propriedades
+
+
+def _publicar_com_header_ilegivel(
+    broker: BrokerDeTeste, envelope: dict[str, Any]
+) -> None:
+    with broker.conectar("os") as conexao:
+        canal = conexao.channel()
+        canal.confirm_delivery()
+        canal.basic_publish(
+            "pytstop.comandos",
+            _routing_key(envelope["tipo"]),
+            json.dumps(envelope).encode(),
+            _propriedades_com_timestamp_em_ms(envelope),
+            mandatory=True,
+        )
+
+
+def _tirar_pela_api(broker: BrokerDeTeste, fila: str) -> dict[str, Any]:
+    """Tira a mensagem da fila pela API de gerenciamento: o pika do teste
+    tambem falharia no header."""
+    with httpx.Client(auth=("admin", SENHA_DO_ADMIN), timeout=10) as http:
+        limite = time.monotonic() + PRAZO_SEGUNDOS
+        while time.monotonic() < limite:
+            resposta = http.post(
+                f"{broker.api}/queues/%2F/{fila}/get",
+                json={"count": 1, "ackmode": "ack_requeue_false", "encoding": "auto"},
+            )
+            resposta.raise_for_status()
+            if mensagens := resposta.json():
+                mensagem: dict[str, Any] = mensagens[0]
+                return mensagem
+            time.sleep(0.05)
+    msg = f"nenhuma mensagem em {fila}"
+    raise AssertionError(msg)
+
+
+def test_header_ilegivel_vai_para_a_dlq_sem_levar_a_mensagem_de_tras(
+    banco: Banco, broker: BrokerDeTeste, tmp_path: Path
+) -> None:
+    semear(banco)
+    venenosa, valida = _gerar(), _gerar()
+    # As duas ja na fila quando o consumidor sobe: com prefetch maior que 1 elas
+    # sairiam no mesmo lote, voltariam juntas a cada queda e iriam juntas para
+    # a DLQ no limite de entregas.
+    _publicar_com_header_ilegivel(broker, venenosa)
+    publicar_comando(broker, valida)
+    with processos(banco, broker, tmp_path):
+        _, evento = esperar_mensagem(broker, "os.eventos")
+        morta = _tirar_pela_api(broker, "billing.comandos.dlq")
+
+    # Prefetch 1: so a venenosa voltava a fila a cada queda da conexao, e o
+    # limite de entregas da topologia a tirou de la sem tocar na valida.
+    assert evento["causation_id"] == valida["id"]
+    assert json.loads(morta["payload"])["id"] == venenosa["id"]
+    assert morta["properties"]["headers"]["x-first-death-reason"] == "delivery_limit"
+    assert banco["mensagens_processadas"].count_documents({}) == 1
 
 
 class Defeito:

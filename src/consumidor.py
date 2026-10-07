@@ -2,7 +2,7 @@
 
 Consome a fila ``billing.comandos`` com declaracao so passiva do que o usuario
 ``billing`` alcanca (a propria fila e o ``pytstop.retry``; a topologia e do
-``definitions.json`` da plataforma), prefetch pequeno e ack manual. Sem
+``definitions.json`` da plataforma), prefetch 1 e ack manual. Sem
 conexao, reconecta com backoff ate 30 s. O arquivo de vida e tocado a cada
 mensagem ou segundo ocioso, com ``pronto`` so enquanto consome. SIGTERM: para
 de consumir, conclui a mensagem em curso, cancela o consumo (as pre-buscadas
@@ -56,7 +56,10 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 FILA: Final = "billing.comandos"
-PREFETCH: Final = 10
+# Uma mensagem por vez: a que derruba a conexao a cada entrega (header que o
+# pika nao decodifica) vai para a DLQ pelo limite de entregas da fila (5, na
+# topologia do platform) sem arrastar as que estariam no mesmo lote.
+PREFETCH: Final = 1
 INATIVIDADE_SEGUNDOS: Final = 1.0
 
 

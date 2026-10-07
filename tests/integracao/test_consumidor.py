@@ -547,7 +547,7 @@ class TestLacoDoProcesso:
         )
 
         assert canal.aberturas == 4
-        assert (primeira.prefetch, segunda.prefetch) == (10, 10)
+        assert (primeira.prefetch, segunda.prefetch) == (1, 1)
         assert (primeira.cancelado, segunda.cancelado) == (False, True)
         assert canal.respostas.confirmadas == [1]
         assert heartbeat.read_text() == "conectando"
