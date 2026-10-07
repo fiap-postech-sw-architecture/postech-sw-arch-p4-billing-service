@@ -8,22 +8,29 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import pytest
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
+from pika.exceptions import AMQPConnectionError
 from prometheus_client import REGISTRY
 from pymongo.errors import AutoReconnect
 
-from src.compartilhado.infraestrutura.mensageria.amqp import MensagemRecusadaError
+from src.compartilhado.infraestrutura.mensageria.amqp import (
+    CanalAmqp,
+    MensagemRecusadaError,
+)
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
     ConsumidorDeComandos,
     Desfecho,
 )
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
+from src.consumidor import rodar as rodar_consumidor
 from src.orcamento.dominio.events import GeracaoDeOrcamentoFalhouEvent
 from tests.integracao.apoio import (
     CanalDeTeste,
@@ -35,7 +42,8 @@ from tests.integracao.apoio import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
+    from pathlib import Path
 
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
@@ -340,3 +348,94 @@ class TestRastreamento:
         [linha] = banco["outbox"].find()
         assert linha["traceparent"].split("-")[2] == f"{consumo.context.span_id:016x}"
         assert eventos_do_outbox(banco)[0]["causation_id"] == envelope["id"]
+
+
+class CanalDoBrokerFalso:
+    """``BlockingChannel`` de mentira: entrega uma lista e anota o cancelamento."""
+
+    def __init__(self, entregas: list[tuple[Any, Any, Any]]) -> None:
+        self.entregas = entregas
+        self.prefetch: int | None = None
+        self.cancelado = False
+
+    def basic_qos(self, prefetch_count: int) -> None:
+        self.prefetch = prefetch_count
+
+    def consume(
+        self, fila: str, inactivity_timeout: float
+    ) -> Iterator[tuple[Any, Any, Any]]:
+        assert (fila, inactivity_timeout) == ("billing.comandos", 0.01)
+        yield from self.entregas
+
+    def cancel(self) -> None:
+        self.cancelado = True
+
+
+class CanalAmqpFalso(CanalAmqp):
+    """Falha ao abrir N vezes; cada conexao entrega a lista da vez."""
+
+    def __init__(
+        self, falhas_ao_abrir: int, conexoes: list[CanalDoBrokerFalso]
+    ) -> None:
+        self.falhas_ao_abrir = falhas_ao_abrir
+        self.aberturas = 0
+        self.conexoes = conexoes
+        self.atual: CanalDoBrokerFalso | None = None
+        self.respostas = CanalDeTeste()
+
+    def abrir(self) -> None:
+        self.aberturas += 1
+        if self.aberturas <= self.falhas_ao_abrir:
+            raise AMQPConnectionError("broker fora")
+        self.atual = self.conexoes.pop(0)
+
+    @property
+    def canal(self) -> CanalDoBrokerFalso | None:
+        return self.atual
+
+    def confirmar(self, entrega: int) -> None:
+        self.respostas.confirmar(entrega)
+
+    def rejeitar(self, entrega: int) -> None:
+        self.respostas.rejeitar(entrega)
+
+    def fechar(self) -> None:
+        self.atual = None
+
+
+class TestLacoDoProcesso:
+    def test_reconecta_consome_e_para_devolvendo_as_pre_buscadas(
+        self, consumidor: ConsumidorDeComandos, tmp_path: Path
+    ) -> None:
+        envelope = _cancelar()
+        corpo = json.dumps(envelope).encode()
+        metodo = SimpleNamespace(delivery_tag=1)
+        parar = threading.Event()
+
+        class Ultima(CanalDoBrokerFalso):
+            def consume(
+                self, fila: str, inactivity_timeout: float
+            ) -> Iterator[tuple[Any, Any, Any]]:
+                yield (metodo, propriedades(envelope), corpo)
+                parar.set()
+                yield (None, None, None)
+
+        # 1a conexao: o broker encerra o consumo (o gerador acaba); 2a: entrega.
+        primeira, segunda = CanalDoBrokerFalso([(None, None, None)]), Ultima([])
+        canal = CanalAmqpFalso(falhas_ao_abrir=2, conexoes=[primeira, segunda])
+        heartbeat = tmp_path / "consumidor"
+
+        rodar_consumidor(
+            consumidor,
+            canal,
+            parar=parar,
+            heartbeat=heartbeat,
+            inatividade=0.01,
+            espera_maxima=0.01,
+        )
+
+        assert canal.aberturas == 4
+        assert (primeira.prefetch, segunda.prefetch) == (10, 10)
+        assert (primeira.cancelado, segunda.cancelado) == (False, True)
+        assert canal.respostas.confirmadas == [1]
+        assert heartbeat.read_text() == "conectando"

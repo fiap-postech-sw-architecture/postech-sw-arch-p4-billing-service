@@ -20,7 +20,9 @@ from opentelemetry.trace import SpanKind
 from pika.exceptions import AMQPConnectionError, StreamLostError
 from prometheus_client import REGISTRY
 from pymongo import MongoClient
+from pymongo.errors import AutoReconnect
 
+from src import relay as processo_relay
 from src.compartilhado.infraestrutura.mensageria.amqp import (
     CanalAmqp,
     MensagemRecusadaError,
@@ -415,3 +417,45 @@ class TestMetricas:
             assert list(coletor.collect()) == []
         finally:
             inalcancavel.close()
+
+
+class TestCasosDeBorda:
+    def test_lote_cheio_repete_sem_esperar(
+        self, banco: Banco, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(processo_relay, "LOTE", 1)
+        _gravar_orcamentos(banco, 2)
+        parar = threading.Event()
+        canal = CanalFalso(parar)
+        heartbeat = tmp_path / "relay-heartbeat"
+        relay = RelayEspiado(banco, canal, heartbeat)
+
+        processo_relay.rodar(relay, canal, parar=parar, heartbeat=heartbeat)
+
+        # Dois lotes cheios seguidos sem espera; depois, ocioso, espera.
+        assert len(relay.estados) == 4
+        assert canal.esperas == 2
+        assert {linha["status"] for linha in _linhas(banco)} == {"entregue"}
+
+    def test_sem_banco_para_devolver_o_lease_devolve_sozinho(
+        self, banco: Banco, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _gravar_orcamentos(banco)
+        relogio = RelogioFixo()
+        relay = _relay(banco, PublicadorFalso(StreamLostError("caiu")), relogio)
+        outbox = banco["outbox"]
+
+        def banco_fora(*_args: object, **_opcoes: object) -> None:
+            raise AutoReconnect("banco fora")
+
+        monkeypatch.setattr(type(outbox), "update_one", banco_fora)
+        with pytest.raises(StreamLostError):
+            relay.entregar_pendentes(1)
+        monkeypatch.undo()
+
+        [presa] = _linhas(banco)
+        assert presa["status"] == "em_entrega"
+        relogio.avancar(seconds=31)
+        outro = PublicadorFalso()
+        assert _relay(banco, outro, relogio).entregar_pendentes(1) == 1
+        assert outro.ids == [str(presa["_id"])]

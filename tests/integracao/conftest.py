@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pymongo import MongoClient
@@ -19,7 +20,14 @@ from pymongo import MongoClient
 from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.main import criar_app
-from tests.integracao.apoio import RelogioFixo, configuracao
+from tests.integracao.apoio import (
+    FILAS_DO_BILLING,
+    SENHA_DO_ADMIN,
+    BrokerDeTeste,
+    RelogioFixo,
+    configuracao,
+    definicoes_de_teste,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -30,6 +38,7 @@ if TYPE_CHECKING:
 
 # Mesma versao do docker-compose.yml (e do compose da plataforma).
 IMAGEM_MONGO = "mongo:7.0.43"
+IMAGEM_RABBITMQ = "rabbitmq:4.3.6-management"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -142,3 +151,44 @@ def cabecalhos(emitir_token: Callable[..., str]) -> Callable[[str], dict[str, st
         return {"Authorization": f"Bearer {emitir_token(papel)}"}
 
     return cabecalhos
+
+
+@pytest.fixture(scope="session")
+def _broker_da_sessao() -> Iterator[BrokerDeTeste]:
+    """RabbitMQ 4.3.6 com a topologia do platform (copiada em ``rabbitmq/``),
+    carregada pela API de gerenciamento com o TTL de retry de 100 ms."""
+    from testcontainers.core.container import DockerContainer
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+
+    with pytest.MonkeyPatch.context() as ambiente:
+        _docker_do_colima(ambiente)
+        container = (
+            DockerContainer(IMAGEM_RABBITMQ)
+            .with_env("RABBITMQ_DEFAULT_USER", "admin")
+            .with_env("RABBITMQ_DEFAULT_PASS", SENHA_DO_ADMIN)
+            .with_exposed_ports(5672, 15672)
+            .waiting_for(LogMessageWaitStrategy("Server startup complete"))
+        )
+        with container:
+            # 127.0.0.1 e nao "localhost": o pika tentaria o ::1 antes, em vao.
+            host = container.get_container_host_ip().replace("localhost", "127.0.0.1")
+            api = f"http://{host}:{container.get_exposed_port(15672)}/api"
+            with httpx.Client(auth=("admin", SENHA_DO_ADMIN), timeout=10) as http:
+                resposta = http.post(f"{api}/definitions", json=definicoes_de_teste())
+                resposta.raise_for_status()
+            yield BrokerDeTeste(
+                host=host,
+                porta=int(container.get_exposed_port(5672)),
+                api=api,
+                container=container,
+            )
+
+
+@pytest.fixture
+def broker(_broker_da_sessao: BrokerDeTeste) -> BrokerDeTeste:
+    """Filas do Billing e a do OS vazias a cada teste (D40)."""
+    with _broker_da_sessao.conectar() as conexao:
+        canal = conexao.channel()
+        for fila in FILAS_DO_BILLING:
+            canal.queue_purge(fila)
+    return _broker_da_sessao

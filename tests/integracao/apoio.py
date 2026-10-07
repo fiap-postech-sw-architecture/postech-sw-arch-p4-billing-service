@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
@@ -268,3 +270,55 @@ def entregar(
     tag = len(canal.confirmadas) + len(canal.rejeitadas) + 1
     corpo = json.dumps(envelope).encode()
     return consumidor.tratar(canal, tag, propriedades(envelope, **opcoes), corpo)
+
+
+# --- RabbitMQ de teste: as definitions do platform com TTL de retry curto ---
+
+RAIZ_DO_REPO = Path(__file__).resolve().parents[2]
+SENHA_DE_TESTE = "senha-de-teste-do-broker"  # gitleaks:allow (container de teste)
+TTL_DE_RETRY_NO_TESTE_MS = 100
+FILAS_DO_BILLING = (
+    "billing.comandos",
+    *(
+        f"billing.comandos.retry.{nivel}"
+        for nivel in ("1s", "5s", "15s", "60s", "300s")
+    ),
+    "billing.comandos.dlq",
+    "os.eventos",
+)
+
+
+def definicoes_de_teste() -> dict[str, Any]:
+    """``rabbitmq/definitions.json`` com TTL curto nas filas de retry, mais os
+    usuarios dos servicos e as permissoes de ``rabbitmq/permissoes.json``."""
+    pasta = RAIZ_DO_REPO / "rabbitmq"
+    definicoes: dict[str, Any] = json.loads((pasta / "definitions.json").read_text())
+    permissoes: dict[str, Any] = json.loads((pasta / "permissoes.json").read_text())
+    for fila in definicoes["queues"]:
+        if "x-message-ttl" in fila["arguments"]:
+            fila["arguments"]["x-message-ttl"] = TTL_DE_RETRY_NO_TESTE_MS
+    definicoes["users"] = [
+        {"name": usuario, "password": SENHA_DE_TESTE, "tags": []}
+        for usuario in ("os", "billing", "execucao")
+    ]
+    definicoes["permissions"] = permissoes["permissions"]
+    definicoes["topic_permissions"] = permissoes["topic_permissions"]
+    return definicoes
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerDeTeste:
+    host: str
+    porta: int
+    api: str
+    container: Any
+
+    def url(self, usuario: str) -> str:
+        senha = SENHA_DE_TESTE if usuario != "admin" else SENHA_DO_ADMIN
+        return f"amqp://{usuario}:{senha}@{self.host}:{self.porta}/%2F"
+
+    def conectar(self, usuario: str = "admin") -> pika.BlockingConnection:
+        return pika.BlockingConnection(pika.URLParameters(self.url(usuario)))
+
+
+SENHA_DO_ADMIN = "senha-do-admin-de-teste"  # gitleaks:allow (container de teste)
