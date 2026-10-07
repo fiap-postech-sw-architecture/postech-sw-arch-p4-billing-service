@@ -27,7 +27,9 @@ type Documento = dict[str, Any]  # documento BSON cru (o driver o tipa assim)
 
 # Falha rapido quando o banco cai: 5 s para achar o primario em vez dos 30 s
 # padrao, e no maximo 10 s por operacao (CSOT): um mongod travado no meio da
-# operacao nao prende a thread para sempre nem esgota o threadpool da API.
+# operacao nao prende a thread para sempre nem esgota o threadpool da API. O
+# laco de repeticao da transacao tem teto proprio (unit_of_work.py): o
+# with_transaction repete por ate 120 s sem olhar este limite.
 _TIMEOUT_SELECAO_SERVIDOR_MS: Final = 5000
 _TIMEOUT_OPERACAO_MS: Final = 10_000
 # Threadpool da API (40) com folga; o processo prazos usa uma conexao.

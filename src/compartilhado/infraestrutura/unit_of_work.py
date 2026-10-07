@@ -24,6 +24,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import uuid7
 
+import pymongo
 from pymongo.read_concern import ReadConcern
 from pymongo.read_preferences import ReadPreference
 from pymongo.write_concern import WriteConcern
@@ -59,6 +60,11 @@ _CONTEXTO_W3C: Final = ("traceparent", "tracestate")
 # Concerns da transacao (a do with_transaction e a recomecada pela mensagem).
 _LEITURA: Final = ReadConcern("snapshot")
 _ESCRITA: Final = WriteConcern("majority")
+# Teto da transacao inteira, repeticoes incluidas: o with_transaction repete
+# conflito e falha transitoria por ate 120 s, fora do timeoutMS do cliente; com
+# o banco fora, a thread ficava presa dois minutos. Estourado, o PyMongo levanta
+# ExecutionTimeout, que o consumidor trata como transitorio (fila de retry).
+LIMITE_DA_TRANSACAO_SEGUNDOS: Final = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,7 +323,10 @@ def processar_mensagem[T](
 def _na_transacao[T](
     banco: Database[Documento], tentativa: Callable[[ClientSession], T]
 ) -> T:
-    with banco.client.start_session() as sessao:
+    with (
+        pymongo.timeout(LIMITE_DA_TRANSACAO_SEGUNDOS),
+        banco.client.start_session() as sessao,
+    ):
         return sessao.with_transaction(
             tentativa,
             read_concern=_LEITURA,
