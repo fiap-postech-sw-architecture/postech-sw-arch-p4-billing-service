@@ -154,6 +154,11 @@ class TestLogging:
             "PEC-OLEO-5W30",
             "2026-10-06T12:00:00Z",
             "req-1234-5678",
+            # Colado em palavra ou em id hifenizado (SKU, UUID): nao e telefone.
+            "x11-99999-0000",
+            "ORD-11-99999-0000",
+            "11 99999-0000x",
+            "11 99999-0000-123",
         ],
     )
     def test_numero_que_nao_e_telefone_fica_como_esta(self, texto: str) -> None:
