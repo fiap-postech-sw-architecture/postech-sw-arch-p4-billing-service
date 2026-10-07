@@ -156,6 +156,13 @@ forbidden_modules = [
     "jwt",
     "prometheus_client",
     "structlog",
+    # Mensageria, contratos e telemetria ficam na infraestrutura.
+    "pika",
+    "jsonschema",
+    "referencing",
+    "yaml",
+    "rfc3339_validator",
+    "opentelemetry",
 ]
 
 [[tool.importlinter.contracts]]
