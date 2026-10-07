@@ -13,6 +13,7 @@ entao cada processo confere so o que o usuario do servico alcanca (ADR-036).
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final
@@ -35,6 +36,9 @@ _HEARTBEAT_SEGUNDOS: Final = 30
 _BLOQUEIO_MAXIMO_SEGUNDOS: Final = 30
 _TIMEOUT_SOCKET_SEGUNDOS: Final = 5
 ESPERA_MAXIMA_SEGUNDOS: Final = 30.0
+# Jitter da reconexao: replicas que perderam o broker juntas nao voltam juntas.
+# A espera fica entre a metade e o total do atraso (nunca reconexao imediata).
+_aleatorio = secrets.SystemRandom()
 
 
 class MensagemRecusadaError(Exception):
@@ -152,52 +156,73 @@ def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos 
     cronometro: Callable[[], float] = time.monotonic,
 ) -> None:
     """Laco do relay e do consumidor: conecta, roda ``trabalho`` enquanto a
-    conexao durar e reconecta com backoff dobrado ate ``espera_maxima``.
+    conexao durar e reconecta com backoff dobrado ate ``espera_maxima``, com
+    jitter.
 
     Sem conexao o ``trabalho`` nao roda (o relay nao reivindica linhas). A
     conexao que cai logo depois de aberta (o broker fechando o canal a cada
     mensagem, por permissao, ou cancelando o consumidor) tambem espera antes de
-    reconectar; so a que durou ``espera_maxima`` volta a reconectar na hora. O
-    arquivo de vida fica ``conectando`` fora do ``trabalho``, que o marca
-    ``pronto`` a cada volta.
+    reconectar; so a que durou ``espera_maxima`` volta a reconectar na hora.
     """
     espera = min(1.0, espera_maxima)
     while not parar.is_set():
-        sinalizar(heartbeat, pronto=False)
-        try:
-            canal.abrir()
-        except AMQPError as exc:
-            # So o tipo: autenticacao recusada ou 403/404 na declaracao passiva
-            # nao se confundem com o broker fora do ar.
-            _log.warning(
-                "broker_unavailable",
-                extra={
-                    "processo": processo,
-                    "espera_segundos": espera,
-                    "erro": type(exc).__name__,
-                },
-            )
-        else:
-            _log.info("broker_connected", extra={"processo": processo})
-            inicio = cronometro()
-            try:
-                trabalho()
-                if not parar.is_set():
-                    # O consume() do pika encerra o gerador, sem excecao, quando
-                    # o broker cancela o consumidor (fila apagada, failover).
-                    _log.warning(
-                        "broker_cancelled_consumer", extra={"processo": processo}
-                    )
-            except AMQPError as exc:
-                _log.warning(
-                    "broker_connection_lost",
-                    extra={"processo": processo, "erro": type(exc).__name__},
-                )
-            finally:
-                canal.fechar()
-            if cronometro() - inicio >= espera_maxima:
-                espera = min(1.0, espera_maxima)
-                continue
-        parar.wait(espera)
+        duracao = _conectar_e_trabalhar(
+            canal,
+            trabalho,
+            parar=parar,
+            heartbeat=heartbeat,
+            processo=processo,
+            cronometro=cronometro,
+        )
+        if duracao is not None and duracao >= espera_maxima:
+            espera = min(1.0, espera_maxima)
+            continue
+        parar.wait(espera * _aleatorio.uniform(0.5, 1.0))
         espera = min(espera * 2, espera_maxima)
     sinalizar(heartbeat, pronto=False)
+
+
+def _conectar_e_trabalhar(
+    canal: CanalAmqp,
+    trabalho: Callable[[], None],
+    *,
+    parar: threading.Event,
+    heartbeat: Path,
+    processo: str,
+    cronometro: Callable[[], float],
+) -> float | None:
+    """Uma conexao: abre, roda o ``trabalho`` enquanto ela durar e fecha.
+
+    Devolve quanto ela durou (``None`` quando nem abriu). O arquivo de vida so
+    diz ``pronto`` dentro do ``trabalho``: fora dele, inclusive na espera antes
+    da proxima tentativa, diz ``conectando`` (readiness falsa, liveness pela
+    idade do arquivo).
+    """
+    sinalizar(heartbeat, pronto=False)
+    try:
+        canal.abrir()
+    except AMQPError as exc:
+        # So o tipo: autenticacao recusada ou 403/404 na declaracao passiva nao
+        # se confundem com o broker fora do ar.
+        _log.warning(
+            "broker_unavailable",
+            extra={"processo": processo, "erro": type(exc).__name__},
+        )
+        return None
+    _log.info("broker_connected", extra={"processo": processo})
+    inicio = cronometro()
+    try:
+        trabalho()
+        if not parar.is_set():
+            # O consume() do pika encerra o gerador, sem excecao, quando o
+            # broker cancela o consumidor (fila apagada, failover).
+            _log.warning("broker_cancelled_consumer", extra={"processo": processo})
+    except AMQPError as exc:
+        _log.warning(
+            "broker_connection_lost",
+            extra={"processo": processo, "erro": type(exc).__name__},
+        )
+    finally:
+        canal.fechar()
+        sinalizar(heartbeat, pronto=False)
+    return cronometro() - inicio
