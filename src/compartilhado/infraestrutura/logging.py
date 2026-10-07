@@ -57,11 +57,14 @@ def adicionar_trace(
 
 _CPF_PATTERN = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
 _CNPJ_PATTERN = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b")
-# Dominio casado label a label (`.` fora da classe), sem backtracking
-# catastrofico: o scrubber roda sobre o event_dict inteiro, tracebacks inclusos,
-# sem limite de tamanho.
+# O scrubber roda sobre o event_dict inteiro, tracebacks inclusos, sem limite
+# de tamanho: cada trecho do e-mail tem teto (local-part de ate 64 caracteres,
+# rotulos de ate 63, ate 10 rotulos, TLD de ate 24), entao a tentativa em cada
+# posicao e curta e o custo cresce linear com a entrada. Com `+` sem teto, um
+# texto como `a.a.a....` de 80 KB levava segundos (quadratico).
 _EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"
+    r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}"
+    r"\.[A-Za-z]{2,24}\b"
 )
 
 # Telefone BR: duas formas estruturais, escolhidas para nao gerar falso-positivo
@@ -279,6 +282,10 @@ def configurar_logging(stream: TextIO | None = None) -> None:
     root.handlers = [handler]
     if root.level == logging.NOTSET or root.level > logging.INFO:
         root.setLevel(logging.INFO)
+    # O pika loga em WARNING, com o comeco do corpo, a mensagem que o broker
+    # devolve (mandatory), e em INFO cada passo da conexao: so os erros dele
+    # interessam, e a reconexao ja tem log proprio.
+    logging.getLogger("pika").setLevel(logging.ERROR)
     _religar_loggers_do_uvicorn()
 
 

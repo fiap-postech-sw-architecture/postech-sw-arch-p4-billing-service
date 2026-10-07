@@ -6,7 +6,9 @@ filas de retry; cada teste comeca com as filas vazias e o banco limpo.
 
 from __future__ import annotations
 
+import io
 import json
+import logging
 import re
 import struct
 import threading
@@ -26,6 +28,7 @@ from pymongo.errors import AutoReconnect
 from src import consumidor as processo_consumidor
 from src import relay as processo_relay
 from src.compartilhado.dominio.relogio import agora_utc
+from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, parametros
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
@@ -575,6 +578,36 @@ class TestRelayNoBroker:
         [linha] = banco["outbox"].find()
         assert (linha["status"], linha["tentativas"]) == ("pendente", 1)
         assert linha["ultimo_erro"] == "UnroutableError"
+
+    def test_devolucao_do_broker_nao_poe_o_corpo_no_log(
+        self, banco: Banco, broker: BrokerDeTeste
+    ) -> None:
+        _gravar_evento(banco)
+        canal = CanalAmqp(
+            parametros(broker.url("billing"), nome="teste-devolucao"),
+            exchanges=(contratos.EXCHANGE_EVENTOS,),
+        )
+        saida = io.StringIO()
+        configurar_logging(saida)
+        try:
+            with broker.conectar() as admin:
+                ligacao = ("os.eventos", "pytstop.eventos", "evento.billing.#")
+                admin.channel().queue_unbind(*ligacao)
+                try:
+                    canal.abrir()
+                    RelayDaOutbox(banco, canal, usuario="billing").entregar_pendentes(1)
+                finally:
+                    canal.fechar()
+                    admin.channel().queue_bind(*ligacao)
+        finally:
+            logging.getLogger().handlers.clear()
+
+        # O pika loga a mensagem devolvida em WARNING com o comeco do corpo; o
+        # logger dele so deixa passar erro.
+        log = saida.getvalue()
+        assert "outbox_message_refused" in log
+        assert "body_prefix" not in log
+        assert "ocorrido_em" not in log
 
     def test_routing_key_sem_permissao_conta_tentativa_e_segue_na_mesma_conexao(
         self, banco: Banco, broker: BrokerDeTeste
