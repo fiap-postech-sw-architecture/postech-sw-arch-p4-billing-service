@@ -63,10 +63,14 @@ audit:
 # inclusive relay e consumidor prontos, conectados ao RabbitMQ; servico doente
 # derruba o --wait), publica um GerarOrcamento como o OS e espera o
 # OrcamentoGerado (scripts/smoke_mensageria.py), confere a readiness da API
-# (MongoDB preparado), que rota autenticada sem token responde 401 e que a
+# (MongoDB preparado), que rota autenticada sem token responde 401, que a
 # resposta nao anuncia o servidor (os cabecalhos vem de uma variavel: num pipe,
-# a falha do curl seria engolida e o smoke passaria sem ter olhado nada);
-# derruba tudo com os volumes, inclusive em falha (depois de mostrar os logs).
+# a falha do curl seria engolida e o smoke passaria sem ter olhado nada), que a
+# API roda como o usuario 1001, que as linhas de boot do uvicorn saem em JSON e
+# que ele nao escreve access log (so o `http_request` estruturado do
+# middleware) e que a imagem, com ENVIRONMENT=production, recusa o segredo de
+# demonstracao do compose (o compose sobe com development); derruba tudo com
+# os volumes, inclusive em falha (depois de mostrar os logs).
 # Projeto e portas proprios para nao derrubar a stack do compose-up nem a do
 # platform.
 SMOKE_PORT ?= 18002
@@ -76,6 +80,9 @@ SMOKE_RABBITMQ_UI_PORT ?= 25673
 SMOKE_URL := http://127.0.0.1:$(SMOKE_PORT)
 # Usuario os do RabbitMQ do compose (senha de demonstracao do platform).
 SMOKE_OS_URL := amqp://os:pytstop-os-demo-2026@rabbitmq:5672/%2F
+# A guarda de producao da configuracao da API: o segredo do link de
+# demonstracao so vale em development e test.
+SMOKE_GUARDA := from src.configuracao import Configuracao; Configuracao.do_ambiente()
 SMOKE_COMPOSE := API_PORT=$(SMOKE_PORT) MONGO_PORT=$(SMOKE_MONGO_PORT) \
 	RABBITMQ_PORT=$(SMOKE_RABBITMQ_PORT) RABBITMQ_UI_PORT=$(SMOKE_RABBITMQ_UI_PORT) \
 	$(COMPOSE) -p pytstop-billing-smoke
@@ -92,7 +99,19 @@ smoke:
 	&& cabecalhos="$$(curl -fsS -D - -o /dev/null --max-time 5 $(SMOKE_URL)/api/v1/saude)" \
 	&& printf '%s\n' "$$cabecalhos" | grep -q '^HTTP/' \
 	&& ! printf '%s\n' "$$cabecalhos" | grep -qi '^server:' \
-	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server" \
+	&& { test "$$($(SMOKE_COMPOSE) exec -T api id -u)" = 1001 \
+		|| { echo "smoke: a API nao roda como o usuario 1001" >&2; false; }; } \
+	&& logs="$$($(SMOKE_COMPOSE) logs --no-color api)" \
+	&& { printf '%s\n' "$$logs" | grep -q '"event": "Started server process' \
+		|| { echo "smoke: as linhas de boot do uvicorn nao saem em JSON" >&2; false; }; } \
+	&& { printf '%s\n' "$$logs" | grep -q '"event": "http_request"' \
+		|| { echo "smoke: o access log estruturado (http_request) nao saiu" >&2; false; }; } \
+	&& { ! printf '%s\n' "$$logs" | grep -q 'uvicorn.access' \
+		|| { echo "smoke: o uvicorn escreveu access log (--no-access-log nao vale)" >&2; false; }; } \
+	&& { $(SMOKE_COMPOSE) exec -T -e ENVIRONMENT=production api python -c "$(SMOKE_GUARDA)" 2>&1 \
+		| grep -q 'ORCAMENTO_LINK_SECRET usa o valor de demonstracao' \
+		|| { echo "smoke: com ENVIRONMENT=production a imagem aceita o segredo de demonstracao" >&2; false; }; } \
+	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server, usuario 1001, boot em JSON, sem access log do uvicorn, segredo de demonstracao recusado em producao" \
 	|| status=$$?; \
 	if [ $$status -ne 0 ]; then $(SMOKE_COMPOSE) logs --no-color --tail=200; fi; \
 	$(SMOKE_COMPOSE) down -v; \
