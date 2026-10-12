@@ -207,7 +207,7 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 
 ## Implantação
 
-Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, validados no job `build` do CI por `make manifests` (kubeconform com os schemas do Kubernetes 1.35, a versão do nó do kind, e `Secret` reprovado; trivy config sem achado HIGH ou CRITICAL, com a única exceção e o motivo em [`k8s/trivy-ignore.rego`](k8s/trivy-ignore.rego)). Namespace `pytstop-billing`, prefixo `/billing` no Kong (ADR-038, ADR-042).
+Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, validados no job `build` do CI por `make manifests` (kubeconform com os schemas do Kubernetes 1.35, a versão do nó do kind, e `Secret` reprovado; trivy config sem achado HIGH ou CRITICAL, com a única exceção e o motivo em [`k8s/trivy-ignore.rego`](k8s/trivy-ignore.rego); e uma conferência de que todo campo de senha do `replica-set.js` vem de `segredo(...)`, que a exceção do trivy não enxerga). O gitleaks varre o histórico do commit testado, com regras próprias para URI com senha (MongoDB e AMQP) e o teste que as faz reprovar um manifesto com a senha gerada ([`scripts/ci/testa-gitleaks.sh`](scripts/ci/testa-gitleaks.sh)). Namespace `pytstop-billing`, prefixo `/billing` no Kong (ADR-038, ADR-042).
 
 | Arquivo em `k8s/base` | O que tem |
 |---|---|
