@@ -69,13 +69,15 @@ O estorno automático (aprovação tardia, de valor ou moeda diferentes, ou segu
 Requisitos: Python 3.14 com [uv](https://docs.astral.sh/uv/) e Docker.
 
 ```bash
-make compose-up      # init do banco, API (porta 8002), prazos, relay, consumidor, MongoDB e RabbitMQ; seed de precos
-curl localhost:8002/api/v1/saude          # liveness: {"status": "ok", "modo": "simulado"}
-curl localhost:8002/api/v1/saude/pronto   # readiness: MongoDB respondendo e preparado
-make compose-logs    # logs da API, do prazos, do relay e do consumidor
-make compose-down    # derruba e apaga os volumes
-make smoke           # o mesmo smoke do CI, em projeto e portas proprios (inclui um comando de ponta a ponta)
+make compose-up
+curl localhost:8002/api/v1/saude
+curl localhost:8002/api/v1/saude/pronto
+make compose-logs
+make compose-down
+make smoke
 ```
+
+O `make compose-up` sobe o init do banco, a API (porta 8002), o `prazos`, o relay, o consumidor, o MongoDB e o RabbitMQ, e cadastra os preços de demonstração. A primeira chamada ao `curl` é a liveness (`{"status": "ok", "modo": "simulado"}`) e a segunda, a readiness (MongoDB respondendo e preparado). O `make compose-logs` segue os logs da API, do `prazos`, do relay e do consumidor, e o `make compose-down` derruba tudo e apaga os volumes. O `make smoke` é o mesmo smoke do CI, em projeto e portas próprios, e inclui um comando de ponta a ponta.
 
 Swagger em `http://localhost:8002/docs` (e ReDoc em `/redoc`), em todo ambiente. As rotas internas validam o JWT do OS Service (`JWKS_URL`); sem ele no ar elas respondem 503, enquanto o link público, o webhook e o simulador seguem. O rate limit das rotas públicas (link do cliente, webhook, simulador) é aplicado pelo Kong (RFC-004, seção 6); a porta do compose é só para desenvolvimento.
 
@@ -144,13 +146,14 @@ RabbitMQ 4.3.6 com a topologia da plataforma (ADR-036; RFC-004, seções 5.1 a 5
 Como rodar:
 
 ```bash
-make compose-up          # relay e consumidor sobem com o resto (RabbitMQ na 5672, console em 15672, usuario admin)
-docker compose ps relay consumidor   # saudaveis = conectados ao broker
-# fora do compose, com o MongoDB e o RabbitMQ do compose no ar (uv run nao le o .env sozinho)
+make compose-up
+docker compose ps relay consumidor
 cp .env.example .env
 uv run --env-file .env python -m src.relay
-METRICS_PORT=9101 uv run --env-file .env python -m src.consumidor   # outro terminal, outra porta de metricas
+METRICS_PORT=9101 uv run --env-file .env python -m src.consumidor
 ```
+
+O `make compose-up` sobe o relay e o consumidor com o resto (RabbitMQ na 5672, console em 15672, usuário `admin`), e o `docker compose ps` os mostra saudáveis quando conectaram ao broker. Os três últimos comandos rodam fora do compose, com o MongoDB e o RabbitMQ do compose no ar (o `uv run` não lê o `.env` sozinho): o relay num terminal e o consumidor em outro, com outra porta de métricas.
 
 ## API
 
@@ -173,11 +176,11 @@ METRICS_PORT=9101 uv run --env-file .env python -m src.consumidor   # outro term
 
 Erros no envelope do p3, `{"erro": {"codigo", "mensagem", "id_requisicao"}}`, inclusive o 500 (com os cabeçalhos de segurança e o `X-Request-ID`): 401 `NAO_AUTENTICADO` (mensagem única), 403 `ACESSO_NEGADO`, 404 `ENTIDADE_NAO_ENCONTRADA` (só as duas rotas públicas com token têm código próprio, `LINK_DECISAO_INVALIDO` e `CHECKOUT_NAO_ENCONTRADO`, o mesmo 404 para qualquer falha do token), 409 para regra de negócio, 422 `VALOR_INVALIDO` para invariante de domínio e 503 para dependência fora. A exceção, também herdada do p3 e igual no OS e na Execução, é o 422 de validação de schema: `{"detail": [{"type", "loc", "msg"}], "id_requisicao"}`, sem ecoar o valor recebido. A API não redireciona barra final, não anuncia o servidor e escreve um access log estruturado (`http_request`: método, caminho, status, duração e `request_id`, com o token do link de decisão mascarado) no lugar da linha de texto do uvicorn.
 
+Com `TOKEN` um JWT de mecânico ou admin emitido pelo OS Service, a chamada abaixo responde `{"invalidos": ["PEC-X"]}`:
+
 ```bash
-TOKEN=...   # JWT de mecanico ou admin emitido pelo OS Service
 curl -X POST localhost:8002/api/v1/precos/validacao -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' -d '{"servicos": ["SRV-FREIOS"], "pecas": ["PEC-VELA", "PEC-X"]}'
-# {"invalidos": ["PEC-X"]}
 ```
 
 ## Eventos
@@ -189,9 +192,11 @@ Métricas próprias: `pytstop_mercadopago_requisicoes_total{operacao,resultado}`
 ## Testes e qualidade
 
 ```bash
-make check   # uv.lock em dia, ruff (lint + format), import-linter, mypy strict (src e tests), bandit e pytest com gate de 90%
-make audit   # pip-audit nas dependencias de runtime
+make check
+make audit
 ```
+
+O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit e o pytest com o gate de 90%; o `make audit` roda o pip-audit nas dependências de runtime.
 
 - **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração e OpenTelemetry.
 - **Contrato** (`tests/contratos`): a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam.
@@ -221,9 +226,11 @@ Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, va
 | URL pública (`BILLING_PUBLIC_URL`) | `https://localhost/billing` | `https://localhost/billing` | a da VM, gravada pelo deploy do k3s |
 | Prazos | padrão | orçamento vence em 72 s, `prazos` a cada 5 s e a primeira recusa do provedor encerra a cobrança (E2E) | padrão |
 | Volume do MongoDB | 1Gi | 1Gi | 5Gi |
-| Imagem | `pytstop-billing-service:dev` | a do CD, num overlay gerado | por digest, num overlay gerado |
+| Imagem | a do commit atual, num overlay gerado (`make kind-deploy`) | a do CD, num overlay gerado | por digest, num overlay gerado |
 
-- **Ordem de subida:** o `implantar-servicos.sh` do `platform` apaga o Job anterior (Job é imutável), aplica o overlay com `apply --server-side` e espera o MongoDB, o Job completar e cada Deployment. O Job roda em três etapas: o initContainer `replica-set` (`mongosh`) espera o `mongod`, inicia o replica set e cria os usuários `billing` e `exporter`, como root; o `banco` cria índices e validadores e marca a versão (`python -m src.banco`, com o usuário `billing`); o `seed` cadastra os preços de demonstração que faltam. Os Deployments ficam no `aguarda-banco` (`python -m src.banco aguardar`) até a versão deles estar marcada: no rolling update, os pods novos esperam o Job da versão nova enquanto os antigos seguem servindo. Rollback: `kubectl rollout undo`, sem descer a versão do banco (mudanças aditivas).
+- **Ordem de subida:** o `implantar-servicos.sh` do `platform` apaga o Job anterior (Job é imutável), aplica o overlay com `apply --server-side` e espera, nesta ordem, o MongoDB, o Job completar e cada Deployment.
+- **Job de inicialização:** roda em três etapas. O initContainer `replica-set` (`mongosh`) espera o `mongod`, inicia o replica set e cria os usuários `billing` e `exporter`, como root. O `banco` cria índices e validadores e marca a versão (`python -m src.banco`, com o usuário `billing`). O `seed` cadastra os preços de demonstração que faltam.
+- **`aguarda-banco` e rollback:** os Deployments ficam no initContainer `aguarda-banco` (`python -m src.banco aguardar`) até a versão deles estar marcada: no rolling update, os pods novos esperam o Job da versão nova enquanto os antigos seguem servindo. Banco à frente da imagem não é espera: depois de um `kubectl rollout undo`, o pod revertido sobe sobre a versão que o Job novo marcou, e o rollback não desce a versão do banco (mudanças aditivas).
 - **Configuração:** o ConfigMap `billing-service` (com o hash do conteúdo no nome: mudar um valor reinicia os pods) entra por `envFrom`, com `ENVIRONMENT=production` também no kind, para as guardas de boot valerem com os segredos gerados.
 - **Segredos:** nenhum está nos manifests. O `make deploy` do `platform` os gera ([Segredos gerados](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform#segredos-gerados)), e eles entram por `secretKeyRef`; a `MONGODB_URI` se monta no pod por expansão de variável (`mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo...`), e o `kubectl describe` mostra o molde, não a senha. O molde está escrito uma vez, no container `api` de `api.yaml`, e o `replacements` de `k8s/base/kustomization.yaml` o copia para os outros processos e o Job (`make manifests` reprova se alguma cópia ficar com o valor sentinela).
 
@@ -249,12 +256,14 @@ Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, va
 Com o repositório `platform` clonado ao lado deste:
 
 ```bash
-make -C ../postech-sw-arch-p4-platform kind-up deploy    # cluster, plataforma e Secrets
-make kind-deploy                                         # imagem do commit atual, carga no kind e implantacao (overlay kind)
+make -C ../postech-sw-arch-p4-platform kind-up deploy
+make kind-deploy
 ../postech-sw-arch-p4-platform/scripts/ci/smoke-servicos.sh billing-service
 curl -k https://localhost/billing/api/v1/saude
-make manifests                                           # kubeconform e trivy config, como no CI
+make manifests
 ```
+
+O primeiro comando cria o cluster, sobe a plataforma e gera os Secrets. O `make kind-deploy` constrói a imagem do commit atual, carrega no kind e aplica o overlay `kind`; com mudança não commitada a tag vira `<commit>-sujo-<hash>`, de modo que um novo `make kind-deploy` depois de editar o código também reinicia os pods. O `smoke-servicos.sh` confere o Job, os Deployments, a borda, o `up` de cada pod no Prometheus e a NetworkPolicy; o `curl` pede a saúde pela borda; e o `make manifests` roda o kubeconform e o trivy config, como no CI.
 
 `make kind-deploy OVERLAY=kind-ci` usa o overlay do CD, e `PLATFORM_DIR=<caminho>` aponta outro clone do `platform`. Para subir os três serviços de uma vez, o `implantar-servicos.sh` do `platform` recebe os três diretórios (README do `platform`, seção "Contrato com os serviços").
 
