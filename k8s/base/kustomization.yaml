@@ -16,6 +16,28 @@ labels:
       app.kubernetes.io/part-of: billing-service
     includeTemplates: true
 
+# A MONGODB_URI do usuario billing (os quatro processos e o Job) esta escrita
+# uma vez, no container api (api.yaml), e vai daqui para as outras: host,
+# opcoes ou o nome da chave do Secret mudam num lugar so. Os outros arquivos
+# guardam um valor sentinela, e o make manifests reprova se ele sobrar no
+# render. O exporter (banco.yaml) usa outra URI e fica de fora.
+replacements:
+  - source:
+      kind: Deployment
+      name: billing-service-api
+      fieldPath: spec.template.spec.containers.[name=api].env.[name=MONGODB_URI].value
+    targets:
+      - select:
+          kind: Deployment
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=aguarda-banco].env.[name=MONGODB_URI].value
+          - spec.template.spec.containers.*.env.[name=MONGODB_URI].value
+      - select:
+          kind: Job
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=banco].env.[name=MONGODB_URI].value
+          - spec.template.spec.containers.[name=seed].env.[name=MONGODB_URI].value
+
 resources:
   - namespace.yaml
   - api.yaml

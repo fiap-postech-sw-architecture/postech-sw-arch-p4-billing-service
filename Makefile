@@ -104,7 +104,9 @@ smoke:
 # ele ignora, com o motivo, esta em k8s/trivy-ignore.rego; a excecao vale para o
 # ConfigMap do replica-set.js inteiro, e confere-senhas-do-script.sh exige que
 # todo campo de senha do script venha de segredo(...)), nas versoes do
-# platform. O job build do CI roda este alvo.
+# platform. Tambem reprova se a MONGODB_URI de algum processo ficar com o valor
+# sentinela, o que e o replacements do base nao ter chegado nela. O job build
+# do CI roda este alvo.
 KUBERNETES_VERSION := 1.35.0
 KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0
 # Fonte unica da versao do trivy: o security.yml instala a de print-trivy-version.
@@ -117,6 +119,8 @@ manifests:
 	@for overlay in kind kind-ci k3s; do \
 		echo ">> k8s/overlays/$$overlay: kubeconform e trivy config"; \
 		kubectl kustomize k8s/overlays/$$overlay > reports/k8s-$$overlay.yaml || exit 1; \
+		! grep -q 'copiado de api.yaml' reports/k8s-$$overlay.yaml \
+			|| { echo "MONGODB_URI sem o valor de api.yaml: confira o replacements de k8s/base/kustomization.yaml" >&2; exit 1; }; \
 		docker run --rm -i $(KUBECONFORM_IMAGE) -strict -summary -output text \
 			-kubernetes-version $(KUBERNETES_VERSION) -reject Secret - \
 			< reports/k8s-$$overlay.yaml || exit 1; \

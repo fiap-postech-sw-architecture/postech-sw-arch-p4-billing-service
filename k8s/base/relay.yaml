@@ -49,8 +49,9 @@ spec:
                 secretKeyRef:
                   name: billing-mongo
                   key: MONGO_BILLING_PASSWORD
+            # Copia da URI do container api (replacements do kustomization.yaml).
             - name: MONGODB_URI
-              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+              value: "<copiado de api.yaml pelo replacements do kustomization.yaml>"
           resources:
             requests:
               cpu: 50m
@@ -83,8 +84,9 @@ spec:
                 secretKeyRef:
                   name: billing-mongo
                   key: MONGO_BILLING_PASSWORD
+            # Copia da URI do container api (replacements do kustomization.yaml).
             - name: MONGODB_URI
-              value: mongodb://billing:$(MONGO_BILLING_PASSWORD)@billing-mongo-0.billing-mongo.pytstop-billing.svc.cluster.local:27017/billing?replicaSet=rs0&authSource=billing
+              value: "<copiado de api.yaml pelo replacements do kustomization.yaml>"
             # Do platform (Secret derivado, regravado a cada deploy).
             - name: RABBITMQ_URL
               valueFrom:
