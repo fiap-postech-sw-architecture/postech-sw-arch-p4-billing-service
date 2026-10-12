@@ -6,16 +6,44 @@ title = "PytStop fase 4 gitleaks config"
 [extend]
 useDefault = true
 
-# Copias do platform, que nao aceitam marcador (JSON sem comentario, e o teste
-# de contrato exige a copia identica a origem), com as mesmas regras de la:
-# - senhas pytstop-<componente>-demo-2026 do RabbitMQ do compose (no cluster as
-#   senhas sao geradas no deploy, ADR-042);
-# - link de decisao e checkout dos exemplos de contrato, que apontam para
-#   http://localhost e carregam um token ilustrativo.
+# URI com senha (MongoDB e AMQP, como a MONGODB_URI e a RABBITMQ_URL): as
+# regras padrao nao as reconhecem, e a senha que o make deploy gera (48
+# hexadecimais) passaria num manifesto. Ficam de fora, pelos caracteres
+# excluidos, o placeholder (<senha>), a variavel de shell ($senha), a expansao
+# do Kubernetes ($(MONGO_BILLING_PASSWORD), a forma dos manifests de k8s/) e a
+# f-string ({senha}). No kind e no k3s o make deploy gera as senhas no cluster
+# (ADR-042).
+[[rules]]
+id = "pytstop-url-mongodb-com-senha"
+description = "URI MongoDB com senha"
+regex = '''mongodb(?:\+srv)?://[^:/\s@]+:([^@\s"'{}<>$]{8,})@'''
+secretGroup = 1
+keywords = ["mongodb"]
+
+# A senha pytstop-<componente>-demo-2026 do RabbitMQ do compose, que o smoke usa
+# para falar como o OS. No Makefile um comentario na linha viraria parte do
+# valor; nos outros arquivos o valor de demonstracao leva o marcador
+# gitleaks:allow, e em k8s/ nao passa.
+[[rules]]
+id = "pytstop-url-amqp-com-senha"
+description = "URL AMQP com senha"
+regex = '''amqps?://[^:/\s@]+:([^@\s"'{}<>$]{8,})@'''
+secretGroup = 1
+keywords = ["amqp"]
+
+[[rules.allowlists]]
+description = "Senha de demonstracao do compose no Makefile"
+condition = "AND"
+paths = ['''(^|/)Makefile$''']
+regexes = ['''^pytstop-[a-z-]+-demo-2026$''']
+
+# Exemplos de contrato (copias do platform, que nao aceitam marcador: JSON sem
+# comentario, e o teste de contrato exige a copia identica a origem): o link de
+# decisao e o checkout apontam para http://localhost e carregam um token
+# ilustrativo.
 [allowlist]
-description = "Valores de demonstracao e exemplos de contrato"
+description = "Exemplos de contrato"
 regexTarget = "line"
 regexes = [
-  '''pytstop-[a-z-]+-demo-2026''',
   '''"(link_decisao|checkout_url)": "http://localhost/''',
 ]

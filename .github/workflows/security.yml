@@ -45,9 +45,9 @@ jobs:
     timeout-minutes: 15
     steps:
       # Historico inteiro do commit testado (no PR, o merge do PR na main):
-      # segredo commitado e apagado num commit seguinte tambem reprova, o que a
-      # varredura so da arvore deixava passar. Sem --log-opts o gitleaks usa
-      # `git log --all` e varreria as branches dos outros PRs abertos.
+      # segredo commitado e apagado num commit seguinte tambem reprova. Sem
+      # --log-opts o gitleaks usa `git log --all` e varreria as branches dos
+      # outros PRs abertos.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -61,6 +61,8 @@ jobs:
           tar -xzf gitleaks.tar.gz -C /usr/local/bin gitleaks
       - name: gitleaks (historico do HEAD)
         run: gitleaks git . --log-opts="HEAD" --config .gitleaks.toml --redact --no-banner --verbose
+      - name: Regras do .gitleaks.toml reprovam senha em URI num manifesto e no historico (teste negativo)
+        run: scripts/ci/testa-gitleaks.sh
 
   trivy:
     runs-on: ubuntu-24.04
