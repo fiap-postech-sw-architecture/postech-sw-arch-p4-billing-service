@@ -4,7 +4,11 @@
 // imagem do MongoDB; as senhas vem do ambiente (Secret billing-mongo), nunca
 // de argumento, e nao vao para a saida.
 const membro = process.env.MONGO_MEMBRO;
-const prazo = Date.now() + 150 * 1000;
+// O prazo das esperas cabe nos 300 s do activeDeadlineSeconds do job.yaml, com
+// folga para o banco e o seed, que rodam depois.
+const PRAZO_SEGUNDOS = 150;
+const INTERVALO_MS = 2000;
+const prazo = Date.now() + PRAZO_SEGUNDOS * 1000;
 
 function segredo(nome) {
   const valor = process.env[nome];
@@ -14,7 +18,7 @@ function segredo(nome) {
   return valor;
 }
 
-// Repete a condicao a cada 2 s ate ela valer ou o prazo vencer.
+// Repete a condicao a cada INTERVALO_MS ate ela valer ou o prazo vencer.
 function esperar(descricao, condicao) {
   for (;;) {
     let motivo = "not yet";
@@ -29,7 +33,7 @@ function esperar(descricao, condicao) {
       throw new Error(`timed out waiting for ${descricao} (${motivo})`);
     }
     print(`waiting for ${descricao} (${motivo})`);
-    sleep(2000);
+    sleep(INTERVALO_MS);
   }
 }
 
