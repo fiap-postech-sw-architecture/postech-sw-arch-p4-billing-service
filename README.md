@@ -269,31 +269,58 @@ O primeiro comando cria o cluster, sobe a plataforma e gera os Secrets. O `make 
 
 ### Troca de senhas e chaves
 
-A senha nova tem só letras e dígitos (a do `openssl rand -hex 24` serve), porque entra crua na `MONGODB_URI`. Os comandos usam o contexto do kind (no k3s, troque o `--context`), e a senha não passa por argumento: o `mongosh` pede a do root e a nova, e o `jq` recebe a nova por variável de ambiente.
+A mecânica é a de [Troca de senha do banco](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform#troca-de-senha-do-banco), no README do `platform`; abaixo estão as credenciais do Billing, uma por procedimento. Os comandos usam o contexto do kind (no k3s, troque o `--context`). A senha nova tem só letras e dígitos (a do `openssl rand -hex 24` serve), porque entra crua na `MONGODB_URI`, e não passa por argumento, que ficaria no `ps` e na URL do pedido ao apiserver: o `jq` a recebe por variável de ambiente, e o `mongosh` a lê da variável `SENHA_NOVA`, que o `sh` do contêiner preenche com a primeira linha da entrada do `kubectl exec -i`. O Secret é gravado antes do banco, para o valor não ficar só numa variável do shell. Os pods leem o Secret só no start: até o restart, conexão nova com a senha antiga é recusada.
 
-Usuário `billing`:
+#### Senhas do MongoDB: `billing`, `exporter` e `root`
 
-1. Troque a senha no banco, como root:
+Os três usuários seguem os mesmos três passos. Escolha a linha da tabela e defina as variáveis que o passo 1 e o passo 2 usam:
+
+| Credencial | Variáveis | O que reiniciar no passo 3 |
+|---|---|---|
+| `billing` | `chave=MONGO_BILLING_PASSWORD usuario=billing banco=billing` | os Deployments |
+| `exporter` | `chave=MONGO_EXPORTER_PASSWORD usuario=exporter banco=admin` | o StatefulSet do banco, porque o exporter é sidecar dele |
+| `root` | `chave=MONGO_INITDB_ROOT_PASSWORD usuario=root banco=admin` | o StatefulSet do banco, que lê a senha do root só no start (sem o restart, a próxima troca não autentica); o Job a relê no deploy seguinte |
+
+`banco` é aquele em que o `replica-set.js` criou o usuário (`billing` em `billing`, os outros em `admin`): a troca no banco errado responde `User billing@admin not found`.
+
+1. Gere a senha e grave-a no Secret:
 
    ```bash
-   kubectl --context kind-pytstop-p4 -n pytstop-billing exec -it billing-mongo-0 -c mongo -- \
-     mongosh --quiet -u root --authenticationDatabase admin
-   ```
-
-   No `mongosh`: `db.getSiblingDB("billing").changeUserPassword("billing", passwordPrompt())`.
-2. Grave a mesma senha no Secret:
-
-   ```bash
-   read -rs senha
+   senha=$(openssl rand -hex 24)
    kubectl --context kind-pytstop-p4 -n pytstop-billing get secret billing-mongo -o json \
-     | SENHA="$senha" jq '.data.MONGO_BILLING_PASSWORD = (env.SENHA | @base64)' \
+     | VALOR="$senha" jq --arg chave "$chave" '.data[$chave] = (env.VALOR | @base64)' \
      | kubectl --context kind-pytstop-p4 replace -f -
    ```
 
-3. Reinicie os Deployments, que leem a senha só no start: `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart deployment`. Até o restart, conexão nova com a senha antiga é recusada; o Job a relê no deploy seguinte.
+2. Aplique no banco, como root (o contêiner do banco já tem a senha dele em variável de ambiente):
 
-Usuário `exporter`: os mesmos passos, com `db.getSiblingDB("admin").changeUserPassword("exporter", passwordPrompt())`, a chave `MONGO_EXPORTER_PASSWORD` e, no passo 3, `rollout restart statefulset/billing-mongo` (o exporter é sidecar do banco, que reinicia junto). Root: os passos 1 e 2, com `changeUserPassword("root", passwordPrompt())` em `admin` e a chave `MONGO_INITDB_ROOT_PASSWORD`; só o Job a usa, no deploy seguinte.
+   ```bash
+   { printf '%s\n' "$senha"; cat <<JS
+   db.getSiblingDB("admin").auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD)
+   db.getSiblingDB("$banco").changeUserPassword("$usuario", process.env.SENHA_NOVA)
+   JS
+   } | kubectl --context kind-pytstop-p4 -n pytstop-billing exec -i billing-mongo-0 -c mongo -- \
+       sh -c 'read -r SENHA_NOVA && [ -n "$SENHA_NOVA" ] && export SENHA_NOVA && exec mongosh --quiet --norc'
+   ```
 
-Keyfile: grave um valor novo (`openssl rand -base64 756 | tr -d '\n'`) na chave `MONGO_KEYFILE`, pelo mesmo `jq` do passo 2, e reinicie o banco com `rollout restart statefulset/billing-mongo`. O replica set tem um membro só, então nenhum outro precisa da chave antiga, mas o banco fica fora durante o restart.
+   A saída esperada é `{ ok: 1 }` duas vezes, a autenticação e a troca, e o `mongod` registra o `updateUser` com `"pwd":"xxx"`. Se este passo falhar, repita-o na mesma sessão, com a mesma `$senha`, que o Secret já tem: reiniciar os pods com o Secret diferente do banco os deixa sem acesso.
+3. Reinicie quem usa a credencial: os Deployments com `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart deployment`, e o banco com `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart statefulset/billing-mongo`.
 
-Chave do link de decisão (`ORCAMENTO_LINK_SECRET`): apague o Secret `billing-link`, rode o `make deploy` do `platform`, que o recria, e reinicie juntos a API e o consumidor (`rollout restart deployment/billing-service-api deployment/billing-service-consumidor`). Os links e checkouts já enviados deixam de valer: o orçamento que aguarda decisão fica sem link até vencer, e o atendente ainda decide por ele.
+#### Keyfile
+
+1. Grave um valor novo na chave `MONGO_KEYFILE` do Secret:
+
+   ```bash
+   valor=$(openssl rand -base64 756 | tr -d '\n')
+   kubectl --context kind-pytstop-p4 -n pytstop-billing get secret billing-mongo -o json \
+     | VALOR="$valor" jq --arg chave MONGO_KEYFILE '.data[$chave] = (env.VALOR | @base64)' \
+     | kubectl --context kind-pytstop-p4 replace -f -
+   ```
+
+2. Reinicie o banco e espere: `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart statefulset/billing-mongo` e, em seguida, `rollout status statefulset/billing-mongo`. O replica set tem um membro só, então nenhum outro precisa da chave antiga, mas o banco fica fora durante o restart.
+
+#### Chave do link de decisão (`ORCAMENTO_LINK_SECRET`)
+
+1. Apague o Secret: `kubectl --context kind-pytstop-p4 -n pytstop-billing delete secret billing-link`.
+2. Rode o `make deploy` do `platform`, que o recria com um valor novo: `make -C ../postech-sw-arch-p4-platform deploy`.
+3. Reinicie juntos a API e o consumidor: `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart deployment/billing-service-api deployment/billing-service-consumidor`. Os links e checkouts já enviados deixam de valer: o orçamento que aguarda decisão fica sem link até vencer, e o atendente ainda decide por ele. Até o fim do restart, um link pode abrir numa réplica e dar 404 em outra.
