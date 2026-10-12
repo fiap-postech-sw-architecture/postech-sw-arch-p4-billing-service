@@ -29,11 +29,30 @@ replacements:
     targets:
       - select:
           kind: Deployment
+          name: billing-service-api
         fieldPaths:
           - spec.template.spec.initContainers.[name=aguarda-banco].env.[name=MONGODB_URI].value
-          - spec.template.spec.containers.*.env.[name=MONGODB_URI].value
+      - select:
+          kind: Deployment
+          name: billing-service-relay
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=aguarda-banco].env.[name=MONGODB_URI].value
+          - spec.template.spec.containers.[name=relay].env.[name=MONGODB_URI].value
+      - select:
+          kind: Deployment
+          name: billing-service-consumidor
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=aguarda-banco].env.[name=MONGODB_URI].value
+          - spec.template.spec.containers.[name=consumidor].env.[name=MONGODB_URI].value
+      - select:
+          kind: Deployment
+          name: billing-service-prazos
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=aguarda-banco].env.[name=MONGODB_URI].value
+          - spec.template.spec.containers.[name=prazos].env.[name=MONGODB_URI].value
       - select:
           kind: Job
+          name: billing-inicializacao
         fieldPaths:
           - spec.template.spec.initContainers.[name=banco].env.[name=MONGODB_URI].value
           - spec.template.spec.containers.[name=seed].env.[name=MONGODB_URI].value
