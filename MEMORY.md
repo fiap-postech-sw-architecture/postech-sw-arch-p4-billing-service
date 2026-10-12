@@ -12,6 +12,7 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Recent decisions
 
+- 2026-10-12 - Imagens de terceiros (`mongo:7.0.43`, `percona/mongodb_exporter:0.53.0`) so com relatorio de CVE no summary do job `trivy`, sem reprovar e sem digest: medido em 12/10, a `mongo` tem 1 CRITICAL e 60 HIGH com correcao, quase todos em binarios Go que o pod nao executa (`gosu`, `mongodump` e as outras ferramentas), e o exporter 25 HIGH no binario que executa. A correcao depende de um build novo do fornecedor, entao a politica e subir a versao a cada release do servico, junto da tabela do `platform` (README, Implantacao)
 - 2026-10-12 - Exporter do MongoDB so com `clusterMonitor`: o `read` em `local` era redundante (mesmas 147 series e `mongodb_up 1` com o exporter 0.53.0, medido contra o mongod com keyfile). O papel inclui o oplog, que carrega as escritas de `billing`: risco aceito de demonstracao, dito no README
 - 2026-10-12 - A `MONGODB_URI` fica escrita uma vez, no container `api`, e o `replacements` de `k8s/base/kustomization.yaml` a copia para os outros processos e o Job; um patch por alvo tiraria a variavel da leitura de cada Deployment. O render dos tres overlays nao mudou, e o `make manifests` reprova se o sentinela sobrar
 - 2026-10-07 - Manifests em `k8s/`: sondas, startup, rede e recursos estao no README (Implantacao) e nos comentarios de `k8s/base/*.yaml`; o exporter e o init `chave` ficam sem o `emptyDir` em `/tmp` porque nao gravam nada
