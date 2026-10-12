@@ -1,6 +1,8 @@
 # API do Billing (uvicorn), atras do Kong (borda.yaml). Sem replicas: quem
 # decide e o HPA (hpa.yaml), e o apply nao briga com ele. /metrics na propria
-# porta http (8000), anotada para o Prometheus (ADR-043).
+# porta http (8000), anotada para o Prometheus (ADR-043). O uvicorn leva cerca
+# de 10 s para o primeiro 200 a 0,1 CPU (o request) e mais num runner disputado:
+# a startupProbe espera ate 60 s, e a liveness so vale depois dela.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -99,6 +101,13 @@ spec:
                   name: billing-mercadopago
                   key: MP_WEBHOOK_SECRET
                   optional: true
+          startupProbe:
+            httpGet:
+              path: /api/v1/saude
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /api/v1/saude

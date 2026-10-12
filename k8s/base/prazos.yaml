@@ -2,8 +2,10 @@
 # Pago real, concilia os pagamentos solicitados, a cada
 # PRAZOS_INTERVALO_SEGUNDOS. Uma replica (cada mudanca rele o agregado: mais de
 # uma tambem seria segura). Sem conexao para provar, o arquivo de vida e so
-# tocado a cada ciclo: existir e a readiness e a startup, e a idade, a
-# liveness (120 s, quatro ciclos do padrao).
+# tocado a cada ciclo: existir e a readiness, e a idade (120 s, quatro ciclos
+# do padrao) e a startup e a liveness. O /tmp sobrevive ao restart do
+# container, e a startup pela idade impede que o arquivo velho dele passe por
+# processo novo pronto.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -95,7 +97,7 @@ spec:
               command:
                 - python
                 - -c
-                - import os,sys;sys.exit(not os.path.exists('/tmp/prazos-heartbeat'))
+                - import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/prazos-heartbeat')>120)
             periodSeconds: 2
             timeoutSeconds: 3
             failureThreshold: 30
