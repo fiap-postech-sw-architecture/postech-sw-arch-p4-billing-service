@@ -18,6 +18,7 @@ from pymongo.errors import WriteError
 from src import banco as init_do_banco
 from src import seed
 from src.compartilhado.infraestrutura.mongo import (
+    VERSAO_DO_BANCO,
     BancoNaoPreparadoError,
     conferir_versao,
     criar_cliente,
@@ -157,10 +158,14 @@ class TestBancoEProntidao:
 
     @pytest.mark.parametrize(
         ("versao", "aceita"),
-        [(2, False), (3, True)],
-        ids=["anterior-ao-indice-ttl-das-mortas", "atual"],
+        [(2, False), (3, True), (VERSAO_DO_BANCO + 1, True)],
+        ids=[
+            "anterior-ao-indice-ttl-das-mortas",
+            "atual",
+            "banco-a-frente-apos-rollout-undo",
+        ],
     )
-    def test_banco_na_versao_anterior_e_recusado(
+    def test_so_o_banco_atras_da_imagem_e_recusado(
         self, banco: Banco, versao: int, aceita: bool
     ) -> None:
         banco["versao_do_banco"].insert_one({"_id": "billing", "versao": versao})
@@ -171,6 +176,17 @@ class TestBancoEProntidao:
             with pytest.raises(BancoNaoPreparadoError, match=r"src\.banco"):
                 conferir_versao(banco)
 
+    @pytest.fixture
+    def banco_so_o_job_prepara(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """O initContainer so espera: preparar o banco de dentro de um pod antigo
+        (rollout undo) sobrescreveria validadores e versao do Job novo."""
+
+        def preparar(_banco: Banco) -> None:
+            pytest.fail("quem prepara o banco e o Job, nao o initContainer")
+
+        monkeypatch.setattr(init_do_banco, "preparar_banco", preparar)
+
+    @pytest.mark.usefixtures("banco_so_o_job_prepara")
     def test_aguardar_espera_o_init_do_banco(
         self, banco: Banco, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -187,6 +203,23 @@ class TestBancoEProntidao:
             f"database {banco.name} not ready (BancoNaoPreparadoError), "
             "retrying in 2 s\n"
         )
+
+    @pytest.mark.usefixtures("banco_so_o_job_prepara")
+    def test_aguardar_nao_espera_com_o_banco_a_frente_da_imagem(
+        self, banco: Banco, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Depois do rollout undo a imagem anterior sobe sobre o banco que o Job
+        # da versao nova ja marcou: o pod revertido nao pode ficar preso no Init.
+        banco["versao_do_banco"].insert_one(
+            {"_id": "billing", "versao": VERSAO_DO_BANCO + 1}
+        )
+
+        def esperar(_segundos: float) -> None:
+            pytest.fail("banco a frente da imagem nao e espera")
+
+        init_do_banco.aguardar(banco, esperar=esperar)
+
+        assert capsys.readouterr().out == ""
 
     def test_aguardar_trata_o_banco_fora_do_ar_como_espera(
         self, capsys: pytest.CaptureFixture[str]
@@ -208,6 +241,7 @@ class TestBancoEProntidao:
             inalcancavel.close()
         assert "not ready (ServerSelectionTimeoutError)" in capsys.readouterr().out
 
+    @pytest.mark.usefixtures("banco_so_o_job_prepara")
     def test_comando_aguardar(
         self,
         banco: Banco,
