@@ -62,7 +62,9 @@ try {
 esperar("the primary", () => admin.runCommand({ hello: 1 }).isWritablePrimary);
 
 // billing: os processos e o Job (indices e validadores pedem dbAdmin).
-// exporter: o mongodb_exporter (replSetGetStatus e dbStats, oplog em local).
+// exporter: o mongodb_exporter, so clusterMonitor (replSetGetStatus, dbStats e
+// diagnostico). Esse papel ja le o oplog em local, que carrega as escritas de
+// billing, e nao le as colecoes de billing: risco aceito de demonstracao.
 const usuarios = [
   {
     banco: conexao.getDB("billing"),
@@ -77,10 +79,7 @@ const usuarios = [
     banco: admin,
     user: "exporter",
     senha: "MONGO_EXPORTER_PASSWORD",
-    roles: [
-      { role: "clusterMonitor", db: "admin" },
-      { role: "read", db: "local" },
-    ],
+    roles: [{ role: "clusterMonitor", db: "admin" }],
   },
 ];
 for (const usuario of usuarios) {

@@ -140,9 +140,10 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-        # Conecta com o usuario exporter (clusterMonitor e leitura do local),
-        # nunca com o root; a senha entra pela URI montada no pod, nunca em
-        # argumento.
+        # Conecta com o usuario exporter (so clusterMonitor: monitora o replica
+        # set e as estatisticas dos bancos, sem ler as colecoes de billing; o
+        # papel inclui o oplog, risco aceito de demonstracao), nunca com o
+        # root; a senha entra pela URI montada no pod, nunca em argumento.
         - name: exporter
           image: percona/mongodb_exporter:0.53.0
           imagePullPolicy: IfNotPresent

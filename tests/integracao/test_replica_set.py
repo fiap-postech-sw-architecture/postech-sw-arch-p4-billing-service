@@ -42,7 +42,7 @@ def test_inicia_o_replica_set_e_cria_os_usuarios_uma_vez(
     )
 
 
-def test_billing_prepara_o_banco_e_o_exporter_so_monitora(
+def test_billing_prepara_o_banco_e_o_exporter_monitora_sem_ler_o_billing(
     mongo_com_chave: MongoComChave, execucoes: tuple[Execucao, Execucao]
 ) -> None:
     with criar_cliente(mongo_com_chave.uri("billing", "billing")) as billing:
@@ -57,6 +57,10 @@ def test_billing_prepara_o_banco_e_o_exporter_so_monitora(
             billing.admin.command("replSetGetStatus")
 
     with criar_cliente(mongo_com_chave.uri("exporter", "admin")) as exporter:
+        # So clusterMonitor, que ja cobre o que o mongodb_exporter le (e o oplog
+        # em local, risco aceito de demonstracao): papel a mais reprova aqui.
+        papeis = exporter.admin.command("usersInfo", "exporter")["users"][0]["roles"]
+        assert papeis == [{"role": "clusterMonitor", "db": "admin"}]
         assert exporter.admin.command("replSetGetStatus")["ok"] == 1
         assert exporter["billing"].command("dbStats")["ok"] == 1
         with pytest.raises(OperationFailure, match="not authorized"):
