@@ -101,7 +101,9 @@ smoke:
 # Manifests do Kubernetes (k8s/), os tres overlays: kubeconform com os schemas
 # do Kubernetes 1.35, a versao do no do kind (Secret reprova: as senhas vem do
 # make deploy do platform), e trivy config sem achado HIGH ou CRITICAL (o que
-# ele ignora, com o motivo, esta em k8s/trivy-ignore.rego), nas versoes do
+# ele ignora, com o motivo, esta em k8s/trivy-ignore.rego; a excecao vale para o
+# ConfigMap do replica-set.js inteiro, e confere-senhas-do-script.sh exige que
+# todo campo de senha do script venha de segredo(...)), nas versoes do
 # platform. O job build do CI roda este alvo.
 KUBERNETES_VERSION := 1.35.0
 KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0
@@ -109,6 +111,7 @@ TRIVY_IMAGE := aquasec/trivy:0.72.0
 
 manifests:
 	@mkdir -p reports
+	@scripts/ci/confere-senhas-do-script.sh
 	@for overlay in kind kind-ci k3s; do \
 		echo ">> k8s/overlays/$$overlay: kubeconform e trivy config"; \
 		kubectl kustomize k8s/overlays/$$overlay > reports/k8s-$$overlay.yaml || exit 1; \
