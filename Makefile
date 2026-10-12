@@ -164,9 +164,10 @@ kind-deploy:
 	$(PLATFORM_DIR)/scripts/ci/implantar-servicos.sh --overlay $(OVERLAY) \
 		billing-service=$(CURDIR)
 
-# API local apontando para o MongoDB do compose (make compose-up).
+# API local apontando para o MongoDB do compose (make compose-up). Sem o access
+# log do uvicorn, como na imagem: o http_request estruturado sai do middleware.
 run:
-	ENVIRONMENT=development $(PY) uvicorn src.main:criar_app --factory --reload --port 8002
+	ENVIRONMENT=development $(PY) uvicorn src.main:criar_app --factory --reload --port 8002 --no-access-log
 
 compose-up:
 	$(COMPOSE) up -d --build --wait
