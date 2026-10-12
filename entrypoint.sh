@@ -16,13 +16,16 @@ case "$processo" in
       python -m src.seed || echo "Seed de precos nao concluiu; seguindo com a API."
     fi
     # --no-proxy-headers: X-Forwarded-For so com proxy confiavel configurado
-    # (mesma postura do p3); a borda e o Kong. --no-server-header: a resposta
+    # (mesma postura do p3); a borda e o Kong. --no-access-log: o access log
+    # estruturado (com request_id) sai do SecurityHeadersMiddleware, e o do
+    # uvicorn e uma linha de texto sem campos. --no-server-header: a resposta
     # nao anuncia o servidor (uvicorn) nem a versao. --root-path: o prefixo
     # da borda (ROOT_PATH=/billing no Kubernetes; vazio no compose), que o
     # Kong tira do caminho: sem ele o Swagger de /billing/docs buscaria o
     # /openapi.json fora do prefixo (ADR-038).
     exec uvicorn src.main:criar_app --factory --host 0.0.0.0 --port 8000 \
-      --no-proxy-headers --no-server-header --root-path "${ROOT_PATH:-}"
+      --no-proxy-headers --no-access-log --no-server-header \
+      --root-path "${ROOT_PATH:-}"
     ;;
   prazos)
     exec python -m src.prazos

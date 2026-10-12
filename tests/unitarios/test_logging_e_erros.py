@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
+import structlog
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -264,6 +266,87 @@ def test_logger_do_pika_so_deixa_passar_erro(saida_de_log: io.StringIO) -> None:
     ]
 
 
+@pytest.fixture
+def uvicorn_restaurado() -> Iterator[io.StringIO]:
+    """Buffer para o ``configurar_logging``; no fim, desfaz o que ele e o uvicorn
+    mexem: o ``uvicorn.Config`` troca handlers e ``propagate`` de tres loggers
+    globais, e o ``configurar_logging`` troca o handler do root."""
+    nomes = ("uvicorn", "uvicorn.error", "uvicorn.access")
+    root = logging.getLogger()
+    handlers_anteriores, nivel_anterior = root.handlers[:], root.level
+    config_anterior = structlog.get_config()
+    estado = {
+        nome: (
+            logging.getLogger(nome).handlers[:],
+            logging.getLogger(nome).propagate,
+            logging.getLogger(nome).level,
+        )
+        for nome in nomes
+    }
+    yield io.StringIO()
+    root.handlers = handlers_anteriores
+    root.setLevel(nivel_anterior)
+    structlog.configure(**config_anterior)
+    for nome, (handlers, propagate, nivel) in estado.items():
+        logger = logging.getLogger(nome)
+        logger.handlers = handlers
+        logger.propagate = propagate
+        logger.setLevel(nivel)
+
+
+class TestLoggersDoUvicorn:
+    """O uvicorn monta os loggers antes de chamar a fabrica do app (``--factory``)."""
+
+    def test_sem_access_log_o_uvicorn_continua_sem_access_log(
+        self, uvicorn_restaurado: io.StringIO
+    ) -> None:
+        # O uvicorn deixa `uvicorn.access` sem handler e sem propagar e le o
+        # `hasHandlers()` a cada conexao: religar a propagacao ao root traria de
+        # volta a linha de texto do acesso, em duplicidade com o `http_request`.
+        uvicorn.Config("src.main:criar_app", factory=True, access_log=False)
+        configurar_logging(stream=uvicorn_restaurado)
+
+        acesso = logging.getLogger("uvicorn.access")
+        assert not acesso.hasHandlers()
+        acesso.info('127.0.0.1:5000 - "GET /api/v1/saude HTTP/1.1" 200')
+        assert uvicorn_restaurado.getvalue() == ""
+
+    def test_o_resto_do_uvicorn_sai_em_json_com_o_access_log_desligado(
+        self, uvicorn_restaurado: io.StringIO
+    ) -> None:
+        uvicorn.Config("src.main:criar_app", factory=True, access_log=False)
+        configurar_logging(stream=uvicorn_restaurado)
+
+        logging.getLogger("uvicorn.error").info("Started server process [1]")
+        registro = json.loads(uvicorn_restaurado.getvalue())
+        assert (registro["logger"], registro["event"]) == (
+            "uvicorn.error",
+            "Started server process [1]",
+        )
+
+    def test_com_access_log_ligado_o_acesso_sai_em_json_e_scrubado(
+        self, uvicorn_restaurado: io.StringIO
+    ) -> None:
+        uvicorn.Config("src.main:criar_app", factory=True, access_log=True)
+        configurar_logging(stream=uvicorn_restaurado)
+
+        logging.getLogger("uvicorn.access").info("GET /x?email=joao@example.com")
+        saida = uvicorn_restaurado.getvalue()
+        assert json.loads(saida)["logger"] == "uvicorn.access"
+        assert "joao@example.com" not in saida
+
+    def test_configurar_duas_vezes_mantem_o_access_log_desligado(
+        self, uvicorn_restaurado: io.StringIO
+    ) -> None:
+        # A fabrica do app chama `configurar_logging` a cada `criar_app`: a
+        # segunda chamada ve o estado deixado pela primeira.
+        uvicorn.Config("src.main:criar_app", factory=True, access_log=False)
+        configurar_logging(stream=uvicorn_restaurado)
+        configurar_logging(stream=uvicorn_restaurado)
+
+        assert not logging.getLogger("uvicorn.access").hasHandlers()
+
+
 class Corpo(BaseModel):
     numero: int
 
@@ -394,6 +477,29 @@ def test_422_de_schema_no_formato_do_p3_sem_ecoar_o_valor(cliente: TestClient) -
     ]
 
 
+def test_access_log_estruturado_com_request_id_e_o_token_do_link_mascarado(
+    cliente: TestClient, saida_de_log: io.StringIO
+) -> None:
+    link = "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60.1791547200.Zm9vYmFy"
+
+    cliente.get(
+        f"/api/v1/publico/orcamentos/{link}", headers={"X-Request-ID": "req-acesso"}
+    )
+    cliente.get("/erro/bug", headers={"X-Request-ID": "req-erro"})
+
+    acessos = [
+        linha for linha in linhas_json(saida_de_log) if linha["event"] == "http_request"
+    ]
+    assert [
+        (a["request_id"], a["method"], a["path"], a["status"]) for a in acessos
+    ] == [
+        ("req-acesso", "GET", "/api/v1/publico/orcamentos/***", 404),
+        ("req-erro", "GET", "/erro/bug", 500),
+    ]
+    assert all(isinstance(a["duration_ms"], float) for a in acessos)
+    assert "Zm9vYmFy" not in saida_de_log.getvalue()
+
+
 def test_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:
     resposta = cliente.post("/corpo", json={"numero": 1})
     assert {
@@ -419,7 +525,11 @@ def test_headers_de_seguranca_e_request_id(cliente: TestClient) -> None:
     assert invalido.headers["X-Request-ID"] != "x" * 200
 
 
-@pytest.mark.parametrize("prefixo", ["", "/billing"], ids=["sem-prefixo", "borda"])
+@pytest.mark.parametrize(
+    "prefixo",
+    ["", "/billing", "/os"],
+    ids=["sem-prefixo", "borda", "outro-prefixo"],
+)
 def test_swagger_sem_csp_restrito_tambem_atras_do_prefixo_da_borda(
     prefixo: str,
 ) -> None:
