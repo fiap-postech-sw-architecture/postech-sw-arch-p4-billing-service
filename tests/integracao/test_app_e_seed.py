@@ -134,7 +134,7 @@ class TestBancoEProntidao:
                 }
             colecoes = set(cliente_mongo[nome].list_collection_names())
             assert {"outbox", "pagamentos", "orcamentos", "versao_do_banco"} <= colecoes
-            assert capsys.readouterr().out.count(f"banco {nome} preparado") == 2
+            assert capsys.readouterr().out.count(f"database {nome} prepared") == 2
         finally:
             cliente_mongo.drop_database(nome)
 

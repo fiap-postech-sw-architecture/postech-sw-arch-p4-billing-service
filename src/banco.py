@@ -85,7 +85,7 @@ def main(args: Sequence[str] = ()) -> None:
             sys.stdout.write(f"database {config.mongodb_banco} ready\n")
         else:
             preparar_banco(banco)
-            sys.stdout.write(f"banco {config.mongodb_banco} preparado\n")
+            sys.stdout.write(f"database {config.mongodb_banco} prepared\n")
     finally:
         cliente.close()
 
