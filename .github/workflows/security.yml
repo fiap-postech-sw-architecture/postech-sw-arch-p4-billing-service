@@ -1,7 +1,8 @@
 name: Security
 
 # pip-audit (CVE nas dependencias de runtime), gitleaks (segredos no historico
-# do commit) e trivy (CVE na imagem). Bandit fica no ci.yml. Roda em todo PR,
+# do commit) e trivy (CVE na imagem do servico, que reprova, e nas de terceiros
+# dos manifests, so relatorio). Bandit fica no ci.yml. Roda em todo PR,
 # na main chamado pelo cd.yml antes da imagem (ADR-042) e toda segunda-feira,
 # para pegar CVE nova sem depender de push.
 on:
@@ -67,19 +68,39 @@ jobs:
   trivy:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build da imagem de runtime
         run: docker build -t "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}" .
+      # A versao e a do Makefile (TRIVY_VERSION), a mesma do make manifests.
       - name: Instala trivy
-        run: >-
-          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.72.0/contrib/install.sh
-          | sh -s -- -b /usr/local/bin v0.72.0
+        run: |
+          versao="$(make -s print-trivy-version)"
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${versao}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${versao}"
       - name: trivy (HIGH e CRITICAL com correcao disponivel)
         run: >-
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress
           --exit-code 1 "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}"
-        env:
-          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+      # As imagens de terceiros dos manifests (o banco e o exporter): so o
+      # relatorio no summary, sem reprovar o job, porque a correcao depende de
+      # um build novo do fornecedor. O risco aceito e a politica de subir a
+      # versao estao no README, em Implantacao.
+      - name: trivy das imagens de terceiros dos manifests (relatorio)
+        run: |
+          grep -h '^ *image:' k8s/base/*.yaml | awk '{print $2}' \
+            | grep -v '^pytstop-billing-service$' | sort -u > imagens.txt
+          test -s imagens.txt
+          while read -r imagem; do
+            {
+              echo "### ${imagem}: HIGH e CRITICAL com correcao disponivel"
+              echo '```text'
+              trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress \
+                --exit-code 0 "$imagem"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done < imagens.txt

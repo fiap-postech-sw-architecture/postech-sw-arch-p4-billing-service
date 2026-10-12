@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	check audit smoke manifests kind-deploy run compose-up compose-down compose-logs seed
+	check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -107,7 +107,9 @@ smoke:
 # platform. O job build do CI roda este alvo.
 KUBERNETES_VERSION := 1.35.0
 KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0
-TRIVY_IMAGE := aquasec/trivy:0.72.0
+# Fonte unica da versao do trivy: o security.yml instala a de print-trivy-version.
+TRIVY_VERSION := 0.72.0
+TRIVY_IMAGE := aquasec/trivy:$(TRIVY_VERSION)
 
 manifests:
 	@mkdir -p reports
@@ -124,6 +126,9 @@ manifests:
 			--ignore-policy /trivy-ignore.rego /tmp/manifests.yaml' \
 			< reports/k8s-$$overlay.yaml || exit 1; \
 	done
+
+print-trivy-version:
+	@echo $(TRIVY_VERSION)
 
 # Implanta o servico no kind da plataforma pelo script do CD do platform:
 # constroi a imagem com o commit como tag, carrega no kind e aplica o overlay
