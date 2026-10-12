@@ -303,7 +303,7 @@ Os três usuários seguem os mesmos três passos. Escolha a linha da tabela e de
        sh -c 'read -r SENHA_NOVA && [ -n "$SENHA_NOVA" ] && export SENHA_NOVA && exec mongosh --quiet --norc'
    ```
 
-   A saída esperada é `{ ok: 1 }` duas vezes, a autenticação e a troca, e o `mongod` registra o `updateUser` com `"pwd":"xxx"`. Se este passo falhar, repita-o na mesma sessão, com a mesma `$senha`, que o Secret já tem: reiniciar os pods com o Secret diferente do banco os deixa sem acesso.
+   A saída esperada é `{ ok: 1 }` duas vezes, a autenticação e a troca. Se este passo falhar, repita-o na mesma sessão, com a mesma `$senha`, que o Secret já tem: reiniciar os pods com o Secret diferente do banco os deixa sem acesso.
 3. Reinicie quem usa a credencial: os Deployments com `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart deployment`, e o banco com `kubectl --context kind-pytstop-p4 -n pytstop-billing rollout restart statefulset/billing-mongo`.
 
 #### Keyfile
