@@ -4,8 +4,10 @@
 # uma tambem seria segura). Sem conexao para provar, o arquivo de vida e so
 # tocado a cada ciclo: existir e a readiness, e a idade (120 s, quatro ciclos
 # do padrao) e a startup e a liveness. O /tmp sobrevive ao restart do
-# container, e a startup pela idade impede que o arquivo velho dele passe por
-# processo novo pronto.
+# container, e a startup pela idade so barra o arquivo com mais de 120 s (o
+# restart pela liveness). Depois de um crash ou OOM com o arquivo mais novo
+# que isso, o pod volta a Ready com ele ate o processo novo concluir o
+# primeiro ciclo.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
