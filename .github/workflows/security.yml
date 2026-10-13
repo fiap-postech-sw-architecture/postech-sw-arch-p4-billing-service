@@ -88,19 +88,10 @@ jobs:
           --exit-code 1 "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}"
       # As imagens de terceiros dos manifests (o banco e o exporter): so o
       # relatorio no summary, sem reprovar o job, porque a correcao depende de
-      # um build novo do fornecedor. O risco aceito e a politica de subir a
-      # versao estao no README, em Implantacao.
+      # um build novo do fornecedor. Nem o achado nem a falha da varredura
+      # (pull recusado, tag removida, banco do trivy fora) reprovam: a falha
+      # vira aviso no summary (scripts/ci/relatorio-trivy-terceiros.sh, com
+      # teste em tests/unitarios/test_scripts_ci.py). O risco aceito e a
+      # politica de subir a versao estao no README, em Implantacao.
       - name: trivy das imagens de terceiros dos manifests (relatorio)
-        run: |
-          grep -h '^ *image:' k8s/base/*.yaml | awk '{print $2}' \
-            | grep -v '^pytstop-billing-service$' | sort -u > imagens.txt
-          test -s imagens.txt
-          while read -r imagem; do
-            {
-              echo "### ${imagem}: HIGH e CRITICAL com correcao disponivel"
-              echo '```text'
-              trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress \
-                --exit-code 0 "$imagem"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          done < imagens.txt
+        run: scripts/ci/relatorio-trivy-terceiros.sh
