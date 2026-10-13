@@ -40,6 +40,10 @@ def test_o_replica_set_do_repositorio_so_le_senha_do_ambiente() -> None:
         "pwd: segredo(usuario.senha) + 'x',",
         "secret: 'abc'",
         'token: "ghp_exemplo"',
+        '"pwd": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a6978",',
+        "'pwd': 'senha-literal',",
+        '["pwd"]: "senha-literal",',
+        'pwd: segredo("senha-literal"),',
     ],
     ids=[
         "pwd-literal",
@@ -48,6 +52,10 @@ def test_o_replica_set_do_repositorio_so_le_senha_do_ambiente() -> None:
         "segredo-concatenado-a-literal",
         "secret-literal",
         "token-literal",
+        "chave-entre-aspas-duplas",
+        "chave-entre-aspas-simples",
+        "chave-computada",
+        "segredo-com-literal",
     ],
 )
 def test_campo_de_senha_com_valor_que_nao_vem_do_segredo_reprova(
@@ -62,9 +70,12 @@ def test_campo_de_senha_com_valor_que_nao_vem_do_segredo_reprova(
     assert linha in resultado.stderr
 
 
-def test_campo_de_senha_com_a_chamada_segredo_passa(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "campo", ["pwd: segredo(usuario.senha),", '"pwd": segredo(usuario.senha),']
+)
+def test_campo_de_senha_com_a_chamada_segredo_passa(tmp_path: Path, campo: str) -> None:
     script = tmp_path / "replica-set.js"
-    script.write_text("createUser({\n  pwd: segredo(usuario.senha),\n});\n")
+    script.write_text(f"createUser({{\n  {campo}\n}});\n")
 
     assert _conferir(script).returncode == 0
 
