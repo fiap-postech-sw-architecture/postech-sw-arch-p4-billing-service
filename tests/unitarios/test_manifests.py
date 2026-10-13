@@ -1,4 +1,5 @@
-"""``k8s/``: o ConfigMap dos processos contra o codigo que o le.
+"""``k8s/``: o ConfigMap dos processos contra o codigo que o le, e a copia da
+``MONGODB_URI`` pelo ``replacements`` do base.
 
 Uma variavel renomeada no codigo passa no ``make manifests`` (o kubeconform so
 confere o schema) e so cairia no deploy: estes testes leem os literais do
@@ -165,3 +166,36 @@ def test_metrics_port_do_configmap_e_a_porta_que_o_prometheus_raspa(
         "billing-service-relay",
     ]
     assert set(portas.values()) == {(porta, porta)}
+
+
+# O valor que os Deployments e o Job guardam na MONGODB_URI ate o replacements
+# trocar pelo do container api; o make manifests reprova se ele sobrar no render.
+SENTINELA = "copiado de api.yaml"
+
+
+def test_todo_container_com_a_uri_sentinela_e_alvo_do_replacements() -> None:
+    kustomization = yaml.safe_load((K8S / "base" / "kustomization.yaml").read_text())
+    alvos = {
+        (alvo["select"]["kind"], alvo["select"]["name"], caminho)
+        for copia in kustomization["replacements"]
+        for alvo in copia["targets"]
+        for caminho in alvo["fieldPaths"]
+    }
+    com_sentinela = {
+        (
+            documento["kind"],
+            documento["metadata"]["name"],
+            f"spec.template.spec.{secao}.[name={nome}].env.[name=MONGODB_URI].value",
+        )
+        for documento in _documentos_do_base()
+        for secao, nome, container in _containers(documento)
+        for variavel in container.get("env", [])
+        if variavel["name"] == "MONGODB_URI" and SENTINELA in variavel.get("value", "")
+    }
+
+    assert com_sentinela, "nenhum container com o sentinela: o teste nao prova nada"
+    assert com_sentinela == alvos
+
+
+def test_o_make_manifests_reprova_o_sentinela_que_sobrar_no_render() -> None:
+    assert f"! grep -q '{SENTINELA}'" in (RAIZ / "Makefile").read_text()
