@@ -399,3 +399,37 @@ class BrokerDeTeste:
 
 
 SENHA_DO_ADMIN = "senha-do-admin-de-teste"  # gitleaks:allow (container de teste)
+
+
+@dataclass(frozen=True, slots=True)
+class MongoComChave:
+    """MongoDB subido como o StatefulSet do Kubernetes (k8s/base/banco.yaml):
+    keyfile, root do entrypoint da imagem e replica set ainda nao iniciado."""
+
+    container: Any
+    endereco: str
+    senhas: dict[str, str]
+
+    def iniciar(self, **senhas: str) -> tuple[int, list[str]]:
+        """Roda o replica-set.js como o initContainer do Job; devolve o status e
+        as linhas da saida, sem as de espera."""
+        ambiente = {
+            "HOME": "/tmp",  # noqa: S108 - HOME do mongosh dentro do container
+            "MONGO_MEMBRO": "localhost:27017",
+            **self.senhas,
+            **senhas,
+        }
+        resultado = self.container.get_wrapped_container().exec_run(
+            ["mongosh", "--nodb", "--quiet", "--file", "/scripts/replica-set.js"],
+            environment=ambiente,
+        )
+        linhas = resultado.output.decode().splitlines()
+        return resultado.exit_code, [
+            linha for linha in linhas if not linha.startswith("waiting for")
+        ]
+
+    def uri(self, usuario: str, banco: str) -> str:
+        senha = self.senhas[f"MONGO_{usuario.upper()}_PASSWORD"]
+        return (
+            f"mongodb://{usuario}:{senha}@{self.endereco}/{banco}?directConnection=true"
+        )

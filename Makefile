@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	check audit smoke run compose-up compose-down compose-logs seed
+	check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -63,10 +63,14 @@ audit:
 # inclusive relay e consumidor prontos, conectados ao RabbitMQ; servico doente
 # derruba o --wait), publica um GerarOrcamento como o OS e espera o
 # OrcamentoGerado (scripts/smoke_mensageria.py), confere a readiness da API
-# (MongoDB preparado), que rota autenticada sem token responde 401 e que a
+# (MongoDB preparado), que rota autenticada sem token responde 401, que a
 # resposta nao anuncia o servidor (os cabecalhos vem de uma variavel: num pipe,
-# a falha do curl seria engolida e o smoke passaria sem ter olhado nada);
-# derruba tudo com os volumes, inclusive em falha (depois de mostrar os logs).
+# a falha do curl seria engolida e o smoke passaria sem ter olhado nada), que a
+# API roda como o usuario 1001, que as linhas de boot do uvicorn saem em JSON e
+# que ele nao escreve access log (so o `http_request` estruturado do
+# middleware) e que a imagem, com ENVIRONMENT=production, recusa o segredo de
+# demonstracao do compose (o compose sobe com development); derruba tudo com
+# os volumes, inclusive em falha (depois de mostrar os logs).
 # Projeto e portas proprios para nao derrubar a stack do compose-up nem a do
 # platform.
 SMOKE_PORT ?= 18002
@@ -76,6 +80,9 @@ SMOKE_RABBITMQ_UI_PORT ?= 25673
 SMOKE_URL := http://127.0.0.1:$(SMOKE_PORT)
 # Usuario os do RabbitMQ do compose (senha de demonstracao do platform).
 SMOKE_OS_URL := amqp://os:pytstop-os-demo-2026@rabbitmq:5672/%2F
+# A guarda de producao da configuracao da API: o segredo do link de
+# demonstracao so vale em development e test.
+SMOKE_GUARDA := from src.configuracao import Configuracao; Configuracao.do_ambiente()
 SMOKE_COMPOSE := API_PORT=$(SMOKE_PORT) MONGO_PORT=$(SMOKE_MONGO_PORT) \
 	RABBITMQ_PORT=$(SMOKE_RABBITMQ_PORT) RABBITMQ_UI_PORT=$(SMOKE_RABBITMQ_UI_PORT) \
 	$(COMPOSE) -p pytstop-billing-smoke
@@ -92,15 +99,75 @@ smoke:
 	&& cabecalhos="$$(curl -fsS -D - -o /dev/null --max-time 5 $(SMOKE_URL)/api/v1/saude)" \
 	&& printf '%s\n' "$$cabecalhos" | grep -q '^HTTP/' \
 	&& ! printf '%s\n' "$$cabecalhos" | grep -qi '^server:' \
-	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server" \
+	&& { test "$$($(SMOKE_COMPOSE) exec -T api id -u)" = 1001 \
+		|| { echo "smoke: a API nao roda como o usuario 1001" >&2; false; }; } \
+	&& logs="$$($(SMOKE_COMPOSE) logs --no-color api)" \
+	&& { printf '%s\n' "$$logs" | grep -q '"event": "Started server process' \
+		|| { echo "smoke: as linhas de boot do uvicorn nao saem em JSON" >&2; false; }; } \
+	&& { printf '%s\n' "$$logs" | grep -q '"event": "http_request"' \
+		|| { echo "smoke: o access log estruturado (http_request) nao saiu" >&2; false; }; } \
+	&& { ! printf '%s\n' "$$logs" | grep -q 'uvicorn.access' \
+		|| { echo "smoke: o uvicorn escreveu access log (--no-access-log nao vale)" >&2; false; }; } \
+	&& { $(SMOKE_COMPOSE) exec -T -e ENVIRONMENT=production api python -c "$(SMOKE_GUARDA)" 2>&1 \
+		| grep -q 'ORCAMENTO_LINK_SECRET usa o valor de demonstracao' \
+		|| { echo "smoke: com ENVIRONMENT=production a imagem aceita o segredo de demonstracao" >&2; false; }; } \
+	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server, usuario 1001, boot em JSON, sem access log do uvicorn, segredo de demonstracao recusado em producao" \
 	|| status=$$?; \
 	if [ $$status -ne 0 ]; then $(SMOKE_COMPOSE) logs --no-color --tail=200; fi; \
 	$(SMOKE_COMPOSE) down -v; \
 	exit $$status
 
-# API local apontando para o MongoDB do compose (make compose-up).
+# Manifests do Kubernetes (k8s/), os tres overlays: kubeconform com os schemas
+# do Kubernetes 1.35, a versao do no do kind (Secret reprova: as senhas vem do
+# make deploy do platform), e trivy config sem achado HIGH ou CRITICAL (o que
+# ele ignora, com o motivo, esta em k8s/trivy-ignore.rego; a excecao vale para o
+# ConfigMap do replica-set.js inteiro, e confere-senhas-do-script.sh exige que
+# todo campo de senha do script venha de segredo(...)), nas versoes do
+# platform. Tambem reprova se a MONGODB_URI de algum processo ficar com o valor
+# sentinela, o que e o replacements do base nao ter chegado nela. O job build
+# do CI roda este alvo.
+KUBERNETES_VERSION := 1.35.0
+KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0
+# Fonte unica da versao do trivy: o security.yml instala a de print-trivy-version.
+TRIVY_VERSION := 0.72.0
+TRIVY_IMAGE := aquasec/trivy:$(TRIVY_VERSION)
+
+manifests:
+	@mkdir -p reports
+	@scripts/ci/confere-senhas-do-script.sh
+	@for overlay in kind kind-ci k3s; do \
+		echo ">> k8s/overlays/$$overlay: kubeconform e trivy config"; \
+		kubectl kustomize k8s/overlays/$$overlay > reports/k8s-$$overlay.yaml || exit 1; \
+		! grep -q 'copiado de api.yaml' reports/k8s-$$overlay.yaml \
+			|| { echo "MONGODB_URI sem o valor de api.yaml: confira o replacements de k8s/base/kustomization.yaml" >&2; exit 1; }; \
+		docker run --rm -i $(KUBECONFORM_IMAGE) -strict -summary -output text \
+			-kubernetes-version $(KUBERNETES_VERSION) -reject Secret - \
+			< reports/k8s-$$overlay.yaml || exit 1; \
+		docker run --rm -i -v "$(CURDIR)/k8s/trivy-ignore.rego:/trivy-ignore.rego:ro" \
+			--entrypoint sh $(TRIVY_IMAGE) -c 'cat > /tmp/manifests.yaml && trivy config \
+			--quiet --severity HIGH,CRITICAL --exit-code 1 \
+			--ignore-policy /trivy-ignore.rego /tmp/manifests.yaml' \
+			< reports/k8s-$$overlay.yaml || exit 1; \
+	done
+
+print-trivy-version:
+	@echo $(TRIVY_VERSION)
+
+# Implanta o servico no kind da plataforma pelo script do CD do platform:
+# constroi a imagem com o commit como tag, carrega no kind e aplica o overlay
+# na ordem do contrato (Job de inicializacao, banco e rollouts). Antes, a
+# plataforma no ar: make -C $(PLATFORM_DIR) kind-up deploy (README, Implantacao).
+PLATFORM_DIR ?= ../postech-sw-arch-p4-platform
+OVERLAY ?= kind
+
+kind-deploy:
+	$(PLATFORM_DIR)/scripts/ci/implantar-servicos.sh --overlay $(OVERLAY) \
+		billing-service=$(CURDIR)
+
+# API local apontando para o MongoDB do compose (make compose-up). Sem o access
+# log do uvicorn, como na imagem: o http_request estruturado sai do middleware.
 run:
-	ENVIRONMENT=development $(PY) uvicorn src.main:criar_app --factory --reload --port 8002
+	ENVIRONMENT=development $(PY) uvicorn src.main:criar_app --factory --reload --port 8002 --no-access-log
 
 compose-up:
 	$(COMPOSE) up -d --build --wait

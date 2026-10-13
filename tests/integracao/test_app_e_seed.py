@@ -12,14 +12,17 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pymongo import MongoClient
 from pymongo.errors import WriteError
 
 from src import banco as init_do_banco
 from src import seed
 from src.compartilhado.infraestrutura.mongo import (
+    VERSAO_DO_BANCO,
     BancoNaoPreparadoError,
     conferir_versao,
     criar_cliente,
+    marcar_versao,
 )
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
@@ -28,7 +31,6 @@ from src.precos.infraestrutura.repository import MongoPrecoServicoRepository
 from tests.integracao.apoio import configuracao
 
 if TYPE_CHECKING:
-    from pymongo import MongoClient
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
@@ -132,7 +134,7 @@ class TestBancoEProntidao:
                 }
             colecoes = set(cliente_mongo[nome].list_collection_names())
             assert {"outbox", "pagamentos", "orcamentos", "versao_do_banco"} <= colecoes
-            assert capsys.readouterr().out.count(f"banco {nome} preparado") == 2
+            assert capsys.readouterr().out.count(f"database {nome} prepared") == 2
         finally:
             cliente_mongo.drop_database(nome)
 
@@ -156,10 +158,14 @@ class TestBancoEProntidao:
 
     @pytest.mark.parametrize(
         ("versao", "aceita"),
-        [(2, False), (3, True)],
-        ids=["anterior-ao-indice-ttl-das-mortas", "atual"],
+        [(2, False), (3, True), (VERSAO_DO_BANCO + 1, True)],
+        ids=[
+            "anterior-ao-indice-ttl-das-mortas",
+            "atual",
+            "banco-a-frente-apos-rollout-undo",
+        ],
     )
-    def test_banco_na_versao_anterior_e_recusado(
+    def test_so_o_banco_atras_da_imagem_e_recusado(
         self, banco: Banco, versao: int, aceita: bool
     ) -> None:
         banco["versao_do_banco"].insert_one({"_id": "billing", "versao": versao})
@@ -169,6 +175,91 @@ class TestBancoEProntidao:
         else:
             with pytest.raises(BancoNaoPreparadoError, match=r"src\.banco"):
                 conferir_versao(banco)
+
+    @pytest.fixture
+    def banco_so_o_job_prepara(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """O initContainer so espera: preparar o banco de dentro de um pod antigo
+        (rollout undo) sobrescreveria validadores e versao do Job novo."""
+
+        def preparar(_banco: Banco) -> None:
+            pytest.fail("quem prepara o banco e o Job, nao o initContainer")
+
+        monkeypatch.setattr(init_do_banco, "preparar_banco", preparar)
+
+    @pytest.mark.usefixtures("banco_so_o_job_prepara")
+    def test_aguardar_espera_o_init_do_banco(
+        self, banco: Banco, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        esperas: list[float] = []
+
+        def esperar(segundos: float) -> None:
+            esperas.append(segundos)
+            marcar_versao(banco)  # o Job de inicializacao termina na espera
+
+        init_do_banco.aguardar(banco, esperar=esperar)
+
+        assert esperas == [2.0]
+        assert capsys.readouterr().out == (
+            f"database {banco.name} not ready (BancoNaoPreparadoError), "
+            "retrying in 2 s\n"
+        )
+
+    @pytest.mark.usefixtures("banco_so_o_job_prepara")
+    def test_aguardar_nao_espera_com_o_banco_a_frente_da_imagem(
+        self, banco: Banco, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Depois do rollout undo a imagem anterior sobe sobre o banco que o Job
+        # da versao nova ja marcou: o pod revertido nao pode ficar preso no Init.
+        banco["versao_do_banco"].insert_one(
+            {"_id": "billing", "versao": VERSAO_DO_BANCO + 1}
+        )
+
+        def esperar(_segundos: float) -> None:
+            pytest.fail("banco a frente da imagem nao e espera")
+
+        init_do_banco.aguardar(banco, esperar=esperar)
+
+        assert capsys.readouterr().out == ""
+
+    def test_aguardar_trata_o_banco_fora_do_ar_como_espera(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        class EsperaInterrompidaError(Exception):
+            pass
+
+        def esperar(segundos: float) -> None:
+            raise EsperaInterrompidaError
+
+        inalcancavel: MongoClient[dict[str, Any]] = MongoClient(
+            "mongodb://127.0.0.1:1/?directConnection=true",
+            serverSelectionTimeoutMS=100,
+        )
+        try:
+            with pytest.raises(EsperaInterrompidaError):
+                init_do_banco.aguardar(inalcancavel["billing"], esperar=esperar)
+        finally:
+            inalcancavel.close()
+        assert "not ready (ServerSelectionTimeoutError)" in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("banco_so_o_job_prepara")
+    def test_comando_aguardar(
+        self,
+        banco: Banco,
+        mongo_uri: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("ENVIRONMENT", "test")
+        monkeypatch.setenv("MONGODB_URI", mongo_uri)
+        monkeypatch.setenv("MONGODB_DB", banco.name)
+        marcar_versao(banco)
+
+        init_do_banco.main(["aguardar"])
+
+        assert capsys.readouterr().out == f"database {banco.name} ready\n"
+        # Outro argumento nao cai na preparacao: o initContainer so espera.
+        with pytest.raises(SystemExit, match="uso"):
+            init_do_banco.main(["aguarda"])
 
 
 PRODUCAO = {

@@ -1,0 +1,26 @@
+# k3s na VM da Azure (ADR-042): o base, com o HPA da API de 1 a 3 replicas e
+# volume de 5Gi para o MongoDB (StorageClass local-path, a padrao do k3s). O
+# deploy do k3s gera o overlay de execucao com a imagem por digest e a URL
+# publica com o host da VM, e troca o MP_MODE para mercadopago (com
+# SIMULADOR_PERMITIDO=false) quando existe o Secret billing-mercadopago.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: billing-service-api
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3
+  - target:
+      kind: StatefulSet
+      name: billing-mongo
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 5Gi

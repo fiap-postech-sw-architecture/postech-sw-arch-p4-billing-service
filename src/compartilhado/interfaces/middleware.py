@@ -1,4 +1,4 @@
-"""Headers de seguranca e propagacao do X-Request-ID.
+"""Headers de seguranca, propagacao do X-Request-ID e access log estruturado.
 
 Reaproveitado do p3 @ 08dcffe (``SecurityHeadersMiddleware`` de
 ``src/compartilhado/interfaces/middleware.py``). CORS, rate limiting e proxy
@@ -9,6 +9,7 @@ limiting das rotas publicas fica no Kong (RFC-004, secao 6; ADR-038).
 from __future__ import annotations
 
 import re
+import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
 
+_log = structlog.get_logger(__name__)
+
 _CSP_DEFAULT = "default-src 'none'"
 # Swagger UI / ReDoc usam scripts e estilos inline que o CSP padrao bloqueia.
 _DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
@@ -32,7 +35,10 @@ _DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 _REQUEST_ID_EXTERNO_VALIDO = re.compile(r"[A-Za-z0-9._=-]{1,128}")
 
 
-def _caminho_de_docs(path: str) -> bool:
+def _caminho_de_docs(request: Request) -> bool:
+    # Atras da borda o uvicorn poe o root_path (ROOT_PATH, o prefixo do Kong)
+    # na frente do path: /billing/docs e a pagina /docs.
+    path = request.url.path.removeprefix(request.scope.get("root_path", ""))
     return any(path == p or path.startswith(p + "/") for p in _DOCS_PATHS)
 
 
@@ -41,7 +47,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     Inclusive no 500 de erro nao tratado: o handler de ``Exception`` do app
     roda no ``ServerErrorMiddleware``, por fora deste, e o 500 sairia sem os
-    headers; por isso a excecao vira aqui o 500 do envelope.
+    headers; por isso a excecao vira aqui o 500 do envelope. Tambem e o access
+    log estruturado (metodo, caminho, status, duracao e ``request_id``), no
+    lugar da linha de texto do uvicorn (``--no-access-log``); o scrub do log
+    mascara o token do link de decisao no caminho.
     """
 
     async def dispatch(
@@ -54,6 +63,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         request.state.request_id = request_id
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
+        inicio = time.perf_counter()
         try:
             response = await call_next(request)
         except Exception as exc:  # noqa: BLE001 - vira o 500 do envelope
@@ -64,7 +74,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "max-age=31536000; includeSubDomains"
         )
         response.headers["Cache-Control"] = "no-store"
-        if not _caminho_de_docs(request.url.path):
+        if not _caminho_de_docs(request):
             response.headers["Content-Security-Policy"] = _CSP_DEFAULT
         response.headers["X-Request-ID"] = request_id
+        _log.info(
+            "http_request",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=round((time.perf_counter() - inicio) * 1000, 1),
+        )
         return response

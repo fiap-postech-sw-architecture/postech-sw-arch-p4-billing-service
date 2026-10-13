@@ -129,7 +129,8 @@ _TOKEN_NA_URL_PATTERN = re.compile(r"(/publico/orcamentos/|[?&]token=)[^/\s?&#\"
 
 # Loggers que o uvicorn configura com handler proprio + `propagate=False`.
 # `configurar_logging` os religa ao root para passarem pelo scrubber.
-_LOGGERS_UVICORN = ("uvicorn", "uvicorn.error", "uvicorn.access")
+_LOGGER_DE_ACESSO = "uvicorn.access"
+_LOGGERS_UVICORN = ("uvicorn", "uvicorn.error", _LOGGER_DE_ACESSO)
 
 # Cap on recursion depth when scrubbing nested structures. Guards against
 # pathological or cyclic structured log payloads without sacrificing coverage
@@ -326,5 +327,11 @@ def _religar_loggers_do_uvicorn() -> None:
     # ProcessorFormatter do root (scrubado, JSON unico). Idempotente.
     for nome in _LOGGERS_UVICORN:
         uvlog = logging.getLogger(nome)
+        if nome == _LOGGER_DE_ACESSO and not uvlog.handlers and not uvlog.propagate:
+            # `--no-access-log` deixa o logger assim, e o uvicorn decide por
+            # `hasHandlers()`, a cada conexao, se escreve o acesso. Religar a
+            # propagacao o ligaria de novo ao handler do root: a linha de texto
+            # voltaria, em duplicidade com o `http_request` do middleware.
+            continue
         uvlog.handlers = []
         uvlog.propagate = True

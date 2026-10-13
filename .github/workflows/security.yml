@@ -1,9 +1,10 @@
 name: Security
 
-# pip-audit (CVE nas dependencias de runtime), gitleaks (segredos na arvore) e
-# trivy (CVE na imagem). Bandit fica no ci.yml. Roda em todo PR, na main
-# chamado pelo cd.yml antes da imagem (ADR-042) e toda segunda-feira, para
-# pegar CVE nova sem depender de push.
+# pip-audit (CVE nas dependencias de runtime), gitleaks (segredos no historico
+# do commit) e trivy (CVE na imagem do servico, que reprova, e nas de terceiros
+# dos manifests, so relatorio). Bandit fica no ci.yml. Roda em todo PR,
+# na main chamado pelo cd.yml antes da imagem (ADR-042) e toda segunda-feira,
+# para pegar CVE nova sem depender de push.
 on:
   pull_request:
     branches: [main]
@@ -44,9 +45,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # Historico inteiro do commit testado (no PR, o merge do PR na main):
+      # segredo commitado e apagado num commit seguinte tambem reprova. Sem
+      # --log-opts o gitleaks usa `git log --all` e varreria as branches dos
+      # outros PRs abertos.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       # Binario direto: o gitleaks-action exige licenca em repositorio de organizacao.
       - name: Instala gitleaks (versao e sha256 fixados)
         run: |
@@ -54,25 +60,38 @@ jobs:
             https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
           echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz -C /usr/local/bin gitleaks
-      - name: gitleaks (arvore atual)
-        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --verbose
+      - name: gitleaks (historico do HEAD)
+        run: gitleaks git . --log-opts="HEAD" --config .gitleaks.toml --redact --no-banner --verbose
+      - name: Regras do .gitleaks.toml reprovam senha em URI num manifesto e no historico (teste negativo)
+        run: scripts/ci/testa-gitleaks.sh
 
   trivy:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build da imagem de runtime
         run: docker build -t "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}" .
+      # A versao e a do Makefile (TRIVY_VERSION), a mesma do make manifests.
       - name: Instala trivy
-        run: >-
-          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.72.0/contrib/install.sh
-          | sh -s -- -b /usr/local/bin v0.72.0
+        run: |
+          versao="$(make -s print-trivy-version)"
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${versao}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${versao}"
       - name: trivy (HIGH e CRITICAL com correcao disponivel)
         run: >-
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress
           --exit-code 1 "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}"
-        env:
-          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+      # As imagens de terceiros dos manifests (o banco e o exporter): so o
+      # relatorio no summary, sem reprovar o job, porque a correcao depende de
+      # um build novo do fornecedor. Nem o achado nem a falha da varredura
+      # (pull recusado, tag removida, banco do trivy fora) reprovam: a falha
+      # vira aviso no summary (scripts/ci/relatorio-trivy-terceiros.sh, com
+      # teste em tests/unitarios/test_scripts_ci.py). O risco aceito e a
+      # politica de subir a versao estao no README, em Implantacao.
+      - name: trivy das imagens de terceiros dos manifests (relatorio)
+        run: scripts/ci/relatorio-trivy-terceiros.sh
