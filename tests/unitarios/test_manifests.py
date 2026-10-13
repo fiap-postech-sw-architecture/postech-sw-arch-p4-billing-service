@@ -7,8 +7,10 @@ ConfigMap sem o kubectl e sobem as configuracoes com eles.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -32,6 +34,25 @@ SEGREDOS = {
     "ORCAMENTO_LINK_SECRET": "a" * 64,
     "RABBITMQ_URL": "amqp://billing:x@rabbitmq.pytstop-plataforma:5672/%2F",
 }
+
+
+def _documentos_do_base() -> list[dict[str, Any]]:
+    """Os documentos YAML dos manifests de ``k8s/base``, fora a kustomization."""
+    return [
+        documento
+        for arquivo in sorted((K8S / "base").glob("*.yaml"))
+        if arquivo.name != "kustomization.yaml"
+        for documento in yaml.safe_load_all(arquivo.read_text())
+        if documento
+    ]
+
+
+def _containers(documento: dict[str, Any]) -> Iterator[tuple[str, str, dict[str, Any]]]:
+    """(secao, nome, container) dos init e dos containers do pod do documento."""
+    pod = (documento.get("spec") or {}).get("template", {}).get("spec", {})
+    for secao in ("initContainers", "containers"):
+        for container in pod.get(secao, []):
+            yield secao, container["name"], container
 
 
 def _literais(kustomization: Path) -> dict[str, str]:
@@ -103,3 +124,44 @@ def test_toda_variavel_do_configmap_e_lida_pelo_codigo() -> None:
     ]
 
     assert sem_leitor == []
+
+
+def test_root_path_do_configmap_e_o_prefixo_da_borda(ambiente: dict[str, str]) -> None:
+    prefixos = {
+        "/" + caminho["path"].split("/")[1]
+        for documento in _documentos_do_base()
+        if documento["kind"] == "Ingress"
+        for regra in documento["spec"]["rules"]
+        for caminho in regra["http"]["paths"]
+    }
+
+    assert prefixos == {"/billing"}
+    assert ambiente["ROOT_PATH"] == "/billing"
+
+
+def test_metrics_port_do_configmap_e_a_porta_que_o_prometheus_raspa(
+    ambiente: dict[str, str],
+) -> None:
+    porta = int(ambiente["METRICS_PORT"])
+    portas = {
+        documento["metadata"]["name"]: (
+            ponto["containerPort"],
+            int(
+                documento["spec"]["template"]["metadata"]["annotations"][
+                    "prometheus.io/port"
+                ]
+            ),
+        )
+        for documento in _documentos_do_base()
+        if documento["kind"] == "Deployment"
+        for _, _, container in _containers(documento)
+        for ponto in container.get("ports", [])
+        if ponto["name"] == "metrics"
+    }
+
+    assert sorted(portas) == [
+        "billing-service-consumidor",
+        "billing-service-prazos",
+        "billing-service-relay",
+    ]
+    assert set(portas.values()) == {(porta, porta)}
