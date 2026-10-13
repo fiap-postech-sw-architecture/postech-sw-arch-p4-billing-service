@@ -24,7 +24,7 @@ for imagem in $imagens; do
     {
       echo "### ${imagem}: HIGH e CRITICAL com correcao disponivel"
       echo '```text'
-      echo "$relatorio"
+      printf '%s\n' "$relatorio"
       echo '```'
     } >> "$resumo"
   else
