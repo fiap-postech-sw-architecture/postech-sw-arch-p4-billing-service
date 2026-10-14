@@ -25,9 +25,9 @@ Recusa (4xx, menos 429): ``_enviar`` registra o WARNING
 ``mercadopago_request_rejected`` com ``operacao``, ``status_http``, ``erro`` (o
 ``error`` do corpo) e ``causas`` (os ``cause[].code``), so quando casam com o
 vocabulario curto e fixo do provedor. O texto livre (``message``,
-``description``) pode repetir dado do cliente: vai so na mensagem da excecao,
-nunca para o log. O 404 da consulta de pagamento (referencia que nao e nossa) e
-resposta esperada e nao gera o log.
+``description``) pode repetir dado do cliente: fica so na mensagem da excecao e
+nao entra nesse log. O 404 da consulta de pagamento (referencia que nao e
+nossa) e resposta esperada e nao gera o log.
 """
 
 from __future__ import annotations
