@@ -515,11 +515,13 @@ class EstornarPagamento:
             )
         except GatewayPagamentoRecusouError as exc:
             # Fechar o checkout nao e condicao para compensar: quem pagar nele
-            # depois cai na aprovacao tardia, que o Billing estorna sozinho.
+            # depois cai na aprovacao tardia, que o Billing estorna sozinho. O log
+            # leva so o codigo: a mensagem e o texto do provedor, e o motivo da
+            # recusa sai no `mercadopago_request_rejected` do adaptador.
             self._metricas.cancelamento_de_cobranca_recusado()
             _log.warning(
                 "checkout_close_refused",
-                extra={"pagamento_id": str(pagamento.id), "erro": exc.mensagem},
+                extra={"pagamento_id": str(pagamento.id), **exc.detalhe_de_log},
             )
         return self._concluir(
             pagamento.id, PlanoDeCompensacao.CANCELAR_COBRANCA, motivo
