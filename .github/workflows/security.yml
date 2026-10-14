@@ -87,7 +87,7 @@ jobs:
             | sh -s -- -b /usr/local/bin "v${versao}"
       - name: trivy (HIGH e CRITICAL com correcao disponivel)
         run: >-
-          scripts/ci/registra-no-summary.sh "trivy da imagem do servico"
+          scripts/ci/registra-no-summary.sh "trivy da imagem do servico (HIGH e CRITICAL com correcao)"
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress
           --exit-code 1 "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}"
       # As imagens de terceiros dos manifests (o banco e o exporter): so o

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Roda um comando, mostra a saida no log e a registra no summary do job (titulo,
-# resultado e a saida num bloco de texto), tambem quando ele reprova: sem isso o
-# resultado do pip-audit e do trivy so existe no log do passo. O codigo de saida
-# e o do comando, entao o job reprova como antes.
+# Roda um comando, mostra a saida no log enquanto ele roda e a registra no
+# summary do job (titulo, resultado e a saida num bloco de texto), tambem quando
+# ele reprova: sem isso o resultado do pip-audit e do trivy so existe no log do
+# passo. O codigo de saida e o do comando, entao o job reprova como antes. Passo
+# cancelado ou estourado por timeout-minutes nao escreve o summary, mas a saida
+# ja esta no log.
 # Uso: scripts/ci/registra-no-summary.sh "<titulo>" <comando> [argumentos...]
 set -uo pipefail
 
@@ -17,10 +19,9 @@ resumo="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 saida=$(mktemp)
 trap 'rm -f "$saida"' EXIT
 
-"$@" > "$saida" 2>&1
-status=$?
+"$@" 2>&1 | tee "$saida"
+status=${PIPESTATUS[0]}
 
-cat "$saida"
 {
   if [ "$status" -eq 0 ]; then
     echo "### ${titulo}: sem achado"

@@ -6,6 +6,7 @@ trivy no summary e os nomes das variaveis do ``make kind-deploy``."""
 from __future__ import annotations
 
 import os
+import select
 import subprocess
 from pathlib import Path
 
@@ -231,6 +232,32 @@ def test_comando_que_reprova_registra_a_saida_e_mantem_o_codigo(
     assert "erro" in resumo
 
 
+def test_a_saida_aparece_no_log_enquanto_o_comando_roda(tmp_path: Path) -> None:
+    """Com o comando ainda de pe (ele espera um arquivo que so o teste cria), a
+    primeira linha ja tem de estar no log: trivy baixando o banco ou um
+    pip-audit pendurado precisam mostrar o que fazem ao vivo."""
+    fim = tmp_path / "fim"
+    espera = f"echo comecou; until [ -e {fim} ]; do sleep 0.1; done; echo terminou"
+    processo = subprocess.Popen(  # noqa: S603 - o script do proprio repositorio
+        ["/bin/bash", str(REGISTRA_NO_SUMMARY), "ao vivo", "/bin/sh", "-c", espera],
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "GITHUB_STEP_SUMMARY": str(tmp_path / "resumo.md")},
+    )
+    assert processo.stdout is not None
+    try:
+        pronto, _, _ = select.select([processo.stdout], [], [], 10)
+        primeira = processo.stdout.readline() if pronto else ""
+        fim.touch()
+        resto, _ = processo.communicate(timeout=10)
+    finally:
+        processo.kill()
+
+    assert primeira == "comecou\n"
+    assert resto == "terminou\n"
+    assert processo.returncode == 0
+
+
 def test_comando_inexistente_reprova_e_aparece_no_summary(tmp_path: Path) -> None:
     resultado, resumo = _registrar(tmp_path, "comando-que-nao-existe-aqui")
 
@@ -247,12 +274,17 @@ def test_sem_comando_o_script_recusa(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("job", "ferramenta"),
-    [("pip-audit", "uvx pip-audit"), ("trivy", "trivy image")],
+    ("job", "ferramenta", "titulo"),
+    [
+        ("pip-audit", "uvx pip-audit", "dependencias de runtime"),
+        ("trivy", "trivy image", "HIGH e CRITICAL com correcao"),
+    ],
 )
 def test_o_security_yml_registra_o_pip_audit_e_o_trivy_no_summary(
-    job: str, ferramenta: str
+    job: str, ferramenta: str, titulo: str
 ) -> None:
+    """O titulo do trivy diz o filtro do passo: sem ele, "sem achado" leria como
+    "sem CVE nenhuma"."""
     fluxo = yaml.safe_load(
         (RAIZ / ".github" / "workflows" / "security.yml").read_text(encoding="utf-8")
     )
@@ -264,6 +296,7 @@ def test_o_security_yml_registra_o_pip_audit_e_o_trivy_no_summary(
 
     assert len(comandos) == 1
     assert comandos[0].startswith("scripts/ci/registra-no-summary.sh ")
+    assert titulo in comandos[0].split(ferramenta)[0]
 
 
 PADRAO = "../postech-sw-arch-p4-platform"
