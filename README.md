@@ -282,7 +282,7 @@ make manifests
 
 O primeiro comando cria o cluster, sobe a plataforma e gera os Secrets. O `make kind-deploy` constrói a imagem do commit atual, carrega no kind e aplica o overlay `kind`; com mudança não commitada a tag vira `<commit>-sujo-<hash>`, de modo que um novo `make kind-deploy` depois de editar o código também reinicia os pods. O `smoke-servicos.sh` confere o Job, os Deployments, a borda, o `up` de cada pod no Prometheus e a NetworkPolicy; o `curl` pede a saúde pela borda; e o `make manifests` roda o kubeconform e o trivy config, como no CI.
 
-`make kind-deploy OVERLAY=kind-ci` usa o overlay do CD, e `PLATFORM_DIR=<caminho>` aponta outro clone do `platform`. Para subir os três serviços de uma vez, o `implantar-servicos.sh` do `platform` recebe os três diretórios (README do `platform`, seção "Contrato com os serviços").
+`make kind-deploy KIND_OVERLAY=kind-ci` usa o overlay do CD (o nome antigo, `OVERLAY`, também vale), e `PLATFORM_DIR=<caminho>` aponta outro clone do `platform`; os três serviços usam os mesmos nomes. Para subir os três serviços de uma vez, o `implantar-servicos.sh` do `platform` recebe os três diretórios (README do `platform`, seção "Contrato com os serviços").
 
 ### Troca de senhas e chaves
 

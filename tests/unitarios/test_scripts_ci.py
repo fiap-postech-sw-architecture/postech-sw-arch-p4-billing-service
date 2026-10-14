@@ -1,6 +1,7 @@
 """Scripts do CI (``scripts/ci/``): a conferencia que estreita a excecao do
 trivy (KSV-0109) ao ConfigMap do ``replica-set.js`` e o relatorio das imagens
-de terceiros, que nunca reprova o job."""
+de terceiros, que nunca reprova o job, e os nomes das variaveis do
+``make kind-deploy``."""
 
 from __future__ import annotations
 
@@ -187,3 +188,43 @@ def test_sem_imagem_de_terceiro_reprova_porque_o_relatorio_nao_prova_nada(
     assert resultado.returncode == 1
     assert "nenhuma imagem de terceiro" in resultado.stderr
     assert resumo == chamadas == ""
+
+
+PADRAO = "../postech-sw-arch-p4-platform"
+
+
+@pytest.mark.parametrize(
+    ("variaveis", "platform", "overlay"),
+    [
+        ([], PADRAO, "kind"),
+        (["KIND_OVERLAY=kind-ci"], PADRAO, "kind-ci"),
+        (["OVERLAY=k3s"], PADRAO, "k3s"),
+        (["OVERLAY=k3s", "KIND_OVERLAY=kind-ci"], PADRAO, "kind-ci"),
+        (["PLATFORM_DIR=/clone/platform"], "/clone/platform", "kind"),
+    ],
+    ids=[
+        "padroes",
+        "kind-overlay",
+        "nome-antigo",
+        "novo-vence-o-antigo",
+        "platform-dir",
+    ],
+)
+def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
+    variaveis: list[str], platform: str, overlay: str
+) -> None:
+    """Os tres servicos usam ``PLATFORM_DIR`` e ``KIND_OVERLAY``; ``OVERLAY``,
+    o nome antigo, segue valendo quando ``KIND_OVERLAY`` nao e dado."""
+    resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
+        ["make", "-n", "kind-deploy", *variaveis],  # noqa: S607
+        cwd=RAIZ,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    comando = " ".join(resultado.stdout.replace("\\\n", " ").split())
+    assert comando.startswith(f"{platform}/scripts/ci/implantar-servicos.sh")
+    assert f" --overlay {overlay} billing-service=" in comando
