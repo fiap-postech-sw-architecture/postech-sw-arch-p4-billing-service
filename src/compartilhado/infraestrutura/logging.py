@@ -3,7 +3,8 @@
 Reaproveitado do p3 @ 08dcffe (``src/compartilhado/infraestrutura/logging.py``);
 acrescimo do Billing: o token do link publico de decisao do orcamento (no path)
 e o do checkout simulado (``?token=``) sao credenciais na URL e saem
-mascarados dos logs (inclusive access log).
+mascarados dos logs (inclusive access log), e o access token do Mercado Pago sai
+mascarado onde aparecer no texto, pelo formato.
 """
 
 from __future__ import annotations
@@ -122,6 +123,14 @@ _CHAVES_PII = frozenset({"telefone", "celular", "phone", "contato"})
 
 _MASCARA = "***"
 
+# Access token do Mercado Pago: ``APP_USR-<app>-<MMDDHH>-<32 hexadecimais>-<usuario>``
+# (``TEST-`` nas credenciais de teste). Segunda barreira: o dado de fora ja nao
+# entra no log (so codigo), mas um texto do provedor que escapar por outro caminho
+# leva o token junto, e a defesa por valor so conhecia CPF, e-mail e telefone.
+_TOKEN_MERCADOPAGO_PATTERN = re.compile(
+    r"\b(?:APP_USR|TEST)-\d{1,20}-\d{6}-[0-9a-f]{32}-\d{1,20}"
+)
+
 # Tokens de acesso na URL: o do link de decisao (``/publico/orcamentos/<token>``)
 # decide o orcamento e o do checkout simulado (``?token=<token>``) paga a
 # cobranca, entao nenhum pode ficar legivel no access log.
@@ -158,6 +167,7 @@ def _mask_email(match: re.Match[str]) -> str:
 
 def _mask_string(value: str) -> str:
     value = _TOKEN_NA_URL_PATTERN.sub(rf"\g<1>{_MASCARA}", value)
+    value = _TOKEN_MERCADOPAGO_PATTERN.sub(_MASCARA, value)
     value = _CPF_PATTERN.sub(_mask_cpf, value)
     value = _CNPJ_PATTERN.sub(_mask_cnpj, value)
     value = _EMAIL_PATTERN.sub(_mask_email, value)
