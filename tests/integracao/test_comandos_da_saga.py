@@ -53,6 +53,7 @@ from tests.integracao.apoio import (
     eventos_do_outbox,
     token_do_checkout,
 )
+from tests.spans import tudo_que_os_spans_levam
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
@@ -412,10 +413,7 @@ class TestTraducaoDosComandos:
         logs = "\n".join(
             str(r.__dict__) for r in caplog.records if r.name.startswith("src.")
         )
-        atributos = "\n".join(
-            f"{dict(s.attributes or {})} {s.status.description}"
-            for s in spans.get_finished_spans()
-        )
+        atributos = "\n".join(tudo_que_os_spans_levam(spans.get_finished_spans()))
         assert "command_consumed" in logs  # o log existe; o dados e que nao
         for codigo in ("SRV-TROCA-OLEO", "PEC-OLEO-5W30"):
             assert codigo not in logs

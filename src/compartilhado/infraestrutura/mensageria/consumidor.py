@@ -32,7 +32,7 @@ from uuid import UUID
 
 import pika
 import structlog
-from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace import SpanKind
 from pika.exceptions import AMQPError
 from pymongo.errors import ConnectionFailure, PyMongoError
 
@@ -50,6 +50,7 @@ from src.compartilhado.infraestrutura.mensageria.metricas import (
 from src.compartilhado.infraestrutura.mensageria.telemetria import (
     contexto_atual,
     contexto_de,
+    marcar_falha,
     tracer,
 )
 from src.compartilhado.infraestrutura.unit_of_work import (
@@ -208,12 +209,13 @@ class ConsumidorDeComandos:
         ) as span:
             try:
                 resultado = self._processar_fora_da_conexao(canal, envelope)
-            except AMQPError:
+            except AMQPError as exc:
                 # A conexao caiu com o handler rodando: o laco reconecta e o
                 # broker devolve a mensagem (o handler e idempotente).
+                marcar_falha(span, exc)
                 raise
             except Exception as exc:  # noqa: BLE001 - classificado abaixo; nunca ack mudo
-                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                marcar_falha(span, exc)
                 if _transitorio(exc):
                     return self._repetir(canal, entrega, exc)
                 return self._descartar(canal, entrega.tag, exc, tipo=entrega.tipo)

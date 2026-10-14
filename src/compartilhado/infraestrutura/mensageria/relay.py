@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid4
 
 import pika
-from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace import SpanKind
 from pika.exceptions import AMQPError
 from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
@@ -39,6 +39,7 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
     contexto_atual,
     contexto_de,
     links_de,
+    marcar_falha,
     tracer,
 )
 from src.compartilhado.infraestrutura.unit_of_work import COLECAO_OUTBOX
@@ -175,18 +176,19 @@ class RelayDaOutbox:
                     self._propriedades(linha),
                 )
             except MensagemRecusadaError as exc:
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                marcar_falha(span, exc)
                 self._contar_falha(linha, str(exc))
                 return
-            except AMQPError:
+            except AMQPError as exc:
                 # Queda do broker: devolve sem gastar tentativa e deixa o laco
                 # do processo reconectar.
+                marcar_falha(span, exc)
                 self._devolver(linha)
                 raise
             except Exception as exc:  # noqa: BLE001 - defeito: conta ate dead (alerta)
                 # Sem contar, a linha voltaria a cada lease e o processo cairia
                 # nela para sempre; contando, vira dead e aparece em outbox_dead.
-                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                marcar_falha(span, exc)
                 _log.exception("outbox_publish_failed", extra=linha.rotulos)
                 self._contar_falha(linha, type(exc).__name__)
                 return

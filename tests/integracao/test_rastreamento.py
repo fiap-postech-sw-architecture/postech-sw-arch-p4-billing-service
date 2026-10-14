@@ -8,6 +8,7 @@ instrumentacao: o PyMongo so rastreia os clientes criados depois dela.
 
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -16,10 +17,11 @@ from uuid import uuid4
 import pytest
 import respx
 from fastapi.testclient import TestClient
-from opentelemetry import trace
+from opentelemetry import baggage, context, trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
 from opentelemetry.trace import SpanKind, StatusCode
+from pika.exceptions import AMQPConnectionError
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
@@ -32,6 +34,7 @@ from src.main import criar_app
 from src.orcamento.aplicacao.use_cases import ConsultarOrcamentos
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
+from src.pagamento.aplicacao.ports import GatewayPagamentoIndisponivelError
 from src.pagamento.aplicacao.use_cases import SolicitarPagamento
 from src.pagamento.infraestrutura.mercadopago import (
     ConfiguracaoMercadoPago,
@@ -49,9 +52,10 @@ from tests.integracao.apoio import (
     token_do_checkout,
     token_do_link,
 )
+from tests.spans import tudo_que_os_spans_levam
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator
 
     from opentelemetry.sdk.trace import ReadableSpan
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -63,6 +67,9 @@ if TYPE_CHECKING:
     from tests.conftest import TelemetriaDeTeste
 
     Banco = Database[dict[str, Any]]
+
+
+TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,20 +103,6 @@ def rastreamento(
         cliente.close()
         PymongoInstrumentor().uninstrument()
         HTTPXClientInstrumentor().uninstrument()
-
-
-def valores_de(spans: Sequence[ReadableSpan]) -> list[str]:
-    """Tudo o que o span leva e o Jaeger guardaria: nome, atributos, eventos e
-    links (os atributos deles)."""
-    valores: list[str] = []
-    for span in spans:
-        valores.append(span.name)
-        valores += [str(v) for v in (span.attributes or {}).values()]
-        for evento in span.events:
-            valores += [str(v) for v in (evento.attributes or {}).values()]
-        for ligacao in span.links:
-            valores += [str(v) for v in (ligacao.attributes or {}).values()]
-    return valores
 
 
 def autorizacao(emitir_token: Callable[..., str], papel: str) -> dict[str, str]:
@@ -214,6 +207,30 @@ class TestRequisicao:
         assert linha["traceparent"].split("-")[1] == format(
             servidor.context.trace_id, "032x"
         )
+
+    def test_tracestate_longo_da_requisicao_nao_vai_para_a_outbox(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
+    ) -> None:
+        """A requisicao HTTP entra pela instrumentacao do FastAPI, que nao passa
+        pelo teto de 512 caracteres da mensageria: o valor iria para a outbox, o
+        AMQP e cada copia de retry."""
+        _, token = salvar_orcamento_pendente(rastreamento.banco)
+        grande = ",".join(f"v{i:02d}={'x' * 100}" for i in range(32))
+        app = criar_app(configuracao(), banco=rastreamento.banco)
+        with TestClient(app) as api:
+            api.post(
+                f"/api/v1/publico/orcamentos/{token}/decisao",
+                json={"decisao": "aprovar"},
+                headers={
+                    "traceparent": TRACEPARENT,
+                    "tracestate": grande,
+                },
+            )
+
+        linha = rastreamento.banco["outbox"].find_one({"tipo": "OrcamentoAprovado"})
+        assert linha is not None
+        assert linha.get("tracestate", "") == ""
+        assert linha["traceparent"].split("-")[1] == "4bf92f3577b34da6a3ce929d0e0e4736"
 
 
 class TestSemRuido:
@@ -334,7 +351,10 @@ class TestSemTokenNemId:
             "/api/v1/publico/orcamentos/{token}/decisao",
             "nao_roteada",
         ]
-        valores = valores_de(rastreamento.spans)
+        # Requisicao sem falha: nenhum SERVER com status de erro (por onde o
+        # alvo cru chegaria ao Jaeger, na descricao).
+        assert {s.status.status_code for s in servidores} == {StatusCode.UNSET}
+        valores = tudo_que_os_spans_levam(rastreamento.spans)
         assert [v for v in valores if token in v or orcamento_id in v] == []
 
     def test_checkout_do_simulador_nao_leva_token_nem_id_em_atributo_algum(
@@ -360,7 +380,8 @@ class TestSemTokenNemId:
             "POST /api/v1/simulador/pagamentos/{pagamento_id}/recusar",
             "POST /api/v1/simulador/pagamentos/{pagamento_id}/aprovar",
         ]
-        valores = valores_de(rastreamento.spans)
+        assert {s.status.status_code for s in servidores} == {StatusCode.UNSET}
+        valores = tudo_que_os_spans_levam(rastreamento.spans)
         assert [v for v in valores if token in v or str(pagamento.id) in v] == []
 
     def test_excecao_da_requisicao_nao_vai_para_o_span(
@@ -389,8 +410,10 @@ class TestSemTokenNemId:
         assert resposta.status_code == 500
         [servidor] = rastreamento.do_tipo(SpanKind.SERVER)
         assert servidor.status.status_code is StatusCode.ERROR
+        assert servidor.status.description in (None, "")
         assert servidor.events == ()
-        assert [v for v in valores_de(rastreamento.spans) if "SEGREDO" in v] == []
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if "SEGREDO" in t] == []
 
     def test_span_de_banco_leva_o_comando_e_a_colecao_mas_nao_o_documento(
         self, rastreamento: Rastreamento
@@ -404,9 +427,61 @@ class TestSemTokenNemId:
         finally:
             colecao.drop()
 
-        valores = valores_de(rastreamento.do_tipo(SpanKind.CLIENT))
-        assert {"insert", "find", "colecao_de_rastreamento"} <= set(valores)
+        valores = tudo_que_os_spans_levam(rastreamento.do_tipo(SpanKind.CLIENT))
+        assert {
+            "db.statement=insert",
+            "db.statement=find",
+            "db.mongodb.collection=colecao_de_rastreamento",
+        } <= set(valores)
         assert [v for v in valores if "SEGREDO" in v] == []
+
+
+class TestPropagacao:
+    """So ``traceparent`` e ``tracestate`` entram e saem (o padrao do SDK soma o
+    ``baggage``)."""
+
+    def test_baggage_do_chamador_nao_e_aceito_pela_api(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
+    ) -> None:
+        app = criar_app(configuracao(), banco=rastreamento.banco)
+
+        @app.get("/baggage-do-chamador")
+        def ler() -> dict[str, str]:
+            return {chave: str(v) for chave, v in baggage.get_all().items()}
+
+        with TestClient(app) as api:
+            resposta = api.get(
+                "/baggage-do-chamador",
+                headers={
+                    "baggage": "usuario=CANARY-BAGAGEM",
+                    "traceparent": TRACEPARENT,
+                },
+            )
+
+        assert resposta.json() == {}
+
+    def test_baggage_nao_vai_para_o_mercado_pago(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(
+                access_token="token-de-teste-do-mp",  # gitleaks:allow
+                notification_url="https://billing.teste/webhook",
+            )
+        )
+        with respx.mock(base_url="https://api.mercadopago.com") as mp:
+            rota = mp.get("/v1/payments/123").respond(404, json={"message": "x"})
+            ligado = context.attach(baggage.set_baggage("usuario", "CANARY-BAGAGEM"))
+            try:
+                with trace.get_tracer("teste").start_as_current_span("requisicao"):
+                    gateway.consultar_pagamento("123")
+            finally:
+                context.detach(ligado)
+        gateway.fechar()
+
+        [pedido] = [c.request for c in rota.calls]
+        assert "traceparent" in pedido.headers
+        assert "baggage" not in pedido.headers
 
 
 class TestHttpx:
@@ -437,10 +512,109 @@ class TestHttpx:
             "https://api.mercadopago.com/v1/payments/123"
         )
         # O segredo do provedor viaja no header, que o span nao captura.
-        assert [v for v in valores_de([chamada]) if "token-de-teste" in v] == []
+        assert [
+            v for v in tudo_que_os_spans_levam([chamada]) if "token-de-teste" in v
+        ] == []
         # O traceparent vai no pedido ao provedor; sem pai, com a flag de
         # amostragem (bit 0) desligada.
         com_pai, sem_pai = (c.request.headers["traceparent"] for c in rota.calls)
         assert com_pai.split("-")[1] == format(pai.get_span_context().trace_id, "032x")
         assert int(com_pai.split("-")[3], 16) & 1 == 1
         assert int(sem_pai.split("-")[3], 16) & 1 == 0
+
+
+def tipos_de_excecao(span: ReadableSpan) -> list[str]:
+    return [
+        str((evento.attributes or {}).get("exception.type"))
+        for evento in span.events
+        if evento.name == "exception"
+    ]
+
+
+class TestSemTextoDeErro:
+    """O texto de uma excecao leva o que ela viu: o cabecalho que o httpx nao
+    enviou, o CPF de uma requisicao, o documento que o MongoDB recusou. O log o
+    passa pelo scrub; o span nao leva texto algum: o processador do provider tira
+    a mensagem, o stack trace e a descricao do status de todo span, e ficam o
+    tipo da excecao e o motivo em ``pytstop.falha``."""
+
+    def test_excecao_fora_do_middleware_de_seguranca_nao_leva_o_texto(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
+    ) -> None:
+        class Explode:
+            """Middleware mais externo que o ``SecurityHeadersMiddleware``."""
+
+            def __init__(self, app: Any) -> None:
+                self.app = app
+
+            async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+                if scope["type"] == "http" and scope["path"] == "/explode":
+                    msg = "SEGREDO-NO-MIDDLEWARE cpf 123.456.789-09"
+                    raise RuntimeError(msg)
+                await self.app(scope, receive, send)
+
+        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app.add_middleware(Explode)
+        with TestClient(app, raise_server_exceptions=False) as api:
+            rastreamento.exportador.clear()
+            resposta = api.get("/explode")
+
+        assert resposta.status_code == 500
+        [servidor] = rastreamento.do_tipo(SpanKind.SERVER)
+        assert servidor.status.status_code is StatusCode.ERROR
+        assert servidor.status.description in (None, "")
+        assert tipos_de_excecao(servidor) == ["RuntimeError"]
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if "SEGREDO" in t or "123.456" in t] == []
+
+    def test_token_do_mercado_pago_nao_vai_para_o_span_do_httpx(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        """Token com quebra de linha no fim (um Secret criado de arquivo): o h11
+        recusa o cabecalho e a mensagem do erro traz ``Bearer <token>``."""
+        with socket.socket() as escuta:
+            escuta.bind(("127.0.0.1", 0))
+            escuta.listen()
+            gateway = MercadoPagoGateway(
+                ConfiguracaoMercadoPago(
+                    access_token="APP_USR-TOKEN-SECRETO\n",  # gitleaks:allow
+                    notification_url="https://billing.teste/webhook",
+                    base_url=f"http://127.0.0.1:{escuta.getsockname()[1]}",
+                    tentativas=1,
+                ),
+                dormir=lambda _segundos: None,
+            )
+            with (
+                trace.get_tracer("teste").start_as_current_span("requisicao"),
+                pytest.raises(GatewayPagamentoIndisponivelError),
+            ):
+                gateway.consultar_pagamento("123")
+            gateway.fechar()
+
+        [chamada] = rastreamento.do_tipo(SpanKind.CLIENT)
+        assert chamada.status.status_code is StatusCode.ERROR
+        assert chamada.status.description in (None, "")
+        assert tipos_de_excecao(chamada) == ["httpx.LocalProtocolError"]
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if "TOKEN-SECRETO" in t or "Bearer" in t] == []
+
+    def test_erro_do_broker_no_relay_nao_leva_o_texto(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        salvar_orcamento_pendente(rastreamento.banco)
+        rastreamento.exportador.clear()
+        broker = AMQPConnectionError("amqp://billing:SEGREDO-DO-BROKER@rabbitmq")
+        relay = RelayDaOutbox(
+            rastreamento.banco, PublicadorFalso(erro=broker), usuario="billing"
+        )
+
+        with pytest.raises(AMQPConnectionError):
+            relay.entregar_pendentes(10)
+
+        [publicacao] = rastreamento.do_tipo(SpanKind.PRODUCER)
+        assert publicacao.status.status_code is StatusCode.ERROR
+        assert publicacao.status.description in (None, "")
+        assert (publicacao.attributes or {})["pytstop.falha"] == "AMQPConnectionError"
+        assert tipos_de_excecao(publicacao) == ["pika.exceptions.AMQPConnectionError"]
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if "SEGREDO" in t] == []

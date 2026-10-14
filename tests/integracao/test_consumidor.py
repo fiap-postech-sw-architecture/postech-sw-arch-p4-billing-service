@@ -53,6 +53,7 @@ from tests.integracao.apoio import (
     eventos_do_outbox,
     propriedades,
 )
+from tests.spans import tudo_que_o_span_leva
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -771,9 +772,34 @@ class TestRastreamento:
             s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
         ]
         assert consumo.status.status_code is StatusCode.ERROR
-        assert consumo.status.description == "ConnectionResetError"
+        assert consumo.status.description in (None, "")
         assert consumo.attributes is not None
+        assert consumo.attributes["pytstop.falha"] == "ConnectionResetError"
         assert consumo.attributes["messaging.destination.name"] == "billing.comandos"
+        assert [t for t in tudo_que_o_span_leva(consumo) if "ABC1D23" in t] == []
+
+    def test_erro_do_broker_no_handler_nao_leva_o_texto_ao_span(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        """A conexao cai com o handler rodando: o consumidor devolve o erro ao laco
+        que reconecta, e o span fica com o tipo, nao com o texto do pika."""
+        handler.erro = AMQPConnectionError("amqp://billing:SEGREDO-DO-BROKER@rabbitmq")
+
+        with pytest.raises(AMQPConnectionError):
+            entregar(consumidor, CanalDeTeste(), _cancelar())
+
+        [consumo] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
+        ]
+        assert consumo.status.status_code is StatusCode.ERROR
+        assert consumo.status.description in (None, "")
+        assert consumo.attributes is not None
+        assert consumo.attributes["pytstop.falha"] == "AMQPConnectionError"
+        assert [e.name for e in consumo.events] == ["exception"]
+        assert [t for t in tudo_que_o_span_leva(consumo) if "SEGREDO" in t] == []
 
     def test_mensagem_processada_guarda_tipo_e_correlation_id(
         self, banco: Banco, consumidor: ConsumidorDeComandos

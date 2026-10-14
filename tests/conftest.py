@@ -128,6 +128,7 @@ def _telemetria_da_sessao() -> TelemetriaDeTeste:
     provedor = telemetria.criar_provedor({}, processo="teste")
     provedor.add_span_processor(SimpleSpanProcessor(exportador))
     trace.set_tracer_provider(provedor)
+    telemetria.instalar_propagador()
     return TelemetriaDeTeste(provedor, exportador)
 
 

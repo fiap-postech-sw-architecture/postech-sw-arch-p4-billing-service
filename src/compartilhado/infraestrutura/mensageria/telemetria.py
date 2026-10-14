@@ -8,10 +8,17 @@ plataforma. O evento espontaneo segue o contexto guardado no registro que
 esperava por ele (``aberto_por``, na unidade de trabalho), com span link para o
 span de quem retomou o passo: a requisicao da API ou o ciclo do ``prazos``.
 
-O amostrador descarta o span de cliente (consulta ao MongoDB, chamada HTTP) que
-nasce sem pai: e o poll do relay, a consulta do coletor de metricas e o ciclo
-ocioso do ``prazos``, que nao devem encher o Jaeger. Span de cliente dentro de
-um trace (requisicao, mensagem, ciclo com trabalho) segue o pai.
+Dois cuidados valem para todo span do provider, venha do codigo do servico ou da
+instrumentacao do FastAPI, do PyMongo e do httpx:
+
+- o amostrador descarta o span de cliente (consulta ao MongoDB, chamada HTTP) que
+  nasce sem pai: e o poll do relay, a consulta do coletor de metricas e o ciclo
+  ocioso do ``prazos``, que nao devem encher o Jaeger. Span de cliente dentro de
+  um trace (requisicao, mensagem, ciclo com trabalho) segue o pai;
+- nenhum span leva o texto de uma excecao nem a descricao do status de erro
+  (``_SemTextoDeErro``): o texto traz o que a excecao carrega, do documento que
+  o driver recusou ao cabecalho ``Authorization`` que o httpx nao enviou. O
+  motivo da falha vai no atributo ``pytstop.falha``, so com o nome da classe.
 """
 
 from __future__ import annotations
@@ -22,8 +29,9 @@ from typing import TYPE_CHECKING, Final
 from opentelemetry import trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
+from opentelemetry.propagate import set_global_textmap
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import Event, ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.sampling import (
     ALWAYS_OFF,
     ALWAYS_ON,
@@ -31,20 +39,24 @@ from opentelemetry.sdk.trace.sampling import (
     Sampler,
     SamplingResult,
 )
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from opentelemetry.context import Context
-    from opentelemetry.trace import Link, TraceState
+    from opentelemetry.trace import Link, Span, TraceState
     from opentelemetry.util.types import Attributes
 
 # So traceparent/tracestate: o que o envelope do contrato carrega (sem baggage).
 _PROPAGADOR: Final = TraceContextTextMapPropagator()
 _VERDADEIROS: Final = frozenset({"true", "1"})
 _TAMANHO_MAXIMO_TRACESTATE: Final = 512
+# Atributos do evento ``exception`` que carregam o texto da excecao (o tipo fica).
+_TEXTO_DA_EXCECAO: Final = frozenset({"exception.message", "exception.stacktrace"})
+# Motivo da falha de um span: o nome da classe da excecao, nunca o texto dela.
+ATRIBUTO_FALHA: Final = "pytstop.falha"
 # Padroes do compose da plataforma (Jaeger por OTLP/gRPC).
 _ENDPOINT_PADRAO: Final = "http://jaeger:4317"
 _SERVICO_PADRAO: Final = "billing-service"
@@ -78,26 +90,33 @@ class AmostradorDeRaiz(Sampler):
         return "AmostradorDeRaiz{descarta span de cliente sem pai}"
 
 
-def contexto_atual() -> dict[str, str]:
-    """``traceparent``/``tracestate`` do span corrente; vazio fora de span."""
-    portador: dict[str, str] = {}
-    _PROPAGADOR.inject(portador)
+def _sem_tracestate_longo(portador: dict[str, str]) -> dict[str, str]:
+    # Limite do W3C Trace Context: o header vem de fora e seria regravado em cada
+    # outbox e copia de retry; o ``traceparent`` segue valendo.
+    if len(portador.get("tracestate", "")) > _TAMANHO_MAXIMO_TRACESTATE:
+        del portador["tracestate"]
     return portador
 
 
-def contexto_de(portador: Mapping[str, object]) -> Context:
-    """Contexto W3C lido de headers AMQP ou de um documento da outbox.
+def contexto_atual() -> dict[str, str]:
+    """``traceparent``/``tracestate`` do span corrente; vazio fora de span.
 
-    ``tracestate`` acima do limite do W3C Trace Context (512 caracteres) e
-    descartado: o header vem de fora e seria regravado em cada outbox e copia
-    de retry; o ``traceparent`` segue valendo.
+    ``tracestate`` acima de 512 caracteres e descartado aqui tambem: a requisicao
+    HTTP chega pela instrumentacao do FastAPI, que le o header sem passar por
+    ``contexto_de``, e o valor iria para a outbox e para o AMQP.
     """
+    portador: dict[str, str] = {}
+    _PROPAGADOR.inject(portador)
+    return _sem_tracestate_longo(portador)
+
+
+def contexto_de(portador: Mapping[str, object]) -> Context:
+    """Contexto W3C lido de headers AMQP ou de um documento da outbox
+    (``tracestate`` acima de 512 caracteres e descartado)."""
     textos = {
         chave: valor for chave, valor in portador.items() if isinstance(valor, str)
     }
-    if len(textos.get("tracestate", "")) > _TAMANHO_MAXIMO_TRACESTATE:
-        del textos["tracestate"]
-    return _PROPAGADOR.extract(textos)
+    return _PROPAGADOR.extract(_sem_tracestate_longo(textos))
 
 
 def links_de(portador: Mapping[str, object]) -> list[trace.Link]:
@@ -107,11 +126,53 @@ def links_de(portador: Mapping[str, object]) -> list[trace.Link]:
     return [trace.Link(contexto)] if contexto.is_valid else []
 
 
+def _sem_texto_de_excecao(evento: Event) -> Event:
+    if evento.name != "exception":
+        return evento
+    atributos = {
+        chave: valor
+        for chave, valor in (evento.attributes or {}).items()
+        if chave not in _TEXTO_DA_EXCECAO
+    }
+    return Event(evento.name, atributos, evento.timestamp)
+
+
+class _SemTextoDeErro(SpanProcessor):
+    """Tira do span o texto de erro, que pode trazer dado do pedido.
+
+    A mensagem e o stack trace saem de todo evento ``exception`` (fica o tipo), e
+    o status de erro perde a descricao: o ``with`` do SDK e a instrumentacao do
+    httpx e do PyMongo a preenchem com o texto da excecao ou da resposta.
+
+    Primeiro processador do provider: roda antes de qualquer exportador, sobre a
+    copia do span que todos recebem. O ``ReadableSpan`` nao tem setter, entao o
+    processador troca os atributos protegidos ``_status`` e ``_events`` da copia
+    (o span vivo ja terminou); os testes de cada regra reprovam se o SDK mudar
+    isso.
+    """
+
+    def on_end(self, span: ReadableSpan) -> None:
+        if span.status.description:
+            span._status = Status(span.status.status_code)
+        if any(evento.name == "exception" for evento in span.events):
+            span._events = tuple(
+                _sem_texto_de_excecao(evento) for evento in span.events
+            )
+
+
+def marcar_falha(span: Span, erro: BaseException) -> None:
+    """Span com status de erro e o motivo em ``pytstop.falha``: o nome da classe
+    da excecao, nunca o texto dela (o processador tira o texto do status)."""
+    span.set_status(Status(StatusCode.ERROR))
+    span.set_attribute(ATRIBUTO_FALHA, type(erro).__name__)
+
+
 def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvider:
     """``TracerProvider`` do processo; com ``OTEL_ENABLED``, exporta por OTLP.
 
     O gRPC so e importado com a exportacao ligada: sem ela o provider serve ao
-    contexto e ao ``trace_id`` do log e nao sai do processo.
+    contexto e ao ``trace_id`` do log e nao sai do processo. O processador que
+    tira o texto de erro entra primeiro, antes de qualquer exportador.
     """
     provedor = TracerProvider(
         sampler=ParentBased(root=AmostradorDeRaiz()),
@@ -123,6 +184,7 @@ def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvi
             }
         ),
     )
+    provedor.add_span_processor(_SemTextoDeErro())
     if ambiente.get("OTEL_ENABLED", "").strip().lower() in _VERDADEIROS:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
             OTLPSpanExporter,
@@ -153,10 +215,18 @@ def instrumentar_clientes(provedor: TracerProvider) -> None:
     HTTPXClientInstrumentor().instrument(tracer_provider=provedor)
 
 
+def instalar_propagador() -> None:
+    """So ``traceparent`` e ``tracestate`` entram e saem do processo: o padrao do
+    SDK soma o ``baggage``, que a API aceitaria do chamador e o httpx repassaria
+    ao Mercado Pago."""
+    set_global_textmap(_PROPAGADOR)
+
+
 def configurar_telemetria(processo: str) -> TracerProvider:
-    """Instala o provider e a instrumentacao do processo; ``shutdown`` no fim
-    descarrega os spans."""
+    """Instala o provider, o propagador e a instrumentacao do processo;
+    ``shutdown`` no fim descarrega os spans."""
     provedor = criar_provedor(os.environ, processo=processo)
     trace.set_tracer_provider(provedor)
+    instalar_propagador()
     instrumentar_clientes(provedor)
     return provedor

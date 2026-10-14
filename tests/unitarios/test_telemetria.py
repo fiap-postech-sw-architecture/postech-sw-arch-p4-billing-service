@@ -9,10 +9,17 @@ from unittest.mock import MagicMock
 import pytest
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import (
+    SimpleSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from starlette.testclient import TestClient
 
 from src.compartilhado.infraestrutura.mensageria import telemetria
@@ -21,6 +28,7 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
 )
 from src.main import criar_app
 from tests.integracao.apoio import configuracao
+from tests.spans import tudo_que_o_span_leva
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 # Mesmo trace, com a flag de amostragem desligada.
@@ -85,11 +93,29 @@ def test_configurar_instala_o_provider_global_e_a_instrumentacao(
 ) -> None:
     passos: list[object] = []
     monkeypatch.setattr(trace, "set_tracer_provider", passos.append)
+    monkeypatch.setattr(
+        telemetria, "instalar_propagador", lambda: passos.append("propagador")
+    )
     monkeypatch.setattr(telemetria, "instrumentar_clientes", passos.append)
     provedor = telemetria.configurar_telemetria("relay")
     # Na ordem: o PyMongo e o httpx usam o provider que acabou de ser instalado.
-    assert passos == [provedor, provedor]
+    assert passos == [provedor, "propagador", provedor]
     provedor.shutdown()
+
+
+def test_propagador_global_so_leva_traceparent_e_tracestate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O padrao do SDK soma o ``baggage`` do chamador, que a API aceitaria e o
+    httpx repassaria ao Mercado Pago."""
+    instalados: list[object] = []
+    monkeypatch.setattr(telemetria, "set_global_textmap", instalados.append)
+
+    telemetria.instalar_propagador()
+
+    [propagador] = instalados
+    assert isinstance(propagador, TraceContextTextMapPropagator)
+    assert propagador.fields == {"traceparent", "tracestate"}
 
 
 def test_instrumenta_o_mongodb_sem_capturar_o_comando_e_o_httpx(
@@ -196,6 +222,21 @@ def test_tracestate_acima_do_limite_w3c_e_descartado(
         )
 
 
+def test_tracestate_longo_que_chega_por_fora_do_contexto_de_nao_sai(
+    spans: InMemorySpanExporter,
+) -> None:
+    """A requisicao HTTP entra pela instrumentacao do FastAPI, que le o header sem
+    passar por ``contexto_de``: o teto vale tambem na saida (outbox e AMQP)."""
+    grande = ",".join(f"k{i:02d}=v{'x' * 11}" for i in range(32))
+    pai = TraceContextTextMapPropagator().extract(
+        {"traceparent": TRACEPARENT, "tracestate": grande}
+    )
+    with telemetria.tracer.start_as_current_span("filho", context=pai):
+        portador = telemetria.contexto_atual()
+    assert "tracestate" not in portador
+    assert portador["traceparent"].startswith("00-4bf92f3577b34da6a3ce929d0e0e4736-")
+
+
 def test_tracestate_de_exatamente_512_caracteres_e_mantido(
     spans: InMemorySpanExporter,
 ) -> None:
@@ -234,3 +275,123 @@ def test_api_nao_deixa_o_fastapi_montar_o_export_otlp_na_partida(
         logger.removeHandler(coletor)
 
     assert avisos == []
+
+
+class Gravador(SpanExporter):
+    """Exportador que guarda o que recebe (o de verdade vai para o Jaeger)."""
+
+    def __init__(self) -> None:
+        self.spans: list[ReadableSpan] = []
+
+    def export(self, spans: Any) -> Any:
+        self.spans += spans
+        return SpanExportResult.SUCCESS
+
+
+def provedor_com(exportador: SpanExporter) -> TracerProvider:
+    provedor = telemetria.criar_provedor({}, processo="teste")
+    provedor.add_span_processor(SimpleSpanProcessor(exportador))
+    return provedor
+
+
+class TestSemTextoDeErro:
+    """O texto de uma excecao e o da descricao do status levam o que o erro viu."""
+
+    def test_excecao_perde_a_mensagem_e_o_stack_e_guarda_o_tipo(self) -> None:
+        exportador = InMemorySpanExporter()
+        tracer = provedor_com(exportador).get_tracer("teste")
+
+        with (
+            pytest.raises(ValueError, match="SEGREDO"),
+            tracer.start_as_current_span("trabalho"),
+        ):
+            msg = "SEGREDO cpf 123.456.789-09"
+            raise ValueError(msg)
+
+        [span] = exportador.get_finished_spans()
+        [evento] = span.events
+        assert evento.name == "exception"
+        atributos = dict(evento.attributes or {})
+        assert set(atributos) == {"exception.type", "exception.escaped"}
+        assert atributos["exception.type"] == "ValueError"
+        assert span.status.status_code is StatusCode.ERROR
+        assert span.status.description is None
+        assert [t for t in tudo_que_o_span_leva(span) if "SEGREDO" in t] == []
+
+    def test_descricao_do_status_sai_e_o_codigo_fica(self) -> None:
+        exportador = InMemorySpanExporter()
+        tracer = provedor_com(exportador).get_tracer("teste")
+
+        with tracer.start_as_current_span("trabalho") as span:
+            span.set_status(Status(StatusCode.ERROR, "Bearer APP_USR-SEGREDO"))
+
+        [terminado] = exportador.get_finished_spans()
+        assert terminado.status.status_code is StatusCode.ERROR
+        assert terminado.status.description is None
+
+    def test_o_que_nao_e_texto_de_erro_nao_e_tocado(self) -> None:
+        exportador = InMemorySpanExporter()
+        tracer = provedor_com(exportador).get_tracer("teste")
+
+        with tracer.start_as_current_span(
+            "trabalho", attributes={"messaging.message.id": "abc"}
+        ) as span:
+            span.add_event("tentativa", {"numero": 2})
+            span.set_status(Status(StatusCode.OK))
+
+        [terminado] = exportador.get_finished_spans()
+        assert terminado.status.status_code is StatusCode.OK
+        assert dict(terminado.attributes or {}) == {"messaging.message.id": "abc"}
+        [evento] = terminado.events
+        assert (evento.name, dict(evento.attributes or {})) == (
+            "tentativa",
+            {"numero": 2},
+        )
+
+    def test_so_o_evento_exception_perde_o_texto(self) -> None:
+        exportador = InMemorySpanExporter()
+        tracer = provedor_com(exportador).get_tracer("teste")
+
+        with tracer.start_as_current_span("trabalho") as span:
+            span.add_event("outro", {"exception.message": "fica"})
+            span.record_exception(KeyError("sai"))
+
+        [terminado] = exportador.get_finished_spans()
+        outro, excecao = terminado.events
+        assert dict(outro.attributes or {}) == {"exception.message": "fica"}
+        assert "exception.message" not in (excecao.attributes or {})
+
+    def test_o_exportador_do_provider_ja_recebe_o_span_sem_o_texto(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """O processador entra antes do exportador OTLP que o proprio
+        ``criar_provedor`` soma: o que sai do processo ja vem sem o texto."""
+        gravador = Gravador()
+        monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", lambda **_: gravador)
+        provedor = telemetria.criar_provedor({"OTEL_ENABLED": "true"}, processo="api")
+
+        with (
+            pytest.raises(ValueError, match="SEGREDO"),
+            provedor.get_tracer("teste").start_as_current_span("trabalho"),
+        ):
+            msg = "SEGREDO"
+            raise ValueError(msg)
+        provedor.shutdown()
+
+        [span] = gravador.spans
+        assert span.status.description is None
+        assert "exception.message" not in (span.events[0].attributes or {})
+
+    def test_marcar_falha_leva_o_nome_da_classe_e_nao_o_texto(self) -> None:
+        exportador = InMemorySpanExporter()
+        tracer = provedor_com(exportador).get_tracer("teste")
+
+        with tracer.start_as_current_span("trabalho") as span:
+            telemetria.marcar_falha(span, ConnectionResetError("SEGREDO do pedido"))
+
+        [terminado] = exportador.get_finished_spans()
+        assert terminado.status.status_code is StatusCode.ERROR
+        assert terminado.status.description is None
+        assert dict(terminado.attributes or {}) == {
+            "pytstop.falha": "ConnectionResetError"
+        }
