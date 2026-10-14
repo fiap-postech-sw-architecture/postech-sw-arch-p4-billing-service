@@ -9,6 +9,9 @@ instrumentacao: o PyMongo so rastreia os clientes criados depois dela.
 from __future__ import annotations
 
 import socket
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -16,6 +19,7 @@ from uuid import uuid4
 
 import pytest
 import respx
+import uvicorn
 from fastapi.testclient import TestClient
 from opentelemetry import baggage, context, trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
@@ -416,6 +420,125 @@ class TestSpanDoPrazo:
         with pytest.raises(RuntimeError, match="fora de uma transacao"):
             MongoOrcamentoRepository(uow).salvar(orcamento())
 
+        assert rastreamento.spans == ()
+
+
+@contextmanager
+def uvicorn_real(app: FastAPI) -> Iterator[int]:
+    """A API num uvicorn de verdade (o h11/httptools le o ``Host`` do soquete, o
+    que o ``TestClient`` nao faz); devolve a porta."""
+    # Sem ``log_config``: o uvicorn reconfiguraria o logging do processo de teste
+    # (handlers e niveis de ``uvicorn.access``), que outros testes leem.
+    servidor = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=0, log_config=None)
+    )
+    fio = threading.Thread(target=servidor.run, daemon=True)
+    fio.start()
+    limite = time.monotonic() + 10
+    while not servidor.started and time.monotonic() < limite:
+        time.sleep(0.02)
+    assert servidor.started
+    try:
+        yield servidor.servers[0].sockets[0].getsockname()[1]
+    finally:
+        servidor.should_exit = True
+        fio.join(10)
+
+
+def pedir(porta: int, caminho: str, host: str) -> str:
+    """Primeira linha da resposta a um GET com o cabecalho ``Host`` como esta."""
+    pedido = f"GET {caminho} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    with socket.create_connection(("127.0.0.1", porta), timeout=5) as soquete:
+        soquete.sendall(pedido.encode())
+        resposta = b""
+        while parte := soquete.recv(65536):
+            resposta += parte
+    return resposta.split(b"\r\n", 1)[0].decode()
+
+
+def esperar_servidores(rastreamento: Rastreamento, quantos: int) -> list[ReadableSpan]:
+    """O span SERVER termina depois de a resposta sair: espera ele aparecer."""
+    limite = time.monotonic() + 5
+    while time.monotonic() < limite:
+        servidores = rastreamento.do_tipo(SpanKind.SERVER)
+        if len(servidores) >= quantos:
+            return servidores
+        time.sleep(0.02)
+    return rastreamento.do_tipo(SpanKind.SERVER)
+
+
+class TestHostDoChamador:
+    """O ``Host`` e do chamador: a instrumentacao monta a URL do span com ele."""
+
+    @pytest.mark.parametrize("host", ["[", "a]b", "[::1"])
+    def test_host_malformado_nao_vaza_o_token_nem_a_query(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any], host: str
+    ) -> None:
+        _, token = salvar_orcamento_pendente(rastreamento.banco)
+        caminho = f"/api/v1/publico/orcamentos/{token}"
+        modelo = "/api/v1/publico/orcamentos/{token}"
+        with uvicorn_real(rastreamento.criar_app()) as porta:
+            rastreamento.exportador.clear()
+            linha = pedir(porta, f"{caminho}?q=SEGREDO-DA-QUERY", host)
+            [servidor] = esperar_servidores(rastreamento, 1)
+
+        assert linha == "HTTP/1.1 200 OK"
+        atributos = dict(servidor.attributes or {})
+        assert atributos["http.url"] == modelo
+        assert atributos["http.target"] == modelo
+        assert servidor.events == ()
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if token in t or "SEGREDO" in t] == []
+
+    def test_host_malformado_com_o_app_real_e_o_testclient(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
+    ) -> None:
+        _, token = salvar_orcamento_pendente(rastreamento.banco)
+        with TestClient(rastreamento.criar_app()) as api:
+            rastreamento.exportador.clear()
+            resposta = api.get(
+                f"/api/v1/publico/orcamentos/{token}?q=SEGREDO-DA-QUERY",
+                headers={"Host": "a]b"},
+            )
+
+        assert resposta.status_code == 200
+        [servidor] = rastreamento.do_tipo(SpanKind.SERVER)
+        assert servidor.events == ()
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if token in t or "SEGREDO" in t] == []
+
+    @pytest.mark.parametrize(
+        "host", ["x/metrics", "x/metrics?", "x/api/v1/saude", "x?/metrics"]
+    )
+    def test_host_com_caminho_nao_tira_a_requisicao_do_trace(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any], host: str
+    ) -> None:
+        """Com ``Host: x/metrics`` a URL montada terminava em ``/metrics`` e a
+        regex solta das URLs excluidas escondia a requisicao do chamador."""
+        _, token = salvar_orcamento_pendente(rastreamento.banco)
+        with uvicorn_real(rastreamento.criar_app()) as porta:
+            rastreamento.exportador.clear()
+            linha = pedir(porta, f"/api/v1/publico/orcamentos/{token}", host)
+            servidores = esperar_servidores(rastreamento, 1)
+
+        assert linha == "HTTP/1.1 200 OK"
+        assert [s.name for s in servidores] == [
+            "GET /api/v1/publico/orcamentos/{token}"
+        ]
+
+    def test_raspagem_e_sondas_seguem_fora_do_trace_no_uvicorn(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
+    ) -> None:
+        marcar_versao(rastreamento.banco)
+        with uvicorn_real(rastreamento.criar_app()) as porta:
+            rastreamento.exportador.clear()
+            linhas = [
+                pedir(porta, caminho, f"127.0.0.1:{porta}")
+                for caminho in ("/metrics", "/api/v1/saude", "/api/v1/saude/pronto")
+            ]
+            time.sleep(0.3)
+
+        assert linhas == ["HTTP/1.1 200 OK"] * 3
         assert rastreamento.spans == ()
 
 

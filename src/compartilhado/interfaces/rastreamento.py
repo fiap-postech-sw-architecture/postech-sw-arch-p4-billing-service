@@ -25,9 +25,17 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.trace import Span
 
-# Regex sobre a URL inteira: a raspagem do Prometheus e as sondas do kubelet
-# (saude e saude/pronto) chegam a cada poucos segundos e nao sao trabalho.
-URLS_SEM_TRACE: Final = "/metrics,/api/v1/saude"
+# A raspagem do Prometheus e as sondas do kubelet (saude e saude/pronto) chegam a
+# cada poucos segundos e nao sao trabalho. A instrumentacao testa a regex contra
+# ``esquema://<Host do chamador><caminho>``, e o Host vem do chamador: uma regex
+# solta (``/metrics``) casaria com ``Host: x/metrics`` e tiraria do trace a
+# requisicao inteira. Ancorada, o ``$`` e o fim do caminho de verdade: o Host nao
+# tem ``/`` nem ``?`` (nem ``#``) antes dele, so segmentos de caminho (o prefixo
+# do ``ROOT_PATH``, como ``/billing``), e a rota termina a URL.
+_INICIO_DA_URL: Final = r"^https?://[^/?#]+(?:/[^/?#]+)*"
+URLS_SEM_TRACE: Final = (
+    rf"{_INICIO_DA_URL}/metrics$,{_INICIO_DA_URL}/api/v1/saude(?:/pronto)?$"
+)
 
 _ROTA: Final = "http.route"
 # Caminho: url.path (convencao nova) e http.target (antiga).
@@ -45,16 +53,26 @@ def trocar_url_pelo_template(span: Span, _escopo: MutableMapping[str, Any]) -> N
         return
     atributos = span.attributes or {}
     rota = str(atributos.get(_ROTA, ROTA_NAO_ROTEADA))
+    # A query primeiro: a URL abaixo e montada com o Host do chamador, e a
+    # instrumentacao engole o erro de um hook que levanta (o que vem depois nao
+    # roda, e o span sai com o valor cru).
+    if _QUERY in atributos:
+        span.set_attribute(_QUERY, _QUERY_REDIGIDA)
     for nome in _ATRIBUTOS_DE_CAMINHO:
         if nome in atributos:
             span.set_attribute(nome, rota)
     for nome in _ATRIBUTOS_DE_URL:
         url = atributos.get(nome)
         if isinstance(url, str):
-            partes = urlsplit(url)._replace(path=rota, query="", fragment="")
-            span.set_attribute(nome, urlunsplit(partes))
-    if _QUERY in atributos:
-        span.set_attribute(_QUERY, _QUERY_REDIGIDA)
+            span.set_attribute(nome, _url_do_template(url, rota))
+
+
+def _url_do_template(url: str, rota: str) -> str:
+    try:
+        partes = urlsplit(url)
+    except ValueError:  # Host malformado (``[``, ``a]b``): nada a preservar
+        return rota
+    return urlunsplit(partes._replace(path=rota, query="", fragment=""))
 
 
 def instrumentar_api(app: FastAPI, provedor: TracerProvider) -> None:
