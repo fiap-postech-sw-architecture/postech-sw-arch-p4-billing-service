@@ -262,6 +262,27 @@ class TestValidacao:
         with pytest.raises(contratos.MensagemForaDoContratoError):
             contratos.validar(exemplo)
 
+    @pytest.mark.parametrize(
+        ("tipo", "campo"),
+        [
+            ("OrcamentoExpirado", "ocorrido_em"),
+            ("OrcamentoGerado", "total"),
+            ("PagamentoSolicitado", "valor"),
+            ("PagamentoSolicitado", "expira_em"),
+            ("PagamentoSolicitado", "checkout_url"),
+        ],
+    )
+    def test_quebra_de_linha_no_fim_do_valor_e_recusada(
+        self, tipo: str, campo: str
+    ) -> None:
+        """O ``$`` do pattern aceita ``\\n`` no fim e o ``format`` do
+        jsonschema tambem: os patterns terminam em ``(?![\\s\\S])``."""
+        exemplo = _exemplo(tipo)
+        alvo = exemplo if campo in exemplo else exemplo["dados"]
+        alvo[campo] += "\n"
+        with pytest.raises(contratos.MensagemForaDoContratoError):
+            contratos.validar(exemplo)
+
 
 def test_sem_os_schemas_a_api_nao_sobe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

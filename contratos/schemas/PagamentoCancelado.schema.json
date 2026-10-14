@@ -23,7 +23,7 @@
     "data_hora": {
       "type": "string",
       "format": "date-time",
-      "pattern": "(Z|\\+00:00)$",
+      "pattern": "(Z|\\+00:00)(?![\\s\\S])",
       "description": "Instante em UTC (RFC 3339 com Z ou +00:00)."
     },
     "uuid": {
