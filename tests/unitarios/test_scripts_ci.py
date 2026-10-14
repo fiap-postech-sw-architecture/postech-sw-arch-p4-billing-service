@@ -289,8 +289,9 @@ PADRAO = "../postech-sw-arch-p4-platform"
 def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
     variaveis: list[str], platform: str, overlay: str
 ) -> None:
-    """Os tres servicos usam ``PLATFORM_DIR`` e ``KIND_OVERLAY``; ``OVERLAY``,
-    o nome antigo, segue valendo quando ``KIND_OVERLAY`` nao e dado."""
+    """``PLATFORM_DIR`` e ``KIND_OVERLAY`` sao os nomes do Execution Service;
+    ``OVERLAY``, o nome antigo, segue valendo quando ``KIND_OVERLAY`` nao e
+    dado."""
     resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
         ["make", "-n", "kind-deploy", *variaveis],  # noqa: S607
         cwd=RAIZ,

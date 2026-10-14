@@ -157,9 +157,9 @@ print-trivy-version:
 # constroi a imagem com o commit como tag, carrega no kind e aplica o overlay
 # na ordem do contrato (Job de inicializacao, banco e rollouts). Antes, a
 # plataforma no ar: make -C $(PLATFORM_DIR) kind-up deploy (README, Implantacao).
-# Os mesmos nomes nos tres servicos: PLATFORM_DIR (o clone do platform) e
-# KIND_OVERLAY (kind, kind-ci ou k3s). OVERLAY e o nome antigo do segundo e
-# segue valendo.
+# PLATFORM_DIR (o clone do platform) e KIND_OVERLAY (kind, kind-ci ou k3s) sao
+# os nomes do Execution Service. OVERLAY e o nome antigo do segundo e segue
+# valendo.
 PLATFORM_DIR ?= ../postech-sw-arch-p4-platform
 KIND_OVERLAY ?= $(if $(OVERLAY),$(OVERLAY),kind)
 
