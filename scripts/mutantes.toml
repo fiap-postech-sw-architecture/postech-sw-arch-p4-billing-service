@@ -1,0 +1,533 @@
+# Mutantes manuais dos modulos criticos (scripts/mutacao_manual.py, make mutacao).
+#
+# Cada [[mutante]] troca o trecho `de` (uma ocorrencia exata no arquivo) por
+# `para` e roda so os testes do grupo `testes`; o teste esperado e o que deveria
+# pegar o defeito. `equivalente` marca o mutante que nao muda o comportamento:
+# se sobreviver, nao conta contra a suite.
+
+[testes]
+dinheiro = ["tests/unitarios/test_compartilhado_dominio.py"]
+orcamento = ["tests/unitarios/test_orcamento_dominio.py"]
+pagamento = ["tests/unitarios/test_pagamento_dominio.py", "tests/unitarios/test_historico.py"]
+jwt = ["tests/unitarios/test_jwks.py", "tests/unitarios/test_autenticacao.py"]
+mercadopago = ["tests/unitarios/test_mercadopago.py"]
+consumidor = ["tests/integracao/test_consumidor.py"]
+relay = ["tests/integracao/test_relay.py"]
+outbox = ["tests/integracao/test_outbox.py", "tests/integracao/test_unit_of_work_e_repositorios.py"]
+saga_pagamento = ["tests/integracao/test_casos_de_uso_pagamento.py", "tests/integracao/test_comandos_da_saga.py"]
+saga_orcamento = ["tests/integracao/test_casos_de_uso_orcamento.py", "tests/integracao/test_comandos_da_saga.py"]
+
+
+[[mutante]]
+id = "D01"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "if abs(self.valor) >= _TETO:"
+para = "if abs(self.valor) > _TETO:"
+equivalente = "o teto exato e recusado de qualquer forma pela checagem seguinte, depois do arredondamento (`quantizado >= _TETO`)"
+
+[[mutante]]
+id = "D02"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "if quantizado >= _TETO:"
+para = "if quantizado > _TETO:"
+
+[[mutante]]
+id = "D03"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "rounding=ROUND_HALF_UP"
+para = "rounding=ROUND_DOWN"
+
+[[mutante]]
+id = "D04"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "if self.valor < 0:"
+para = "if self.valor <= 0:"
+
+[[mutante]]
+id = "D05"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "and self.moeda.isascii()"
+para = "and True"
+
+[[mutante]]
+id = "D06"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "len(self.moeda) == _TAMANHO_CODIGO_MOEDA"
+para = "len(self.moeda) >= _TAMANHO_CODIGO_MOEDA"
+
+[[mutante]]
+id = "D07"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "if self.moeda != outro.moeda:"
+para = "if False:"
+
+[[mutante]]
+id = "D08"
+area = "Dinheiro"
+arquivo = "src/compartilhado/dominio/dinheiro.py"
+testes = "dinheiro"
+de = "quantizado += Decimal(0)"
+para = "pass"
+
+[[mutante]]
+id = "O01"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "StatusOrcamento.APROVADO: frozenset({StatusOrcamento.CANCELADO}),"
+para = "StatusOrcamento.APROVADO: frozenset(),"
+
+[[mutante]]
+id = "O02"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "and agora > self._valido_ate"
+para = "and agora >= self._valido_ate"
+
+[[mutante]]
+id = "O03"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "if self._status is StatusOrcamento.EXPIRADO or self.vencido("
+para = "if self.vencido("
+
+[[mutante]]
+id = "O04"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "if self._status in _ENCERRADOS_SEM_DECISAO_VALIDA:\n            return False"
+para = "if False:\n            return False"
+
+[[mutante]]
+id = "O05"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "if valido_ate <= self._criado_em:"
+para = "if valido_ate < self._criado_em:"
+
+[[mutante]]
+id = "O06"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "if destino not in _TRANSICOES.get(self._status, frozenset()):"
+para = "if False:"
+
+[[mutante]]
+id = "O07"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "{StatusOrcamento.CANCELADO, StatusOrcamento.RECUSADO, StatusOrcamento.EXPIRADO}"
+para = "{StatusOrcamento.CANCELADO, StatusOrcamento.EXPIRADO}"
+
+[[mutante]]
+id = "O08"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "0 < quantidade <= QUANTIDADE_MAXIMA_POR_LINHA"
+para = "0 < quantidade < QUANTIDADE_MAXIMA_POR_LINHA"
+
+[[mutante]]
+id = "O09"
+area = "Status do orcamento"
+arquivo = "src/orcamento/dominio/orcamento.py"
+testes = "orcamento"
+de = "return valor is not None and str(UUID(valor)) == valor"
+para = "return valor is not None"
+
+[[mutante]]
+id = "P01"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/estados.py"
+testes = "pagamento"
+de = "StatusPagamento.CONFIRMADO: frozenset({StatusPagamento.ESTORNADO}),"
+para = "StatusPagamento.CONFIRMADO: frozenset(),"
+
+[[mutante]]
+id = "P02"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/estados.py"
+testes = "pagamento"
+de = "{StatusPagamento.RECUSADO, StatusPagamento.EXPIRADO, StatusPagamento.CANCELADO}"
+para = "{StatusPagamento.RECUSADO, StatusPagamento.CANCELADO}"
+
+[[mutante]]
+id = "P03"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "and agora > self._cobranca.expira_em"
+para = "and agora >= self._cobranca.expira_em"
+
+[[mutante]]
+id = "P04"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "if self._status is StatusPagamento.SOLICITADO and not self.vencido(agora):"
+para = "if self._status is StatusPagamento.SOLICITADO and self.vencido(agora):"
+
+[[mutante]]
+id = "P05"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "StatusPagamento.CONFIRMADO: PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR,"
+para = "StatusPagamento.CONFIRMADO: PlanoDeCompensacao.CANCELAR_COBRANCA,"
+
+[[mutante]]
+id = "P06"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "or cobranca is None or situacao.valor != cobranca.valor"
+para = "or cobranca is None"
+
+[[mutante]]
+id = "P07"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "elif situacao.status is StatusNoProvedor.RECUSADO and nova:"
+para = "elif situacao.status is StatusNoProvedor.RECUSADO:"
+
+[[mutante]]
+id = "P08"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "if isinstance(max_recusas, bool) or max_recusas < 1:"
+para = "if isinstance(max_recusas, bool) or max_recusas < 0:"
+
+[[mutante]]
+id = "P09"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "return texto[:TAMANHO_MAXIMO_MOTIVO]"
+para = "return texto"
+
+[[mutante]]
+id = "P10"
+area = "Status do pagamento"
+arquivo = "src/pagamento/dominio/pagamento.py"
+testes = "pagamento"
+de = "if self._status is not StatusPagamento.CONFIRMADO:\n            msg = f\"Pagamento {self._status} nao tem estorno pendente\""
+para = "if False:\n            msg = f\"Pagamento {self._status} nao tem estorno pendente\""
+
+[[mutante]]
+id = "J01"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "algorithms=[\"RS256\"],"
+para = "algorithms=[\"RS256\", \"HS256\"],"
+equivalente = "o PyJWT 2.15 recusa HS256 com uma chave RS256 do JWKS mesmo se HS256 estiver na lista (\"Token algorithm 'HS256' does not match the key's algorithm 'RS256'\"); a lista e a segunda barreira"
+
+[[mutante]]
+id = "J02"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "issuer=EMISSOR,"
+para = ""
+
+[[mutante]]
+id = "J03"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "audience=AUDIENCIA,"
+para = ""
+
+[[mutante]]
+id = "J04"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "leeway=LEEWAY_SEGUNDOS,"
+para = "leeway=0,"
+
+[[mutante]]
+id = "J05"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "options={\"require\": [\"exp\", \"iss\", \"aud\", \"sub\"]},"
+para = "options={\"require\": [\"exp\", \"iss\", \"aud\"]},"
+
+[[mutante]]
+id = "J06"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "options={\"require\": [\"exp\", \"iss\", \"aud\", \"sub\"]},"
+para = "options={\"require\": [\"iss\", \"aud\", \"sub\"]},"
+
+[[mutante]]
+id = "J07"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "if self._relogio() - copia.obtida_em >= FRESCO_SEGUNDOS:"
+para = "if self._relogio() - copia.obtida_em > FRESCO_SEGUNDOS:"
+
+[[mutante]]
+id = "J08"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "agora - copia.obtida_em < VELHO_MAXIMO_SEGUNDOS"
+para = "agora - copia.obtida_em <= VELHO_MAXIMO_SEGUNDOS"
+
+[[mutante]]
+id = "J09"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "idade >= _INTERVALO_BUSCA_POR_KID_SEGUNDOS"
+para = "idade > _INTERVALO_BUSCA_POR_KID_SEGUNDOS"
+
+[[mutante]]
+id = "J10"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/interfaces/autenticacao.py"
+testes = "jwt"
+de = "if claims.get(\"type\") != \"access\":"
+para = "if False:"
+
+[[mutante]]
+id = "J11"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/interfaces/autenticacao.py"
+testes = "jwt"
+de = "permitidos = frozenset({Papel.ADMIN, *papeis})"
+para = "permitidos = frozenset({*papeis})"
+
+[[mutante]]
+id = "I01"
+area = "Idempotencia"
+arquivo = "src/compartilhado/infraestrutura/unit_of_work.py"
+testes = "outbox"
+de = "upsert=True,\n            session=sessao,"
+para = "upsert=False,\n            session=sessao,"
+
+[[mutante]]
+id = "I02"
+area = "Idempotencia"
+arquivo = "src/compartilhado/infraestrutura/unit_of_work.py"
+testes = "outbox"
+de = "\"$setOnInsert\": {"
+para = "\"$set\": {"
+
+[[mutante]]
+id = "I03"
+area = "Idempotencia"
+arquivo = "src/compartilhado/infraestrutura/mensageria/consumidor.py"
+testes = "consumidor"
+de = "return \"duplicada\" if duplicada else desfecho.value"
+para = "return desfecho.value"
+
+[[mutante]]
+id = "I04"
+area = "Idempotencia"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "return f\"estorno-{pagamento_id}-{referencia}\""
+para = "return f\"estorno-{pagamento_id}\""
+
+[[mutante]]
+id = "I05"
+area = "Idempotencia"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "if existente is not None:\n            return self._repetido(existente)"
+para = "if False:\n            return self._repetido(existente)"
+
+[[mutante]]
+id = "I06"
+area = "Idempotencia"
+arquivo = "src/orcamento/aplicacao/use_cases.py"
+testes = "saga_orcamento"
+de = "existente = self._orcamentos.obter_por_ordem(ordem_id)\n        if existente is not None:"
+para = "existente = self._orcamentos.obter_por_ordem(ordem_id)\n        if False:"
+
+[[mutante]]
+id = "I07"
+area = "Idempotencia"
+arquivo = "src/pagamento/infraestrutura/mercadopago.py"
+testes = "mercadopago"
+de = "headers={\"X-Idempotency-Key\": chave_idempotencia},"
+para = "headers={},"
+
+[[mutante]]
+id = "C01"
+area = "Consumidor"
+arquivo = "src/compartilhado/infraestrutura/mensageria/consumidor.py"
+testes = "consumidor"
+de = "tentativa > 0 and usuario == self._usuario"
+para = "tentativa >= 0 and usuario == self._usuario"
+
+[[mutante]]
+id = "C02"
+area = "Consumidor"
+arquivo = "src/compartilhado/infraestrutura/mensageria/consumidor.py"
+testes = "consumidor"
+de = "if proxima > len(NIVEIS_DE_RETRY):"
+para = "if proxima >= len(NIVEIS_DE_RETRY):"
+
+[[mutante]]
+id = "C03"
+area = "Consumidor"
+arquivo = "src/compartilhado/infraestrutura/mensageria/consumidor.py"
+testes = "consumidor"
+de = "\n        or any(erro.has_error_label(rotulo) for rotulo in _ROTULOS_TRANSITORIOS)"
+para = ""
+
+[[mutante]]
+id = "C04"
+area = "Consumidor"
+arquivo = "src/compartilhado/infraestrutura/mensageria/consumidor.py"
+testes = "consumidor"
+de = "if len(corpo) > TAMANHO_MAXIMO_DO_CORPO:"
+para = "if len(corpo) >= TAMANHO_MAXIMO_DO_CORPO:"
+
+[[mutante]]
+id = "C05"
+area = "Consumidor"
+arquivo = "src/compartilhado/infraestrutura/mensageria/consumidor.py"
+testes = "consumidor"
+de = "            canal.confirmar(entrega.tag)\n            _log.info(\n                \"command_consumed\","
+para = "            _log.info(\n                \"command_consumed\","
+
+[[mutante]]
+id = "R01"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "LEASE: Final = timedelta(seconds=30)"
+para = "LEASE: Final = timedelta(seconds=60)"
+
+[[mutante]]
+id = "R02"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "ATRASOS_SEGUNDOS: Final = (1, 4, 16, 64)"
+para = "ATRASOS_SEGUNDOS: Final = (1, 4, 16, 60)"
+
+[[mutante]]
+id = "R03"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "if tentativas >= MAX_TENTATIVAS:"
+para = "if tentativas > MAX_TENTATIVAS:"
+
+[[mutante]]
+id = "R04"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "\"proxima_tentativa_em\": {\"$lte\": agora},"
+para = "\"proxima_tentativa_em\": {\"$lt\": agora},"
+
+[[mutante]]
+id = "R05"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "sort=[(\"proxima_tentativa_em\", 1), (\"_id\", 1)],"
+para = "sort=[(\"_id\", 1)],"
+
+[[mutante]]
+id = "R06"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "\"reivindicacao\": linha.reivindicacao,"
+para = ""
+
+[[mutante]]
+id = "R07"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "return resultado.modified_count == 1"
+para = "return True"
+
+[[mutante]]
+id = "R08"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "                self._devolver(linha)\n                raise"
+para = "                raise"
+
+[[mutante]]
+id = "R09"
+area = "Relay"
+arquivo = "src/compartilhado/infraestrutura/mensageria/relay.py"
+testes = "relay"
+de = "while reivindicadas < limite:"
+para = "while reivindicadas <= limite:"
+
+[[mutante]]
+id = "S01"
+area = "Compensacao da saga"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "if pagamento_id is not None and pagamento.id != pagamento_id:"
+para = "if False:"
+
+[[mutante]]
+id = "S02"
+area = "Compensacao da saga"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "if atual.compensar() is not plano:\n                raise _PlanoMudouError"
+para = "if False:\n                raise _PlanoMudouError"
+
+[[mutante]]
+id = "S03"
+area = "Compensacao da saga"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "if not _estornado_no_provedor(self._gateway, referencia):\n            try:"
+para = "if True:\n            try:"
+
+[[mutante]]
+id = "S04"
+area = "Compensacao da saga"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "self._metricas.cancelamento_de_cobranca_recusado()"
+para = "pass"
+
+[[mutante]]
+id = "S05"
+area = "Compensacao da saga"
+arquivo = "src/pagamento/aplicacao/use_cases.py"
+testes = "saga_pagamento"
+de = "if pagamento is None or not pagamento.vencido(agora):\n                return False"
+para = "if pagamento is None:\n                return False"

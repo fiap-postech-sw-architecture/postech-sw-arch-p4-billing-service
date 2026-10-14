@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	diff-cover check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
+	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -60,6 +60,20 @@ diff-cover:
 	uvx diff-cover==$(DIFF_COVER_VERSION) coverage.xml --branch-coverage \
 		--compare-branch=$(COMPARAR_COM) --fail-under=$(DIFF_COVER_MINIMO) \
 		--format markdown:reports/diff-cover.md
+
+# Mutacao nos modulos criticos (consumidor, relay, saga, status do orcamento e do
+# pagamento, idempotencia, Dinheiro e JWT), sem gate e sem pontuacao minima. O
+# mutmut nao roda aqui (o pacote se chama `src`, e ele exige o pacote fora de
+# `src.`), entao sao mutantes escritos a mao em scripts/mutantes.toml, aplicados
+# um por vez numa copia do codigo (mutants/); o relatorio sai em
+# reports/mutacao.md. Para quando passa de MUTACAO_PRAZO segundos (15 min); os
+# testes de integracao sobem um MongoDB cada, a menos que TEST_MONGODB_URI aponte
+# para um replica set no ar. MUTANTES="D01 R03" roda so esses.
+MUTACAO_PRAZO ?= 900
+MUTANTES ?=
+
+mutacao:
+	$(PY) python scripts/mutacao_manual.py --prazo $(MUTACAO_PRAZO) $(if $(MUTANTES),--so $(MUTANTES))
 
 check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"
