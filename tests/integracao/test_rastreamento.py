@@ -22,6 +22,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
 from opentelemetry.trace import SpanKind, StatusCode
 from pika.exceptions import AMQPConnectionError
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
@@ -36,15 +37,17 @@ from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.aplicacao.ports import GatewayPagamentoIndisponivelError
 from src.pagamento.aplicacao.use_cases import SolicitarPagamento
+from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.mercadopago import (
     ConfiguracaoMercadoPago,
     MercadoPagoGateway,
 )
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
-from src.prazos import executar_ciclo
-from tests.factories import AGORA, orcamento
+from src.prazos import _UnidadeDoPrazo, executar_ciclo
+from tests.factories import AGORA, orcamento, pagamento, situacao
 from tests.integracao.apoio import (
+    GatewayRoteirizado,
     MetricasEspia,
     PublicadorFalso,
     RelogioFixo,
@@ -64,6 +67,7 @@ if TYPE_CHECKING:
     from pymongo.database import Database
 
     from src.pagamento.aplicacao.dtos import PagamentoDTO
+    from src.pagamento.dominio.cobranca import SituacaoNoProvedor
     from tests.conftest import TelemetriaDeTeste
 
     Banco = Database[dict[str, Any]]
@@ -133,6 +137,19 @@ def solicitar_pagamento(app: Any, banco: Banco) -> PagamentoDTO:
         app.state.config.pagamento_validade,
         agora_utc,
     ).executar(ordem_id=aprovado.ordem_id, orcamento_id=aprovado.id)
+
+
+class ProvedorComTentativaEmAndamento(GatewayRoteirizado):
+    """Mercado Pago que devolve sempre a mesma tentativa em andamento."""
+
+    def __init__(self, tentativa: SituacaoNoProvedor) -> None:
+        super().__init__()
+        self._tentativa = tentativa
+
+    def buscar_por_referencia_externa(
+        self, referencia_externa: str
+    ) -> list[SituacaoNoProvedor]:
+        return [self._tentativa]
 
 
 class TestRequisicao:
@@ -273,6 +290,41 @@ class TestSemRuido:
         assert resultado.vazio
         assert rastreamento.spans == ()
 
+    def test_ciclo_ocioso_do_prazos_com_conciliacao_nao_exporta_span(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        """Com o Mercado Pago real o ``prazos`` consulta o provedor a cada ciclo e
+        reaplica a tentativa em andamento: so a primeira vez escreve (entra no
+        historico); depois nao ha escrita, e ciclo sem escrita nao deixa trace."""
+        aberto = pagamento(validade=timedelta(hours=1))
+        uow = MongoUnitOfWork(rastreamento.banco)
+        uow.executar(lambda: MongoPagamentoRepository(uow).salvar(aberto))
+        provedor = ProvedorComTentativaEmAndamento(
+            situacao(aberto, status=StatusNoProvedor.EM_ANDAMENTO)
+        )
+
+        def ciclo() -> int:
+            return executar_ciclo(
+                rastreamento.banco,
+                gateway=provedor,
+                metricas=MetricasEspia(),
+                max_recusas=3,
+                relogio=RelogioFixo(AGORA),
+            ).conciliados
+
+        rastreamento.exportador.clear()
+        assert ciclo() == 1
+        [escrita] = [s for s in rastreamento.spans if s.name == "prazos"]
+        escritas = rastreamento.do_tipo(SpanKind.CLIENT)
+        assert escritas
+        assert {s.parent.span_id for s in escritas if s.parent} == {
+            escrita.context.span_id
+        }
+
+        rastreamento.exportador.clear()
+        assert [ciclo(), ciclo()] == [1, 1]
+        assert rastreamento.spans == ()
+
     def test_ciclo_do_prazos_com_trabalho_exporta_o_span_e_o_banco_dele(
         self, rastreamento: Rastreamento
     ) -> None:
@@ -313,6 +365,50 @@ class TestSemRuido:
         # A raspagem consultou o banco (coletor da outbox): sem pai, sem span.
         assert "pytstop_outbox_mais_antiga_segundos" in texto
         assert sondas == [200, 200]
+        assert rastreamento.spans == ()
+
+
+class TestSpanDoPrazo:
+    """O span do ``prazos`` abre na primeira escrita da transacao."""
+
+    def test_transacao_com_duas_escritas_abre_um_span_so(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        uow = _UnidadeDoPrazo(rastreamento.banco)
+
+        def escrever() -> None:
+            MongoOrcamentoRepository(uow).salvar(orcamento())
+            MongoPagamentoRepository(uow).salvar(pagamento())
+
+        rastreamento.exportador.clear()
+        uow.executar(escrever)
+
+        assert [s.name for s in rastreamento.spans if s.name == "prazos"] == ["prazos"]
+
+    def test_falha_antes_de_escrever_nao_deixa_span(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        uow = _UnidadeDoPrazo(rastreamento.banco)
+
+        def falhar() -> None:
+            msg = "antes da primeira escrita"
+            raise RuntimeError(msg)
+
+        rastreamento.exportador.clear()
+        with pytest.raises(RuntimeError, match="antes da primeira"):
+            uow.executar(falhar)
+
+        assert rastreamento.spans == ()
+
+    def test_escrita_fora_da_transacao_segue_recusada_e_sem_span(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        uow = _UnidadeDoPrazo(rastreamento.banco)
+
+        rastreamento.exportador.clear()
+        with pytest.raises(RuntimeError, match="fora de uma transacao"):
+            MongoOrcamentoRepository(uow).salvar(orcamento())
+
         assert rastreamento.spans == ()
 
 
@@ -597,6 +693,49 @@ class TestSemTextoDeErro:
         assert tipos_de_excecao(chamada) == ["httpx.LocalProtocolError"]
         textos = tudo_que_os_spans_levam(rastreamento.spans)
         assert [t for t in textos if "TOKEN-SECRETO" in t or "Bearer" in t] == []
+
+    @pytest.mark.parametrize(
+        ("erro", "escrever"),
+        [
+            (BulkWriteError, "lote"),
+            (DuplicateKeyError, "uma por vez"),
+        ],
+    )
+    def test_erro_do_mongo_no_prazos_nao_leva_o_documento(
+        self,
+        rastreamento: Rastreamento,
+        erro: type[Exception],
+        escrever: str,
+    ) -> None:
+        segredo = "SEGREDO-NO-DOCUMENTO"
+        colecao = rastreamento.banco["colecao_de_erro"]
+        colecao.create_index("dado", unique=True)
+        uow = _UnidadeDoPrazo(rastreamento.banco)
+        repositorio = MongoOrcamentoRepository(uow)
+        documentos = [{"dado": segredo}, {"dado": segredo}]
+
+        def escrever_e_falhar() -> None:
+            repositorio.salvar(orcamento())  # a escrita abre o span do ciclo
+            if escrever == "lote":
+                colecao.insert_many(documentos, session=uow.sessao)
+            else:
+                for documento in documentos:
+                    colecao.insert_one(dict(documento), session=uow.sessao)
+
+        rastreamento.exportador.clear()
+        try:
+            with pytest.raises(erro):
+                uow.executar(escrever_e_falhar)
+        finally:
+            colecao.drop()
+
+        [ciclo] = [s for s in rastreamento.spans if s.name == "prazos"]
+        assert ciclo.status.status_code is StatusCode.ERROR
+        assert ciclo.status.description in (None, "")
+        assert (ciclo.attributes or {})["pytstop.falha"] == erro.__name__
+        assert tipos_de_excecao(ciclo) == [f"pymongo.errors.{erro.__name__}"]
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if "SEGREDO" in t] == []
 
     def test_erro_do_broker_no_relay_nao_leva_o_texto(
         self, rastreamento: Rastreamento
