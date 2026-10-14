@@ -21,6 +21,7 @@ import httpx
 import pytest
 import respx
 import structlog
+from fastapi.testclient import TestClient
 from prometheus_client import generate_latest
 from pymongo.errors import OperationFailure
 
@@ -30,6 +31,7 @@ from src.compartilhado.infraestrutura.mensageria.consumidor import (
 )
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.consumidor import FILA, criar_handlers
+from src.main import criar_app
 from src.pagamento.dominio.pagamento import Pagamento
 from src.pagamento.infraestrutura.mercadopago import (
     ConfiguracaoMercadoPago,
@@ -48,6 +50,7 @@ from tests.integracao.apoio import (
     configuracao,
     entregar,
 )
+from tests.integracao.test_api_pagamentos import WEBHOOK, assinatura
 from tests.integracao.test_comandos_da_saga import (
     _orcamento_id,
     _pagamento,
@@ -188,6 +191,8 @@ def captura(
     from src.pagamento.interfaces import router
 
     raiz = logging.getLogger()
+    # Os handlers do pytest por fase: ele mesmo os poe e os tira.
+    do_pytest = type(caplog.handler)
     handlers, nivel_da_raiz = raiz.handlers[:], raiz.level
     configuracao_antes = structlog.get_config()
     saida = io.StringIO()
@@ -204,7 +209,12 @@ def captura(
         monkeypatch.setattr(modulo, nome, structlog.get_logger(modulo.__name__))
     yield Captura(saida, capfd, caplog, spans)
     structlog.configure(**configuracao_antes)
-    raiz.handlers = [h for h in raiz.handlers if h is not json_do_pipeline]
+    # A API (criar_app) troca os handlers da raiz: volta o que havia antes, mais os
+    # do pytest desta fase.
+    raiz.handlers = [
+        *(h for h in handlers if not isinstance(h, do_pytest)),
+        *(h for h in raiz.handlers if isinstance(h, do_pytest)),
+    ]
     raiz.setLevel(nivel_da_raiz)
 
 
@@ -243,19 +253,28 @@ def consumidor_com(
     )
 
 
+def orcamento_aprovado(
+    banco: Banco, relogio: RelogioFixo, gateway: MercadoPagoGateway | GatewayRoteirizado
+) -> tuple[UUID, UUID, ConsumidorDeComandos, CanalDeTeste]:
+    semear(banco)
+    canal = CanalDeTeste()
+    consumidor = consumidor_com(banco, gateway, relogio)
+    ordem_id = uuid4()
+    entregar(consumidor, canal, gerar(ordem_id))
+    aprovar_pelo_atendente(banco, relogio, ordem_id)
+    return ordem_id, _orcamento_id(banco, ordem_id), consumidor, canal
+
+
 def pagamento_confirmado(
     banco: Banco, relogio: RelogioFixo
 ) -> tuple[UUID, dict[str, Any]]:
     """Ordem com o pagamento CONFIRMADO no provedor simulado (referencia ``sim-...``);
     depois o teste troca para o adaptador real."""
     simulado = GatewayRoteirizado()
-    semear(banco)
-    canal = CanalDeTeste()
-    consumidor = consumidor_com(banco, simulado, relogio)
-    ordem_id = uuid4()
-    entregar(consumidor, canal, gerar(ordem_id))
-    aprovar_pelo_atendente(banco, relogio, ordem_id)
-    entregar(consumidor, canal, solicitar(ordem_id, _orcamento_id(banco, ordem_id)))
+    ordem_id, orcamento_id, consumidor, canal = orcamento_aprovado(
+        banco, relogio, simulado
+    )
+    entregar(consumidor, canal, solicitar(ordem_id, orcamento_id))
     pagar_no_checkout(banco, simulado, relogio, ordem_id)
     return ordem_id, _pagamento(banco, ordem_id)
 
@@ -282,6 +301,26 @@ def salvar_solicitado(banco: Banco) -> Pagamento:
     return p
 
 
+def aprovacao_de_valor_diferente(mp: respx.MockRouter, p: Pagamento) -> None:
+    """A busca acha a tentativa 777 aprovada por outro valor: estorno automatico."""
+    mp.get("/v1/payments/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": 777,
+                        "status": "approved",
+                        "external_reference": str(p.id),
+                        "transaction_amount": 1.0,
+                        "currency_id": "BRL",
+                    }
+                ]
+            },
+        )
+    )
+
+
 def ciclo_do_prazos(banco: Banco, real: MercadoPagoGateway) -> None:
     executar_ciclo(
         banco,
@@ -293,6 +332,94 @@ def ciclo_do_prazos(banco: Banco, real: MercadoPagoGateway) -> None:
 
 
 class TestConsumidor:
+    def test_criar_cobranca_recusada_vai_para_a_dlq_so_com_o_codigo(
+        self,
+        banco: Banco,
+        relogio: RelogioFixo,
+        real: MercadoPagoGateway,
+        mp: respx.MockRouter,
+        captura: Captura,
+    ) -> None:
+        ordem_id, orcamento_id, consumidor, canal = orcamento_aprovado(
+            banco, relogio, real
+        )
+        mp.post("/checkout/preferences").mock(return_value=recusa())
+
+        resultado = entregar(consumidor, canal, solicitar(ordem_id, orcamento_id))
+
+        assert resultado == "dlq"
+        [rejeicao] = captura.eventos("mercadopago_request_rejected")
+        assert (rejeicao["operacao"], rejeicao["status_http"]) == (
+            "criar_cobranca",
+            400,
+        )
+        [dlq] = captura.eventos("command_dead_lettered")
+        assert dlq["codigo"] == "GATEWAY_PAGAMENTO_RECUSOU"
+        assert captura.vazamentos() == {}
+
+    def test_fechar_o_checkout_recusado_loga_so_o_codigo_e_a_compensacao_segue(
+        self,
+        banco: Banco,
+        relogio: RelogioFixo,
+        real: MercadoPagoGateway,
+        mp: respx.MockRouter,
+        captura: Captura,
+    ) -> None:
+        simulado = GatewayRoteirizado()
+        ordem_id, orcamento_id, consumidor, canal = orcamento_aprovado(
+            banco, relogio, simulado
+        )
+        entregar(consumidor, canal, solicitar(ordem_id, orcamento_id))
+        mp.put(url__regex=r"/checkout/preferences/.+").mock(return_value=recusa())
+
+        resultado = entregar(
+            consumidor_com(banco, real, relogio),
+            canal,
+            comando(
+                "EstornarPagamento",
+                {"ordem_id": str(ordem_id), "motivo": "cancelamento"},
+            ),
+        )
+
+        assert resultado == "processada"
+        [rejeicao] = captura.eventos("mercadopago_request_rejected")
+        assert rejeicao["operacao"] == "cancelar_cobranca"
+        [fechar] = captura.eventos("checkout_close_refused")
+        assert fechar["codigo"] == "GATEWAY_PAGAMENTO_RECUSOU"
+        assert fechar["pagamento_id"] == str(_pagamento(banco, ordem_id)["_id"])
+        assert "erro" not in fechar
+        assert captura.vazamentos() == {}
+
+    def test_estorno_recusado_loga_refund_refused_so_com_o_pagamento(
+        self,
+        banco: Banco,
+        relogio: RelogioFixo,
+        real: MercadoPagoGateway,
+        mp: respx.MockRouter,
+        captura: Captura,
+    ) -> None:
+        ordem_id, p = pagamento_confirmado(banco, relogio)
+        consulta_aprovada(mp, p)
+        mp.post(url__regex=r"/v1/payments/sim-[0-9a-f]+/refunds$").mock(
+            return_value=recusa()
+        )
+
+        resultado = entregar(
+            consumidor_com(banco, real, relogio),
+            CanalDeTeste(),
+            comando(
+                "EstornarPagamento",
+                {"ordem_id": str(ordem_id), "motivo": "cancelamento"},
+            ),
+        )
+
+        assert resultado == "processada"
+        [rejeicao] = captura.eventos("mercadopago_request_rejected")
+        assert rejeicao["operacao"] == "estornar"
+        [recusado] = captura.eventos("refund_refused")
+        assert recusado["pagamento_id"] == str(p["_id"])
+        assert captura.vazamentos() == {}
+
     def test_falha_do_banco_ao_gravar_a_falha_do_estorno_nao_carrega_o_texto(
         self,
         banco: Banco,
@@ -336,6 +463,45 @@ class TestConsumidor:
 
 
 class TestPrazos:
+    def test_conciliacao_recusada_loga_so_o_evento_sem_campo_nem_traceback(
+        self,
+        banco: Banco,
+        real: MercadoPagoGateway,
+        mp: respx.MockRouter,
+        captura: Captura,
+    ) -> None:
+        salvar_solicitado(banco)
+        mp.get("/v1/payments/search").mock(return_value=recusa())
+
+        ciclo_do_prazos(banco, real)
+
+        [rejeicao] = captura.eventos("mercadopago_request_rejected")
+        assert rejeicao["operacao"] == "buscar_pagamentos"
+        [pausa] = captura.eventos("payment_reconciliation_refused")
+        assert "exception" not in pausa
+        assert captura.vazamentos() == {}
+
+    def test_estorno_automatico_recusado_loga_so_o_contexto_do_pagamento(
+        self,
+        banco: Banco,
+        real: MercadoPagoGateway,
+        mp: respx.MockRouter,
+        captura: Captura,
+    ) -> None:
+        p = salvar_solicitado(banco)
+        aprovacao_de_valor_diferente(mp, p)
+        mp.post("/v1/payments/777/refunds").mock(return_value=recusa())
+        # A conferencia no provedor acha que o pagamento nao existe: a recusa vale.
+        mp.get("/v1/payments/777").mock(return_value=recusa(404))
+
+        ciclo_do_prazos(banco, real)
+
+        [rejeicao] = captura.eventos("mercadopago_request_rejected")
+        assert rejeicao["operacao"] == "estornar"
+        [recusado] = captura.eventos("automatic_refund_refused")
+        assert recusado["pagamento_id"] == str(p.id)
+        assert captura.vazamentos() == {}
+
     def test_erro_inesperado_ao_conferir_o_estorno_automatico_nao_carrega_o_texto(
         self,
         banco: Banco,
@@ -346,23 +512,7 @@ class TestPrazos:
         """Mesmo caso do consumidor, no estorno automatico: a conferencia no provedor
         depois da recusa quebra com um erro que o ciclo escreve com o traceback."""
         p = salvar_solicitado(banco)
-        # Aprovacao de valor diferente do cobrado: estorno automatico.
-        mp.get("/v1/payments/search").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "results": [
-                        {
-                            "id": 777,
-                            "status": "approved",
-                            "external_reference": str(p.id),
-                            "transaction_amount": 1.0,
-                            "currency_id": "BRL",
-                        }
-                    ]
-                },
-            )
-        )
+        aprovacao_de_valor_diferente(mp, p)
         mp.post("/v1/payments/777/refunds").mock(return_value=recusa())
         mp.get("/v1/payments/777").mock(side_effect=RuntimeError("falha inesperada"))
 
@@ -370,4 +520,29 @@ class TestPrazos:
 
         [falhou] = captura.eventos("payment_reconciliation_failed")
         assert "RuntimeError" in falhou["exception"]
+        assert captura.vazamentos() == {}
+
+
+class TestApi:
+    def test_webhook_com_consulta_recusada_loga_so_o_codigo(
+        self,
+        banco: Banco,
+        real: MercadoPagoGateway,
+        mp: respx.MockRouter,
+        captura: Captura,
+    ) -> None:
+        # criar_app configura o log de novo, para o stdout: a captura le dele tambem.
+        app = criar_app(configuracao(), banco=banco, gateway=real)
+        mp.get("/v1/payments/123").mock(return_value=recusa(403))
+
+        with TestClient(app) as api:
+            resposta = api.post(
+                f"{WEBHOOK}?data.id=123&type=payment",
+                json={"type": "payment", "data": {"id": "123"}},
+                headers=assinatura("123"),
+            )
+
+        assert resposta.status_code == 409
+        [tratada] = captura.eventos("domain_exception_handled")
+        assert tratada["codigo"] == "GATEWAY_PAGAMENTO_RECUSOU"
         assert captura.vazamentos() == {}
