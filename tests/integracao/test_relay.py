@@ -12,6 +12,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -21,7 +22,7 @@ import pytest
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from pika.exceptions import AMQPConnectionError, StreamLostError
-from prometheus_client import REGISTRY, CollectorRegistry
+from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
 from pymongo import MongoClient
 from pymongo.errors import AutoReconnect
 
@@ -34,6 +35,7 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
 from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox, _Linha
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
+from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.infraestrutura.processo import CONECTANDO, PRONTO
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
@@ -764,20 +766,62 @@ class TestMetricas:
             def __getitem__(self, _nome: str) -> Any:
                 return ColecaoQueNaoDeviaSerConsultada()
 
-        registro = CollectorRegistry(auto_describe=True)
+        registro = CollectorRegistry()
         coletor = ColetorDaOutbox("outbox", Banco())  # type: ignore[arg-type]
-        assert list(coletor.describe()) == []
+        assert [f.name for f in coletor.describe()] == [
+            "outbox_pendentes",
+            "outbox_dead",
+            "pytstop_outbox_mais_antiga_segundos",
+        ]
+        assert [f.samples for f in coletor.describe()] == [[], [], []]
 
         registro.register(coletor)
         registro.unregister(coletor)
 
-    def test_banco_fora_deixa_os_gauges_sem_dado(self) -> None:
-        inalcancavel = _banco_inalcancavel()
+    def test_segundo_coletor_com_os_mesmos_nomes_e_recusado(self, banco: Banco) -> None:
+        """Duas raspagens iguais na mesma resposta repetiriam a serie."""
+        registro = CollectorRegistry()
+        registro.register(ColetorDaOutbox("outbox", banco))
+
+        with pytest.raises(ValueError, match="Duplicated timeseries"):
+            registro.register(ColetorDaOutbox("outbox", banco))
+
+    def test_banco_fora_responde_no_prazo_e_sem_as_series(self) -> None:
+        """Com o cliente de producao (5 s para achar o servidor, 10 s por
+        operacao) a raspagem levava 10,1 s, mais que o ``scrape_timeout`` do
+        Prometheus: o alvo ficava ``up=0`` e sumiam as series de HTTP da API.
+        As series ausentes nao viram zero."""
+        registro = CollectorRegistry()
+        morto = criar_cliente("mongodb://127.0.0.1:1/?directConnection=true")
         try:
-            coletor = ColetorDaOutbox("outbox", inalcancavel["billing"])
-            assert list(coletor.collect()) == []
+            registro.register(ColetorDaOutbox("outbox", morto["billing"]))
+            inicio = time.monotonic()
+            texto = generate_latest(registro).decode()
+            duracao = time.monotonic() - inicio
         finally:
-            inalcancavel.close()
+            morto.close()
+
+        assert texto == ""
+        assert duracao < 5
+
+    def test_banco_lento_responde_no_prazo_e_sem_as_series(self) -> None:
+        """Servidor que aceita a conexao e nao responde (mongod travado)."""
+        registro = CollectorRegistry()
+        with socket.socket() as silencioso:
+            silencioso.bind(("127.0.0.1", 0))
+            silencioso.listen()
+            porta = silencioso.getsockname()[1]
+            lento = criar_cliente(f"mongodb://127.0.0.1:{porta}/?directConnection=true")
+            try:
+                registro.register(ColetorDaOutbox("outbox", lento["billing"]))
+                inicio = time.monotonic()
+                texto = generate_latest(registro).decode()
+                duracao = time.monotonic() - inicio
+            finally:
+                lento.close()
+
+        assert texto == ""
+        assert duracao < 5
 
 
 class TestCasosDeBorda:

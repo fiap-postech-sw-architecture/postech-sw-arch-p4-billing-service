@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 from pymongo import MongoClient
 from pymongo.errors import WriteError
 
@@ -60,6 +61,15 @@ def test_metrics_expoe_http_e_dependencias(api: TestClient) -> None:
         "pytstop_mercadopago_requisicoes_total",
     ):
         assert f"\n{nome}" in f"\n{texto}"
+
+
+def test_encerrar_a_api_tira_o_coletor_da_outbox_do_registro(banco: Banco) -> None:
+    """O registro recusa um segundo coletor com os mesmos nomes: se o lifespan nao
+    desfizesse o seu, a API seguinte (ou outro teste) falharia ao registrar."""
+    for _ in range(2):
+        with TestClient(criar_app(configuracao(), banco=banco)):
+            assert REGISTRY.get_sample_value("outbox_pendentes") is not None
+        assert REGISTRY.get_sample_value("outbox_pendentes") is None
 
 
 def test_openapi_documenta_as_rotas_do_billing(api: TestClient) -> None:
@@ -168,9 +178,15 @@ class TestBancoEProntidao:
 
     @pytest.mark.parametrize(
         ("versao", "aceita"),
-        [(2, False), (3, True), (VERSAO_DO_BANCO + 1, True)],
+        [
+            (2, False),
+            (3, False),
+            (VERSAO_DO_BANCO, True),
+            (VERSAO_DO_BANCO + 1, True),
+        ],
         ids=[
             "anterior-ao-indice-ttl-das-mortas",
+            "anterior-ao-indice-da-idade-da-outbox",
             "atual",
             "banco-a-frente-apos-rollout-undo",
         ],
