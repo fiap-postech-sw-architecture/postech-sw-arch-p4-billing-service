@@ -199,3 +199,19 @@ def test_todo_container_com_a_uri_sentinela_e_alvo_do_replacements() -> None:
 
 def test_o_make_manifests_reprova_o_sentinela_que_sobrar_no_render() -> None:
     assert f"! grep -q '{SENTINELA}'" in (RAIZ / "Makefile").read_text()
+
+
+def test_o_banco_sobe_com_quiet_e_o_exporter_com_um_pool_so() -> None:
+    """``--quiet`` no ``mongod`` (sem as linhas de conexao aceita e encerrada) e
+    um pool so no exporter: sem eles o log do banco passava de mil linhas em 10
+    minutos, quase todas de conexao e autenticacao."""
+    [banco] = [
+        documento
+        for documento in _documentos_do_base()
+        if documento["kind"] == "StatefulSet"
+        and documento["metadata"]["name"] == "billing-mongo"
+    ]
+    containers = {nome: c for _, nome, c in _containers(banco)}
+
+    assert "--quiet" in containers["mongo"]["args"]
+    assert "--mongodb.global-conn-pool" in containers["exporter"]["args"]

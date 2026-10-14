@@ -82,7 +82,12 @@ spec:
           image: mongo:7.0.43
           imagePullPolicy: IfNotPresent
           # O entrypoint da imagem cria o root no primeiro boot (sem --replSet
-          # nem --keyFile) e liga o --auth.
+          # nem --keyFile) e liga o --auth. O --quiet tira so as linhas
+          # "Connection accepted" e "Connection ended" (cada sonda e cada
+          # conexao do exporter geravam duas): o resto da conexao segue no log
+          # ("client metadata" com o endereco de origem, autenticacao que deu
+          # certo ou falhou), assim como query lenta, falha de autorizacao,
+          # aviso e erro.
           args:
             - --replSet
             - rs0
@@ -91,6 +96,7 @@ spec:
             - /chave/keyfile
             - --wiredTigerCacheSizeGB
             - "0.25"
+            - --quiet
           ports:
             - name: mongo
               containerPort: 27017
@@ -147,9 +153,14 @@ spec:
         - name: exporter
           image: percona/mongodb_exporter:0.53.0
           imagePullPolicy: IfNotPresent
+          # Um pool de conexoes para todos os scrapes: sem ele cada scrape
+          # (a cada 15 s) abria e autenticava uma conexao nova no mongod. Com
+          # o usuario ainda nao criado pelo Job, o exporter segue de pe com
+          # mongodb_up 0 e conecta quando o usuario existe.
           args:
             - --collector.dbstats
             - --collector.replicasetstatus
+            - --mongodb.global-conn-pool
           ports:
             - name: metrics
               containerPort: 9216
