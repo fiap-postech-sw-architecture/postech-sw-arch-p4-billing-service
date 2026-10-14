@@ -284,6 +284,30 @@ class TestValidacao:
             contratos.validar(exemplo)
 
 
+def _patterns(no: Any) -> list[str]:
+    """Todo ``pattern`` do schema, em qualquer profundidade."""
+    if isinstance(no, dict):
+        achados = [no["pattern"]] if isinstance(no.get("pattern"), str) else []
+        return achados + [p for valor in no.values() for p in _patterns(valor)]
+    if isinstance(no, list):
+        return [p for valor in no for p in _patterns(valor)]
+    return []
+
+
+def test_todo_pattern_dos_schemas_termina_em_fim_de_texto_sem_quebra_de_linha() -> None:
+    """O ``$`` aceita ``\\n`` no fim do valor; ``(?![\\s\\S])`` so casa no fim do
+    texto. Cobre os ``pattern`` que os exemplos acima nao exercitam (o codigo
+    dos itens, o tipo do envelope, as datas e URLs de cada evento)."""
+    patterns = [
+        p
+        for schema in sorted((RAIZ / "schemas").glob("*.schema.json"))
+        for p in _patterns(json.loads(schema.read_text(encoding="utf-8")))
+    ]
+
+    assert len(patterns) >= 17, "nenhum pattern lido: o teste nao prova nada"
+    assert [p for p in patterns if not p.endswith(r"(?![\s\S])")] == []
+
+
 def test_sem_os_schemas_a_api_nao_sobe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
