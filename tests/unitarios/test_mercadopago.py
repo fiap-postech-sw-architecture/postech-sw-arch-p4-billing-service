@@ -965,7 +965,16 @@ class TestLogDaRecusa:
             "causas",
         }
 
-    @pytest.mark.parametrize("status", [400, 401, 403, 409, 422])
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param(400, id="400-requisicao-invalida"),
+            pytest.param(401, id="401-sem-credencial"),
+            pytest.param(403, id="403-sem-permissao"),
+            pytest.param(409, id="409-conflito"),
+            pytest.param(422, id="422-nao-processavel"),
+        ],
+    )
     def test_cada_status_4xx_sai_no_log(
         self, gateway: MercadoPagoGateway, log: LogDoAdaptador, status: int
     ) -> None:
@@ -1013,8 +1022,22 @@ class TestLogDaRecusa:
         linha = uma_recusa(log)
         assert (linha["operacao"], linha["status_http"]) == (operacao, 404)
 
-    @pytest.mark.parametrize("operacao", ["criar_cobranca", "consultar_pagamento"])
-    @pytest.mark.parametrize("status", [429, 500, 502, 503])
+    @pytest.mark.parametrize(
+        "operacao",
+        [
+            pytest.param("criar_cobranca", id="criar-sem-repeticao"),
+            pytest.param("consultar_pagamento", id="consultar-com-repeticao"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param(429, id="429-muitas-requisicoes"),
+            pytest.param(500, id="500-erro-interno"),
+            pytest.param(502, id="502-gateway-ruim"),
+            pytest.param(503, id="503-indisponivel"),
+        ],
+    )
     def test_5xx_e_429_seguem_o_caminho_transitorio_sem_o_log(
         self,
         gateway: MercadoPagoGateway,
@@ -1065,6 +1088,11 @@ class TestLogDaRecusa:
                 [{"code": "ok1"}, {"code": "ruim!"}, {"code": "ok2"}],
                 ["ok1", "ok2"],
                 id="o-invalido-sai-e-o-resto-fica",
+            ),
+            pytest.param(
+                [{"code": "a"}, {"code": "a"}, {"code": 4001}, {"code": "4001"}],
+                ["a", "a", "4001", "4001"],
+                id="codigo-repetido-fica-na-ordem",
             ),
             pytest.param({"code": "4001"}, [], id="cause-objeto"),
             pytest.param("4001", [], id="cause-texto"),
@@ -1117,7 +1145,16 @@ class TestLogDaRecusa:
 
         assert uma_recusa(log)["causas"] == [f"c{n}" for n in range(10)]
 
-    @pytest.mark.parametrize("erro", ["bad_request", "not_found", "a", "_", "a" * 40])
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            pytest.param("bad_request", id="bad-request"),
+            pytest.param("not_found", id="not-found"),
+            pytest.param("a", id="uma-letra"),
+            pytest.param("_", id="sublinhado"),
+            pytest.param("a" * 40, id="quarenta"),
+        ],
+    )
     def test_erro_no_formato_sai_como_veio(
         self, gateway: MercadoPagoGateway, log: LogDoAdaptador, erro: str
     ) -> None:
