@@ -239,7 +239,7 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 | Cabeçalhos e corpo de requisições e respostas, inclusive `Authorization` e `x-signature` | Segredo e dado do pagador | A instrumentação só os captura se configurada, e não é |
 | Exceção da requisição | A mensagem pode ter dado de entrada | A API responde o envelope de erro e não propaga a exceção ao span |
 
-Duas ressalvas: a mensagem de erro do MongoDB vai no status do span de banco e pode citar a chave duplicada (um id, nunca o documento), e o httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace).
+Três ressalvas: a mensagem de erro do MongoDB vai no status do span de banco e pode citar a chave duplicada (um id, nunca o documento); o httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace); e o span `SERVER` leva os atributos padrão `http.user_agent` e `net.peer.ip`, este o par da conexão (no cluster, o pod do Kong; o endereço do cliente final só viria no `X-Forwarded-For`, que a instrumentação não lê).
 
 ### Métricas
 
