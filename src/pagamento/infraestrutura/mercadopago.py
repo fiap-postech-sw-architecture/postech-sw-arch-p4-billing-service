@@ -158,12 +158,13 @@ class _PagamentoNaoEncontradoError(GatewayPagamentoRecusouError):
 class _Recusa:
     """4xx (menos 429): o provedor respondeu e recusou; nao conta no disjuntor.
 
-    ``mensagem`` leva o texto livre do provedor e so serve a excecao; ``erro`` e
+    ``mensagem`` leva o texto livre do provedor e so serve a excecao, por isso fica
+    fora do ``repr`` (como o ``access_token`` da configuracao); ``erro`` e
     ``causas`` sao o que pode ir para o log (``_registrar_recusa``).
     """
 
     status: int
-    mensagem: str
+    mensagem: str = field(repr=False)
     erro: str | None
     causas: tuple[str, ...]
 

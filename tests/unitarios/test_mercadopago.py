@@ -1186,6 +1186,17 @@ class TestLogDaRecusa:
         }
         assert str(recusa) == "Mercado Pago respondeu 400: sem detalhe"
 
+    def test_repr_da_recusa_nao_traz_o_texto_do_provedor(self) -> None:
+        # Qualquer repr, `%r` ou traceback com locals imprimiria a mensagem.
+        recusa = mercadopago._ler_recusa(erro_mp(400, "SENTINELA-MSG payer x@y.com"))
+
+        assert (
+            recusa.mensagem == "Mercado Pago respondeu 400: SENTINELA-MSG payer x@y.com"
+        )
+        assert (
+            repr(recusa) == "_Recusa(status=400, erro='bad_request', causas=('2000',))"
+        )
+
     def test_codigo_com_cara_de_cpf_ou_telefone_sai_mascarado_pelo_scrub(
         self, gateway: MercadoPagoGateway, log: LogDoAdaptador
     ) -> None:
