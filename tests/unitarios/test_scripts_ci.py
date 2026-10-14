@@ -1,18 +1,22 @@
 """Scripts do CI (``scripts/ci/``): a conferencia que estreita a excecao do
 trivy (KSV-0109) ao ConfigMap do ``replica-set.js`` e o relatorio das imagens
-de terceiros, que nunca reprova o job."""
+de terceiros, que nunca reprova o job, o registro da saida do pip-audit e do
+trivy no summary e os nomes das variaveis do ``make kind-deploy``."""
 
 from __future__ import annotations
 
 import os
+import select
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFERENCIA = RAIZ / "scripts" / "ci" / "confere-senhas-do-script.sh"
 RELATORIO_TERCEIROS = RAIZ / "scripts" / "ci" / "relatorio-trivy-terceiros.sh"
+REGISTRA_NO_SUMMARY = RAIZ / "scripts" / "ci" / "registra-no-summary.sh"
 
 
 def _conferir(arquivo: Path) -> subprocess.CompletedProcess[str]:
@@ -187,3 +191,159 @@ def test_sem_imagem_de_terceiro_reprova_porque_o_relatorio_nao_prova_nada(
     assert resultado.returncode == 1
     assert "nenhuma imagem de terceiro" in resultado.stderr
     assert resumo == chamadas == ""
+
+
+def _registrar(
+    tmp_path: Path, *comando: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    resumo = tmp_path / "resumo.md"
+    resultado = subprocess.run(  # noqa: S603 - o script do proprio repositorio
+        ["/bin/bash", str(REGISTRA_NO_SUMMARY), "pip-audit", *comando],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env={**os.environ, "GITHUB_STEP_SUMMARY": str(resumo)},
+    )
+    return resultado, resumo.read_text() if resumo.exists() else ""
+
+
+def test_comando_que_passa_vai_para_o_log_e_para_o_summary(tmp_path: Path) -> None:
+    resultado, resumo = _registrar(tmp_path, "echo", "No known vulnerabilities found")
+
+    assert resultado.returncode == 0
+    assert resultado.stdout == "No known vulnerabilities found\n"
+    assert resumo == (
+        "### pip-audit: sem achado\n```text\nNo known vulnerabilities found\n```\n"
+    )
+
+
+def test_comando_que_reprova_registra_a_saida_e_mantem_o_codigo(
+    tmp_path: Path,
+) -> None:
+    resultado, resumo = _registrar(
+        tmp_path, "/bin/sh", "-c", "echo achado-no-stdout; echo erro >&2; exit 3"
+    )
+
+    assert resultado.returncode == 3
+    assert "achado-no-stdout" in resultado.stdout
+    assert resumo.startswith("### pip-audit: reprovou (codigo 3)\n```text\n")
+    assert "achado-no-stdout" in resumo
+    assert "erro" in resumo
+
+
+def test_a_saida_aparece_no_log_enquanto_o_comando_roda(tmp_path: Path) -> None:
+    """Com o comando ainda de pe (ele espera um arquivo que so o teste cria), a
+    primeira linha ja tem de estar no log: trivy baixando o banco ou um
+    pip-audit pendurado precisam mostrar o que fazem ao vivo."""
+    fim = tmp_path / "fim"
+    espera = f"echo comecou; until [ -e {fim} ]; do sleep 0.1; done; echo terminou"
+    processo = subprocess.Popen(  # noqa: S603 - o script do proprio repositorio
+        ["/bin/bash", str(REGISTRA_NO_SUMMARY), "ao vivo", "/bin/sh", "-c", espera],
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "GITHUB_STEP_SUMMARY": str(tmp_path / "resumo.md")},
+    )
+    assert processo.stdout is not None
+    try:
+        pronto, _, _ = select.select([processo.stdout], [], [], 10)
+        primeira = processo.stdout.readline() if pronto else ""
+        fim.touch()
+        resto, _ = processo.communicate(timeout=10)
+    finally:
+        processo.kill()
+
+    assert primeira == "comecou\n"
+    assert resto == "terminou\n"
+    assert processo.returncode == 0
+
+
+def test_comando_inexistente_reprova_e_aparece_no_summary(tmp_path: Path) -> None:
+    resultado, resumo = _registrar(tmp_path, "comando-que-nao-existe-aqui")
+
+    assert resultado.returncode == 127
+    assert "reprovou (codigo 127)" in resumo
+
+
+def test_sem_comando_o_script_recusa(tmp_path: Path) -> None:
+    resultado, resumo = _registrar(tmp_path)
+
+    assert resultado.returncode == 64
+    assert "uso:" in resultado.stderr
+    assert resumo == ""
+
+
+@pytest.mark.parametrize(
+    ("job", "ferramenta", "titulo"),
+    [
+        ("pip-audit", "uvx pip-audit", "dependencias de runtime"),
+        ("trivy", "trivy image", "HIGH e CRITICAL com correcao"),
+    ],
+)
+def test_o_security_yml_registra_o_pip_audit_e_o_trivy_no_summary(
+    job: str, ferramenta: str, titulo: str
+) -> None:
+    """O titulo do trivy diz o filtro do passo: sem ele, "sem achado" leria como
+    "sem CVE nenhuma"."""
+    fluxo = yaml.safe_load(
+        (RAIZ / ".github" / "workflows" / "security.yml").read_text(encoding="utf-8")
+    )
+    comandos = [
+        " ".join(passo["run"].split())
+        for passo in fluxo["jobs"][job]["steps"]
+        if ferramenta in passo.get("run", "")
+    ]
+
+    assert len(comandos) == 1
+    assert comandos[0].startswith("scripts/ci/registra-no-summary.sh ")
+    assert titulo in comandos[0].split(ferramenta)[0]
+
+
+PADRAO = "../postech-sw-arch-p4-platform"
+
+
+@pytest.mark.parametrize(
+    ("variaveis", "platform", "overlay"),
+    [
+        ([], PADRAO, "kind"),
+        (["KIND_OVERLAY=kind-ci"], PADRAO, "kind-ci"),
+        (["OVERLAY=k3s"], PADRAO, "k3s"),
+        (["OVERLAY=k3s", "KIND_OVERLAY=kind-ci"], PADRAO, "kind-ci"),
+        (["PLATFORM_DIR=/clone/platform"], "/clone/platform", "kind"),
+    ],
+    ids=[
+        "padroes",
+        "kind-overlay",
+        "nome-antigo",
+        "novo-vence-o-antigo",
+        "platform-dir",
+    ],
+)
+def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
+    variaveis: list[str], platform: str, overlay: str
+) -> None:
+    """``PLATFORM_DIR`` e ``KIND_OVERLAY`` sao os nomes do Execution Service;
+    ``OVERLAY``, o nome antigo, segue valendo quando ``KIND_OVERLAY`` nao e
+    dado."""
+    # Sem as variaveis do desenvolvedor (nem as que o make pai passa em
+    # MAKEFLAGS, como em `make check OVERLAY=k3s`), e como make filho
+    # (MAKELEVEL), que e como o CI roda: o make 4 avisa o diretorio.
+    ambiente = {
+        chave: valor
+        for chave, valor in os.environ.items()
+        if chave not in {"PLATFORM_DIR", "KIND_OVERLAY", "OVERLAY", "MAKEFLAGS"}
+    }
+    resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
+        ["make", "-n", "--no-print-directory", "kind-deploy", *variaveis],  # noqa: S607
+        cwd=RAIZ,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+        env={**ambiente, "MAKELEVEL": "1"},
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    comando = " ".join(resultado.stdout.replace("\\\n", " ").split())
+    assert comando.startswith(f"{platform}/scripts/ci/implantar-servicos.sh")
+    assert f" --overlay {overlay} billing-service=" in comando

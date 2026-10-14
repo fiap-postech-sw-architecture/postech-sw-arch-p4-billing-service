@@ -38,8 +38,16 @@ def resumir(caminho: Path) -> str:
     total_cobertas = sum(v[1] for v in linhas.values())
     pct_total = 100.0 * total_cobertas / total_linhas if total_linhas else 0.0
     ramo = float(raiz.get("branch-rate", "0")) * 100
+    # O numero do gate (fail_under, branch = True) soma linhas e ramos.
+    validos = int(raiz.get("lines-valid", "0")) + int(raiz.get("branches-valid", "0"))
+    cobertos = int(raiz.get("lines-covered", "0")) + int(
+        raiz.get("branches-covered", "0")
+    )
+    gate = 100.0 * cobertos / validos if validos else 0.0
     saida = [
-        f"### Cobertura de testes: {pct_total:.1f}% de linhas, {ramo:.1f}% de ramos",
+        f"### Cobertura de testes: {gate:.1f}% no gate (linhas e ramos)",
+        "",
+        f"{pct_total:.1f}% de linhas e {ramo:.1f}% de ramos.",
         "",
         "| Pacote | Linhas | Cobertas | Cobertura |",
         "|---|---:|---:|---:|",

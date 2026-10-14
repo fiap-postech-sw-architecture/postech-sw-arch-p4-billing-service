@@ -17,7 +17,8 @@ cobertura_resumo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cobertura_resumo)
 
 COVERAGE_XML = """<?xml version="1.0" ?>
-<coverage branch-rate="0.75" line-rate="0.8">
+<coverage branch-rate="0.75" line-rate="0.6" lines-valid="5" lines-covered="3"
+          branches-valid="4" branches-covered="3">
   <sources><source>/repo/src</source></sources>
   <packages><package name="x"><classes>
     <class filename="precos/dominio/preco.py">
@@ -38,7 +39,9 @@ def test_agrupa_por_contexto_e_camada(tmp_path: Path) -> None:
     arquivo = tmp_path / "coverage.xml"
     arquivo.write_text(COVERAGE_XML)
     assert cobertura_resumo.resumir(arquivo).splitlines() == [
-        "### Cobertura de testes: 60.0% de linhas, 75.0% de ramos",
+        "### Cobertura de testes: 66.7% no gate (linhas e ramos)",
+        "",
+        "60.0% de linhas e 75.0% de ramos.",
         "",
         "| Pacote | Linhas | Cobertas | Cobertura |",
         "|---|---:|---:|---:|",

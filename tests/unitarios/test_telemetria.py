@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from opentelemetry import trace
@@ -10,8 +12,11 @@ from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from starlette.testclient import TestClient
 
 from src.compartilhado.infraestrutura.mensageria import telemetria
+from src.main import criar_app
+from tests.integracao.apoio import configuracao
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
@@ -103,3 +108,32 @@ def test_tracestate_de_exatamente_512_caracteres_e_mantido(
     pai = telemetria.contexto_de({"traceparent": TRACEPARENT, "tracestate": exato})
     with telemetria.tracer.start_as_current_span("filho", context=pai):
         assert telemetria.contexto_atual()["tracestate"] == exato
+
+
+def test_api_nao_deixa_o_fastapi_montar_o_export_otlp_na_partida(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Com o endpoint OTLP no ambiente (como no cluster), o FastAPI tentaria
+    somar exportadores http/protobuf na partida e, sem o extra
+    ``fastapi[opentelemetry]``, avisaria que a configuracao falhou. O
+    ``auto_configure`` desligado mantem o log de boot limpo."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger.pytstop-plataforma:4317"
+    )
+    avisos: list[str] = []
+
+    class Coletor(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            avisos.append(record.getMessage())
+
+    logger = logging.getLogger("fastapi")
+    coletor = Coletor(level=logging.WARNING)
+    logger.addHandler(coletor)
+    try:
+        # Banco injetado: o lifespan nao abre conexao.
+        with TestClient(criar_app(configuracao(), banco=MagicMock())):
+            pass
+    finally:
+        logger.removeHandler(coletor)
+
+    assert avisos == []

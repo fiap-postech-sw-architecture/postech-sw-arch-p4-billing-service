@@ -28,7 +28,7 @@
     "codigo": {
       "type": "string",
       "maxLength": 50,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?![\\s\\S])",
       "description": "Código do serviço ou SKU da peça na tabela de preços do Billing (até 50 caracteres)."
     },
     "motivo": {
