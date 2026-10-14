@@ -69,10 +69,10 @@ audit:
 # API roda como o usuario 1001, que as linhas de boot do uvicorn saem em JSON e
 # que ele nao escreve access log (so o `http_request` estruturado do
 # middleware), que o boot nao traz o aviso da telemetria automatica do FastAPI
-# (o compose leva o endpoint OTLP no ambiente) e que a imagem, com
-# ENVIRONMENT=production, recusa o segredo de demonstracao do compose (o compose
-# sobe com development); derruba tudo com os volumes, inclusive em falha (depois
-# de mostrar os logs).
+# (o servico api do compose leva o endpoint OTLP no ambiente, como o cluster) e
+# que a imagem, com ENVIRONMENT=production, recusa o segredo de demonstracao do
+# compose (o compose sobe com development); derruba tudo com os volumes,
+# inclusive em falha (depois de mostrar os logs).
 # Projeto e portas proprios para nao derrubar a stack do compose-up nem a do
 # platform.
 SMOKE_PORT ?= 18002
