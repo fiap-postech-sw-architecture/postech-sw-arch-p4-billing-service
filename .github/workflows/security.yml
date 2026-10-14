@@ -38,8 +38,11 @@ jobs:
         run: >-
           uv export --frozen --no-emit-project --no-dev --all-extras --no-hashes
           --format requirements-txt -o requirements-prod.txt
+      # O resultado tambem vai para o summary do job (registra-no-summary.sh).
       - name: pip-audit
-        run: uvx pip-audit==2.10.1 -r requirements-prod.txt --strict --progress-spinner off
+        run: >-
+          scripts/ci/registra-no-summary.sh "pip-audit (dependencias de runtime)"
+          uvx pip-audit==2.10.1 -r requirements-prod.txt --strict --progress-spinner off
 
   gitleaks:
     runs-on: ubuntu-24.04
@@ -84,6 +87,7 @@ jobs:
             | sh -s -- -b /usr/local/bin "v${versao}"
       - name: trivy (HIGH e CRITICAL com correcao disponivel)
         run: >-
+          scripts/ci/registra-no-summary.sh "trivy da imagem do servico"
           trivy image --severity HIGH,CRITICAL --ignore-unfixed --no-progress
           --exit-code 1 "${GITHUB_REPOSITORY#*/}:scan-${GITHUB_SHA}"
       # As imagens de terceiros dos manifests (o banco e o exporter): so o
