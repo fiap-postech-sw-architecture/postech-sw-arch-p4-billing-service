@@ -21,11 +21,11 @@ from pika.exceptions import (
     NackError,
     StreamLostError,
 )
-from prometheus_client import REGISTRY
 
 from src.compartilhado.infraestrutura.mensageria import amqp
 from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, manter_conectado
 from src.compartilhado.infraestrutura.processo import sinalizar
+from tests.conftest import valor_da_metrica
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -131,12 +131,7 @@ def _canal_fechado_pelo_broker() -> None:
 
 
 def _reconexoes(componente: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "pytstop_reconexoes_ao_broker_total", {"componente": componente}
-        )
-        or 0.0
-    )
+    return valor_da_metrica("pytstop_reconexoes_ao_broker_total", componente=componente)
 
 
 def test_canal_fechado_logo_depois_de_abrir_reconecta_com_backoff(

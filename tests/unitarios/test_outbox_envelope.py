@@ -35,13 +35,9 @@ SCHEMAS = {
     caminho.name.removesuffix(".schema.json"): json.loads(caminho.read_text())
     for caminho in (contratos.diretorio() / "schemas").glob("*.schema.json")
 }
-COMANDOS_CONSUMIDOS = {
-    "GerarOrcamento",
-    "CancelarOrcamento",
-    "SolicitarPagamento",
-    "EstornarPagamento",
-}
-CATALOGO_DO_BILLING = set(SCHEMAS) - {"envelope"} - COMANDOS_CONSUMIDOS
+# O que o Billing publica: os tipos com schema menos os comandos (a unica lista
+# escrita a mao e ``contratos.COMANDOS``, conferida contra o asyncapi.yaml).
+CATALOGO_DO_BILLING = contratos.eventos_publicados()
 
 
 def _envelope(

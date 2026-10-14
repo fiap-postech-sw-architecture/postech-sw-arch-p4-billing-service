@@ -195,6 +195,12 @@ class Pagamento(AggregateRoot):
         return self._cobranca
 
     @property
+    def valor_em_centavos(self) -> int:
+        """Valor cobrado em centavos inteiros; a lapide nao tem cobranca (e nunca
+        confirma nem estorna), entao vale zero."""
+        return 0 if self._cobranca is None else self._cobranca.valor.centavos
+
+    @property
     def e_lapide(self) -> bool:
         """Compensacao que chegou antes do ``SolicitarPagamento``: CANCELADO e
         sem cobranca (RFC-004, secao 4.5)."""

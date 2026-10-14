@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
-from prometheus_client import REGISTRY
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
@@ -17,7 +16,7 @@ from src.orcamento.dominio.orcamento import TipoItem
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.orcamento.infraestrutura.tabela_de_precos import TabelaDePrecosMongoAdapter
 from src.seed import semear
-from tests.conftest import SUB_DO_TESTE
+from tests.conftest import SUB_DO_TESTE, valor_da_metrica
 from tests.integracao.apoio import (
     URL_PUBLICA,
     RelogioFixo,
@@ -56,7 +55,7 @@ def gerar(app: FastAPI, *, ha: timedelta = timedelta(0)) -> tuple[OrcamentoDTO, 
         TabelaDePrecosMongoAdapter(uow),
         app.state.link_decisao,
         app.state.config.orcamento_validade,
-        RelogioFixo(agora_utc() - ha),
+        RelogioFixo(app.state.relogio() - ha),
     ).executar(
         ordem_id=uuid4(),
         itens=[
@@ -73,9 +72,9 @@ def gerar(app: FastAPI, *, ha: timedelta = timedelta(0)) -> tuple[OrcamentoDTO, 
 def decisoes(decisao: str) -> tuple[float, float]:
     """(quantidade, soma em segundos) de ``pytstop_orcamentos_tempo_decisao_*``."""
     nome = "pytstop_orcamentos_tempo_decisao_segundos"
-    return tuple(  # type: ignore[return-value]
-        REGISTRY.get_sample_value(f"{nome}_{sufixo}", {"decisao": decisao}) or 0.0
-        for sufixo in ("count", "sum")
+    return (
+        valor_da_metrica(f"{nome}_count", decisao=decisao),
+        valor_da_metrica(f"{nome}_sum", decisao=decisao),
     )
 
 
@@ -83,6 +82,7 @@ class TestMetricaDoTempoAteADecisao:
     def test_decisao_pelo_link_conta_o_tempo_desde_a_geracao(
         self, api: TestClient, app: FastAPI
     ) -> None:
+        app.state.relogio = RelogioFixo()
         _, caminho = gerar(app, ha=timedelta(hours=2))
         antes = decisoes("aprovado")
 
@@ -91,13 +91,13 @@ class TestMetricaDoTempoAteADecisao:
         assert resposta.status_code == 200
         quantidade, soma = decisoes("aprovado")
         assert quantidade == antes[0] + 1
-        # Gerado ha 2 h (relogio do teste) e decidido agora, com folga para a
-        # execucao do teste.
-        assert 7200 <= soma - antes[1] < 7260
+        # Gerado ha 2 h e decidido no mesmo relogio do teste: 7200 s, exatos.
+        assert soma - antes[1] == 7200
 
     def test_recusa_pelo_atendente_entra_na_serie_da_recusa(
         self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos
     ) -> None:
+        app.state.relogio = RelogioFixo()
         dto, _ = gerar(app, ha=timedelta(minutes=30))
         aprovados = decisoes("aprovado")
         antes = decisoes("recusado")
@@ -111,7 +111,7 @@ class TestMetricaDoTempoAteADecisao:
         assert resposta.status_code == 200
         quantidade, soma = decisoes("recusado")
         assert quantidade == antes[0] + 1
-        assert 1800 <= soma - antes[1] < 1860
+        assert soma - antes[1] == 1800
         assert decisoes("aprovado") == aprovados
 
     def test_decisao_depois_do_prazo_nao_conta(

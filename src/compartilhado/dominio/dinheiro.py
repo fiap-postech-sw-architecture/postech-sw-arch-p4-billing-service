@@ -70,7 +70,7 @@ class Dinheiro(ValueObject):
 
     @property
     def centavos(self) -> int:
-        """Valor em centavos inteiros: o que as metricas somam (nunca float)."""
+        """Valor em centavos inteiros, exato porque o VO fixa duas casas decimais."""
         return int(self.valor * 100)
 
     def __add__(self, outro: Dinheiro) -> Dinheiro:

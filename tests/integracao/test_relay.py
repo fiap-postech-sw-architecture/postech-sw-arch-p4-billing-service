@@ -767,6 +767,7 @@ class TestMetricas:
                 return ColecaoQueNaoDeviaSerConsultada()
 
         registro = CollectorRegistry()
+        # Banco de mentira: so o registro e exercitado, sem o MongoDB.
         coletor = ColetorDaOutbox("outbox", Banco())  # type: ignore[arg-type]
         assert [f.name for f in coletor.describe()] == [
             "outbox_pendentes",

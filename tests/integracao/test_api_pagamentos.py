@@ -22,6 +22,7 @@ from src.pagamento.dominio.cobranca import SituacaoNoProvedor
 from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
+from tests.conftest import valor_da_metrica
 from tests.factories import dinheiro, orcamento, pagamento
 from tests.integracao.apoio import (
     SEGREDO_WEBHOOK,
@@ -45,15 +46,11 @@ if TYPE_CHECKING:
     Banco = Database[dict[str, Any]]
 
 WEBHOOK = "/api/v1/webhooks/mercadopago"
-VALOR_CONFIRMADO = {"estado": "confirmado"}
 
 
 def centavos_confirmados() -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "pytstop_pagamentos_valor_centavos_total", VALOR_CONFIRMADO
-        )
-        or 0.0
+    return valor_da_metrica(
+        "pytstop_pagamentos_valor_centavos_total", estado="confirmado"
     )
 
 

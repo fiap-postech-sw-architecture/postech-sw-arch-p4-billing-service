@@ -1,12 +1,15 @@
-"""Metricas do pagamento (catalogo da RFC-004, secao 9)."""
+"""Metricas do pagamento (ADR-043)."""
 
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 from prometheus_client import Counter
 
 from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
+
+_log = logging.getLogger(__name__)
 
 PAGAMENTOS_ESTORNADOS = Counter(
     "pytstop_pagamentos_estornados",
@@ -31,7 +34,8 @@ PAGAMENTOS_VALOR = Counter(
     "foram a ESTORNADO, em centavos.",
     ["estado"],
 )
-# So estes dois estados contam valor; outro e defeito (KeyError), nao serie nova.
+# So estes dois estados contam valor; outro e defeito: vai para o log, nao vira
+# serie nova e nao derruba o caso de uso (o pagamento ja comitou).
 _ESTADOS: Final = {
     StatusPagamento.CONFIRMADO: "confirmado",
     StatusPagamento.ESTORNADO: "estornado",
@@ -56,4 +60,8 @@ class MetricasPrometheus:
         CANCELAMENTOS_DE_COBRANCA_RECUSADOS.inc()
 
     def valor_registrado(self, estado: StatusPagamento, centavos: int) -> None:
-        PAGAMENTOS_VALOR.labels(estado=_ESTADOS[estado]).inc(centavos)
+        rotulo = _ESTADOS.get(estado)
+        if rotulo is None:
+            _log.error("payment_value_metric_skipped", extra={"status": estado.value})
+            return
+        PAGAMENTOS_VALOR.labels(estado=rotulo).inc(centavos)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from prometheus_client import REGISTRY
 
 from src.orcamento.dominio.orcamento import StatusOrcamento
 from src.orcamento.infraestrutura.metricas import MetricasDeOrcamentoPrometheus
+from tests.conftest import valor_da_metrica
 
 NOME = "pytstop_orcamentos_tempo_decisao_segundos"
 # 1 min a 3 dias: o orcamento vale 72 h.
@@ -13,7 +16,7 @@ LIMITES_ALEM = ("172800.0", "259200.0", "+Inf")
 
 
 def amostra(sufixo: str, **rotulos: str) -> float:
-    return REGISTRY.get_sample_value(f"{NOME}_{sufixo}", rotulos) or 0.0
+    return valor_da_metrica(f"{NOME}_{sufixo}", **rotulos)
 
 
 def test_decisao_entra_no_histograma_da_decisao() -> None:
@@ -61,7 +64,25 @@ def test_recusa_conta_na_serie_recusado() -> None:
         if s not in {StatusOrcamento.APROVADO, StatusOrcamento.RECUSADO}
     ],
 )
-def test_outro_status_nao_vira_serie_nova(status: StatusOrcamento) -> None:
-    """Rotulo fechado: expirado e cancelado nao sao decisao do cliente."""
-    with pytest.raises(KeyError):
+def test_outro_status_nao_vira_serie_nova_e_nao_derruba_o_caso_de_uso(
+    status: StatusOrcamento, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rotulo fechado: expirado e cancelado nao sao decisao do cliente. A decisao
+    ja comitou quando a metrica conta: o defeito vai para o log, nao vira 500."""
+
+    def series() -> set[tuple[str, ...]]:
+        return {
+            (amostra.name, *amostra.labels.values())
+            for familia in REGISTRY.collect()
+            if familia.name == NOME
+            for amostra in familia.samples
+        }
+
+    antes = series()
+
+    with caplog.at_level(logging.ERROR):
         MetricasDeOrcamentoPrometheus().decisao_registrada(status, 1.0)
+
+    assert series() == antes
+    [registro] = [r for r in caplog.records if r.message == "decision_metric_skipped"]
+    assert registro.__dict__["status"] == status.value

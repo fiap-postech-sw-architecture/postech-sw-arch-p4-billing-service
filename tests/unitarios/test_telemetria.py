@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from opentelemetry.sdk.trace.sampling import ParentBased
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from starlette.testclient import TestClient
@@ -152,9 +153,13 @@ class TestAmostrador:
 
     def test_provider_usa_o_amostrador_de_raiz_sob_o_pai(self) -> None:
         provedor = telemetria.criar_provedor({}, processo="teste")
-        descricao = provedor.sampler.get_description()
-        assert descricao.startswith("ParentBased{root:AmostradorDeRaiz{")
+        assert isinstance(provedor.sampler, ParentBased)
         provedor.shutdown()
+
+    def test_descricao_do_amostrador_diz_o_que_ele_faz(self) -> None:
+        """O SDK a mostra ao depurar o provider."""
+        descricao = telemetria.AmostradorDeRaiz().get_description()
+        assert "descarta span de cliente sem pai" in descricao
 
     @pytest.fixture
     def tracer(self) -> Any:

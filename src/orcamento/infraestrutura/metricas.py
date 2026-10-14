@@ -1,12 +1,15 @@
-"""Metricas do orcamento (catalogo da RFC-004, secao 9)."""
+"""Metricas do orcamento (ADR-043)."""
 
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 from prometheus_client import Histogram
 
 from src.orcamento.dominio.orcamento import StatusOrcamento
+
+_log = logging.getLogger(__name__)
 
 # De 1 minuto a 3 dias: o orcamento vale 72 h e quem nao decide expira.
 TEMPO_DE_DECISAO = Histogram(
@@ -16,7 +19,8 @@ TEMPO_DE_DECISAO = Histogram(
     ["decisao"],
     buckets=(60, 300, 900, 3600, 14400, 43200, 86400, 172800, 259200),
 )
-# So estas duas decisoes existem; outra e defeito (KeyError), nao serie nova.
+# So estas duas decisoes existem; outra e defeito: vai para o log, nao vira serie
+# nova e nao derruba o caso de uso (a decisao ja comitou).
 _DECISOES: Final = {
     StatusOrcamento.APROVADO: "aprovado",
     StatusOrcamento.RECUSADO: "recusado",
@@ -30,4 +34,8 @@ class MetricasDeOrcamentoPrometheus:
     """``MetricasDeOrcamento`` sobre o ``prometheus_client`` (``/metrics``)."""
 
     def decisao_registrada(self, decisao: StatusOrcamento, segundos: float) -> None:
-        TEMPO_DE_DECISAO.labels(decisao=_DECISOES[decisao]).observe(segundos)
+        rotulo = _DECISOES.get(decisao)
+        if rotulo is None:
+            _log.error("decision_metric_skipped", extra={"status": decisao.value})
+            return
+        TEMPO_DE_DECISAO.labels(decisao=rotulo).observe(segundos)

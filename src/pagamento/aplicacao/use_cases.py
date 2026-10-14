@@ -90,13 +90,6 @@ def _obter(pagamentos: PagamentoRepository, pagamento_id: UUID) -> Pagamento:
     return pagamento
 
 
-def _centavos(pagamento: Pagamento) -> int:
-    """Valor cobrado em centavos. So a lapide nao tem cobranca, e ela nunca
-    confirma nem estorna."""
-    cobranca = pagamento.cobranca
-    return cobranca.valor.centavos if cobranca else 0
-
-
 def _uuid(valor: str | None) -> UUID | None:
     try:
         return UUID(valor) if valor else None
@@ -245,7 +238,7 @@ class ProcessarNotificacaoPagamento:
             # Depois do commit: o conflito de transacao repete o trabalho, e o
             # valor tem de entrar uma vez so.
             self._metricas.valor_registrado(
-                StatusPagamento.CONFIRMADO, _centavos(pagamento)
+                StatusPagamento.CONFIRMADO, pagamento.valor_em_centavos
             )
         if resultado is ResultadoNotificacao.ESTORNO_AUTOMATICO:
             pagamento = self._estornar_automaticamente(pagamento, situacao.referencia)
@@ -570,7 +563,9 @@ class EstornarPagamento:
             pagamento.id, PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR, motivo
         )
         self._metricas.estorno_concluido(MotivoEstorno.COMPENSACAO)
-        self._metricas.valor_registrado(StatusPagamento.ESTORNADO, _centavos(pagamento))
+        self._metricas.valor_registrado(
+            StatusPagamento.ESTORNADO, pagamento.valor_em_centavos
+        )
         return dto
 
     def _concluir(

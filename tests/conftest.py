@@ -18,11 +18,18 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from prometheus_client import REGISTRY
 
 from src.compartilhado.infraestrutura.mensageria import telemetria
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def valor_da_metrica(nome: str, **rotulos: str) -> float:
+    """Valor de uma amostra do ``REGISTRY`` (0 se a serie ainda nao existe)."""
+    return REGISTRY.get_sample_value(nome, rotulos) or 0.0
+
 
 KID_TESTE = "chave-de-teste"
 # O OS emite o id do usuario (UUID) no sub.
