@@ -1,13 +1,17 @@
-"""OpenTelemetry da mensageria: contexto W3C na outbox e nos headers AMQP (ADR-043).
+"""OpenTelemetry do Billing: contexto W3C na outbox e nos headers AMQP (ADR-043).
 
-Relay, consumidor e ``prazos`` instalam o ``TracerProvider`` do SDK sempre, para
-o contexto seguir de mensagem em mensagem; a exportacao OTLP/gRPC so liga com
-``OTEL_ENABLED=true`` (endpoint em ``OTEL_EXPORTER_OTLP_ENDPOINT``), os mesmos
-nomes do contrato de configuracao da plataforma. O evento espontaneo segue o
-contexto guardado no registro que esperava por ele (``aberto_por``, na unidade
-de trabalho), com span link para o span de quem retomou o passo: o ciclo do
-``prazos`` e, quando a API tiver a instrumentacao do FastAPI, a requisicao (a
-API ainda nao instala o SDK).
+API, relay, consumidor e ``prazos`` instalam o ``TracerProvider`` do SDK sempre,
+para o contexto seguir de mensagem em mensagem e o ``trace_id`` chegar ao log; a
+exportacao OTLP/gRPC so liga com ``OTEL_ENABLED=true`` (endpoint em
+``OTEL_EXPORTER_OTLP_ENDPOINT``), os mesmos nomes do contrato de configuracao da
+plataforma. O evento espontaneo segue o contexto guardado no registro que
+esperava por ele (``aberto_por``, na unidade de trabalho), com span link para o
+span de quem retomou o passo: a requisicao da API ou o ciclo do ``prazos``.
+
+O amostrador descarta o span de cliente (consulta ao MongoDB, chamada HTTP) que
+nasce sem pai: e o poll do relay, a consulta do coletor de metricas e o ciclo
+ocioso do ``prazos``, que nao devem encher o Jaeger. Span de cliente dentro de
+um trace (requisicao, mensagem, ciclo com trabalho) segue o pai.
 """
 
 from __future__ import annotations
@@ -16,13 +20,26 @@ import os
 from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.sampling import (
+    ALWAYS_OFF,
+    ALWAYS_ON,
+    ParentBased,
+    Sampler,
+    SamplingResult,
+)
+from opentelemetry.trace import SpanKind
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from opentelemetry.context import Context
-    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.trace import Link, TraceState
+    from opentelemetry.util.types import Attributes
 
 # So traceparent/tracestate: o que o envelope do contrato carrega (sem baggage).
 _PROPAGADOR: Final = TraceContextTextMapPropagator()
@@ -34,6 +51,31 @@ _SERVICO_PADRAO: Final = "billing-service"
 
 # ProxyTracer: vale o provider instalado depois (processo ou testes).
 tracer = trace.get_tracer("pytstop.billing.mensageria")
+
+
+class AmostradorDeRaiz(Sampler):
+    """Amostrador do span que abre um trace: aceita tudo, menos span de cliente.
+
+    Entra como ``root`` de um ``ParentBased``: com pai, quem decide e o pai.
+    """
+
+    def should_sample(  # noqa: PLR0913 - assinatura do Sampler do SDK
+        self,
+        parent_context: Context | None,
+        trace_id: int,
+        name: str,
+        kind: SpanKind | None = None,
+        attributes: Attributes = None,
+        links: Sequence[Link] | None = None,
+        trace_state: TraceState | None = None,
+    ) -> SamplingResult:
+        decisor = ALWAYS_OFF if kind is SpanKind.CLIENT else ALWAYS_ON
+        return decisor.should_sample(
+            parent_context, trace_id, name, kind, attributes, links, trace_state
+        )
+
+    def get_description(self) -> str:
+        return "AmostradorDeRaiz{descarta span de cliente sem pai}"
 
 
 def contexto_atual() -> dict[str, str]:
@@ -68,21 +110,18 @@ def links_de(portador: Mapping[str, object]) -> list[trace.Link]:
 def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvider:
     """``TracerProvider`` do processo; com ``OTEL_ENABLED``, exporta por OTLP.
 
-    Imports aqui dentro: so relay, consumidor e ``prazos`` instalam o provider;
-    a API so le e grava o contexto W3C (pacote da API do OpenTelemetry) e nao
-    carrega o SDK nem o gRPC.
+    O gRPC so e importado com a exportacao ligada: sem ela o provider serve ao
+    contexto e ao ``trace_id`` do log e nao sai do processo.
     """
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-
     provedor = TracerProvider(
+        sampler=ParentBased(root=AmostradorDeRaiz()),
         resource=Resource.create(
             {
                 "service.name": ambiente.get("OTEL_SERVICE_NAME") or _SERVICO_PADRAO,
                 "service.version": ambiente.get("PYTSTOP_GIT_SHA", "unknown")[:12],
                 "pytstop.processo": processo,
             }
-        )
+        ),
     )
     if ambiente.get("OTEL_ENABLED", "").strip().lower() in _VERDADEIROS:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
@@ -101,8 +140,23 @@ def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvi
     return provedor
 
 
+def instrumentar_clientes(provedor: TracerProvider) -> None:
+    """Spans das consultas ao MongoDB e das chamadas httpx (Mercado Pago).
+
+    Sem ``capture_statement``: o comando do MongoDB leva o documento inteiro, e
+    os documentos do Billing levam o link de decisao e o ``checkout_url`` (tokens)
+    e o valor cobrado. O span guarda so o nome do comando e a colecao. O PyMongo
+    registra o ouvinte ao criar o cliente, entao isto roda antes do
+    ``criar_cliente`` do processo.
+    """
+    PymongoInstrumentor().instrument(tracer_provider=provedor, capture_statement=False)
+    HTTPXClientInstrumentor().instrument(tracer_provider=provedor)
+
+
 def configurar_telemetria(processo: str) -> TracerProvider:
-    """Instala o provider do processo; ``shutdown`` no fim descarrega os spans."""
+    """Instala o provider e a instrumentacao do processo; ``shutdown`` no fim
+    descarrega os spans."""
     provedor = criar_provedor(os.environ, processo=processo)
     trace.set_tracer_provider(provedor)
+    instrumentar_clientes(provedor)
     return provedor

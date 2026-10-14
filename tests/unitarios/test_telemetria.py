@@ -12,13 +12,19 @@ from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from opentelemetry.trace import SpanKind
 from starlette.testclient import TestClient
 
 from src.compartilhado.infraestrutura.mensageria import telemetria
+from src.compartilhado.infraestrutura.mensageria.telemetria import (
+    instrumentar_clientes,
+)
 from src.main import criar_app
 from tests.integracao.apoio import configuracao
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+# Mesmo trace, com a flag de amostragem desligada.
+TRACEPARENT_NAO_AMOSTRADO = TRACEPARENT.removesuffix("01") + "00"
 
 
 def test_fora_de_span_nao_ha_contexto() -> None:
@@ -74,12 +80,103 @@ def test_recurso_identifica_servico_versao_e_processo() -> None:
     assert atributos["pytstop.processo"] == "consumidor"
 
 
-def test_configurar_instala_o_provider_global(monkeypatch: pytest.MonkeyPatch) -> None:
-    instalados: list[object] = []
-    monkeypatch.setattr(trace, "set_tracer_provider", instalados.append)
+def test_configurar_instala_o_provider_global_e_a_instrumentacao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    passos: list[object] = []
+    monkeypatch.setattr(trace, "set_tracer_provider", passos.append)
+    monkeypatch.setattr(telemetria, "instrumentar_clientes", passos.append)
     provedor = telemetria.configurar_telemetria("relay")
-    assert instalados == [provedor]
+    # Na ordem: o PyMongo e o httpx usam o provider que acabou de ser instalado.
+    assert passos == [provedor, provedor]
     provedor.shutdown()
+
+
+def test_instrumenta_o_mongodb_sem_capturar_o_comando_e_o_httpx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``capture_statement`` poria o documento (com link, checkout_url e valor)
+    no atributo do span."""
+    chamadas: list[tuple[str, dict[str, Any]]] = []
+
+    class Instrumentador:
+        def __init__(self, nome: str) -> None:
+            self.nome = nome
+
+        def instrument(self, **opcoes: Any) -> None:
+            chamadas.append((self.nome, opcoes))
+
+    monkeypatch.setattr(telemetria, "PymongoInstrumentor", lambda: Instrumentador("db"))
+    monkeypatch.setattr(
+        telemetria, "HTTPXClientInstrumentor", lambda: Instrumentador("http")
+    )
+    provedor = telemetria.criar_provedor({}, processo="api")
+
+    instrumentar_clientes(provedor)
+
+    assert chamadas == [
+        ("db", {"tracer_provider": provedor, "capture_statement": False}),
+        ("http", {"tracer_provider": provedor}),
+    ]
+    provedor.shutdown()
+
+
+class TestAmostrador:
+    """O amostrador do processo: span de cliente sem pai nao vira trace."""
+
+    def test_provider_usa_o_amostrador_de_raiz_sob_o_pai(self) -> None:
+        provedor = telemetria.criar_provedor({}, processo="teste")
+        descricao = provedor.sampler.get_description()
+        assert descricao.startswith("ParentBased{root:AmostradorDeRaiz{")
+        provedor.shutdown()
+
+    @pytest.fixture
+    def tracer(self) -> Any:
+        return telemetria.criar_provedor({}, processo="teste").get_tracer("teste")
+
+    def test_cliente_sem_pai_e_descartado(self, tracer: Any) -> None:
+        with tracer.start_as_current_span("find", kind=SpanKind.CLIENT) as span:
+            assert not span.is_recording()
+            assert not span.get_span_context().trace_flags.sampled
+
+    @pytest.mark.parametrize(
+        "tipo",
+        [SpanKind.SERVER, SpanKind.PRODUCER, SpanKind.CONSUMER, SpanKind.INTERNAL],
+    )
+    def test_demais_raizes_sao_gravadas(self, tracer: Any, tipo: SpanKind) -> None:
+        with tracer.start_as_current_span("trabalho", kind=tipo) as span:
+            assert span.is_recording()
+            assert span.get_span_context().trace_flags.sampled
+
+    def test_cliente_dentro_de_um_trace_segue_o_pai(self, tracer: Any) -> None:
+        with (
+            tracer.start_as_current_span("GET /x", kind=SpanKind.SERVER),
+            tracer.start_as_current_span("find", kind=SpanKind.CLIENT) as filho,
+        ):
+            assert filho.is_recording()
+
+    def test_filho_de_um_cliente_descartado_tambem_e_descartado(
+        self, tracer: Any
+    ) -> None:
+        with (
+            tracer.start_as_current_span("find", kind=SpanKind.CLIENT),
+            tracer.start_as_current_span("filho") as filho,
+        ):
+            assert not filho.is_recording()
+
+    def test_pai_remoto_amostrado_manda_ate_no_cliente(self, tracer: Any) -> None:
+        pai = telemetria.contexto_de({"traceparent": TRACEPARENT})
+        with tracer.start_as_current_span(
+            "find", context=pai, kind=SpanKind.CLIENT
+        ) as span:
+            assert span.is_recording()
+
+    def test_pai_remoto_nao_amostrado_descarta_ate_o_server(self, tracer: Any) -> None:
+        pai = telemetria.contexto_de({"traceparent": TRACEPARENT_NAO_AMOSTRADO})
+        with tracer.start_as_current_span(
+            "GET /x", context=pai, kind=SpanKind.SERVER
+        ) as span:
+            assert not span.is_recording()
 
 
 def test_tracestate_acima_do_limite_w3c_e_descartado(

@@ -13,10 +13,14 @@ from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.telemetria import (
+    configurar_telemetria,
+)
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
+from src.compartilhado.interfaces.rastreamento import instrumentar_api
 from src.compartilhado.interfaces.router_saude import router as router_saude
 from src.configuracao import Configuracao, ModoMercadoPago
 from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK, LinkDeDecisao
@@ -57,6 +61,9 @@ def criar_app(
     configurar_logging()
     config = config or Configuracao.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
+    # Antes de criar o cliente do MongoDB e o do Mercado Pago: o PyMongo e o
+    # httpx so rastreiam os clientes criados depois da instrumentacao.
+    provedor = configurar_telemetria("api")
     gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
 
@@ -92,12 +99,12 @@ def criar_app(
         # Sem o export automatico do FastAPI: com o endpoint OTLP no ambiente
         # ele soma exportadores http/protobuf na partida, que pedem o extra
         # fastapi[opentelemetry] (o endpoint do cluster e gRPC) e deixavam um
-        # aviso no log de boot. A API ainda nao exporta traces nem metricas (nao
-        # instala o SDK, ver mensageria/telemetria.py); a flag so tira o aviso,
-        # e os spans nativos e a leitura do traceparent ficam como estavam. Quem
-        # exporta, por gRPC, sao o relay, o consumidor e o prazos.
+        # aviso no log de boot. Quem exporta, por gRPC, e o provider do processo
+        # (mensageria/telemetria.py), e os spans do FastAPI saem da instrumentacao
+        # de rastreamento.py, que desliga a telemetria nativa dele.
         telemetry={"auto_configure": False},
     )
+    instrumentar_api(app, provedor)
     _montar_estado(app, config, gateway, relogio)
     _incluir_rotas(app, config)
     app.add_middleware(SecurityHeadersMiddleware)
