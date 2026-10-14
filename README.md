@@ -238,6 +238,51 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 
 Por camada: `dominio` 889 linhas, `aplicacao` 759, `infraestrutura` 1.491 e `interfaces` 604, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
 
+## Mutação
+
+Cobertura diz que a linha rodou; mutação diz se a suíte percebe quando ela está errada (ADR-041). Não é gate de CI e não tem pontuação mínima.
+
+O `mutmut` não roda neste repositório. A versão 3.8.0 espera o pacote em `src/<pacote>` e tira o prefixo `src.` do nome do módulo, e o pacote do serviço se chama `src`: a primeira função mutada que os testes chamam reprova com
+
+```text
+AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
+```
+
+(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 64 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
+
+**Resultado** em 14/10/2026: 62 mortos de 62 medidos (100%) em 3,6 min, com 2 equivalentes de fora da conta. A primeira execução, antes de quatro testes novos, matou 58 de 62 (93,5%); os quatro sobreviventes eram lacunas reais (três de limite exato) e viraram teste neste mesmo pull request.
+
+| Área | Mutantes | Mortos | Equivalentes |
+|---|---:|---:|---:|
+| `Dinheiro` | 8 | 7 | 1 |
+| Status do orçamento | 9 | 9 | 0 |
+| Status do pagamento | 10 | 10 | 0 |
+| Validação do JWT | 11 | 10 | 1 |
+| Idempotência | 7 | 7 | 0 |
+| Consumidor | 5 | 5 | 0 |
+| Relay | 9 | 9 | 0 |
+| Compensação da saga | 5 | 5 | 0 |
+| **total** | **64** | **62** | **2** |
+
+- **Sobreviventes que viraram teste:** moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`); cópia do JWKS ainda valendo na hora exata do limite de 1 h (`test_copia_velha_vale_ate_1_hora_quando_a_renovacao_falha`); corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`); expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`).
+- **Equivalentes:** o teto exato do `Dinheiro` (a checagem seguinte, depois do arredondamento, recusa do mesmo jeito) e `HS256` na lista de algoritmos do JWKS (o PyJWT recusa HS256 com uma chave RS256 do JWKS mesmo assim). Cada um traz o motivo no campo `equivalente` do `mutantes.toml`.
+- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 64 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
+
+Para refazer:
+
+```bash
+make mutacao
+make mutacao MUTANTES="D06 R03"
+```
+
+O alvo para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900) e escreve a tabela em `reports/mutacao.md`. Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container. Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo) e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
+
+## Dependências automatizadas
+
+O Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) abre pull requests uma vez por semana, às segundas às 06:00 (São Paulo), para três ecossistemas: `pyproject.toml` e `uv.lock` (uv), as actions dos workflows e as imagens base do `Dockerfile`. Patch e minor de cada ecossistema chegam agrupados num PR só, major abre PR próprio para ser lido com o changelog, e há no máximo 3 abertos por ecossistema. O commit usa o prefixo `chore(deps)` e os rótulos `dependencies` e o do ecossistema (`python`, `github_actions`, `docker`). Cada PR passa pelos mesmos 9 checks do CI, inclusive o `pip-audit`, o trivy e o gate de cobertura.
+
+Depois do congelamento do código em 06/11/2026, o `open-pull-requests-limit` de cada bloco passa de 3 para 0. O 0 desliga só as atualizações de versão: os PRs de segurança do Dependabot, habilitados no repositório, não entram no limite e seguem abrindo. Sobem à mão, porque o Dependabot não os enxerga ou a versão está fixada de propósito: `mongo` e `percona/mongodb_exporter` (a cada release do serviço, junto da tabela do `platform`, seção [Implantação](#implantação)), o trivy, o gitleaks, o pip-audit, o diff-cover e o RabbitMQ do compose.
+
 ## Implantação
 
 Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, validados no job `build` do CI por `make manifests` (kubeconform com os schemas do Kubernetes 1.35, a versão do nó do kind, e `Secret` reprovado; trivy config sem achado HIGH ou CRITICAL, com a única exceção e o motivo em [`k8s/trivy-ignore.rego`](k8s/trivy-ignore.rego); e uma conferência de que todo campo de senha do `replica-set.js` vem de `segredo(...)`, que a exceção do trivy não enxerga). O gitleaks varre o histórico do commit testado, com regras próprias para URI com senha (MongoDB e AMQP) e o teste que as faz reprovar um manifesto com a senha gerada ([`scripts/ci/testa-gitleaks.sh`](scripts/ci/testa-gitleaks.sh)). Namespace `pytstop-billing`, prefixo `/billing` no Kong (ADR-038, ADR-042).
