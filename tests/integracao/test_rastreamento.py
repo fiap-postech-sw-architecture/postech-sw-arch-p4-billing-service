@@ -60,7 +60,8 @@ from tests.spans import tudo_que_os_spans_levam
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from opentelemetry.sdk.trace import ReadableSpan
+    from fastapi import FastAPI
+    from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
@@ -80,6 +81,12 @@ TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 class Rastreamento:
     exportador: InMemorySpanExporter
     banco: Banco
+    provedor: TracerProvider
+
+    def criar_app(self) -> FastAPI:
+        """A API com o provider da sessao, que ela nao encerra (quem injeta o
+        provider e dono dele)."""
+        return criar_app(configuracao(), banco=self.banco, provedor=self.provedor)
 
     @property
     def spans(self) -> tuple[ReadableSpan, ...]:
@@ -94,15 +101,15 @@ def rastreamento(
     _telemetria_da_sessao: TelemetriaDeTeste,
     banco: Banco,
     mongo_uri: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[Rastreamento]:
     provedor = _telemetria_da_sessao.provedor
-    monkeypatch.setattr("src.main.configurar_telemetria", lambda _processo: provedor)
     instrumentar_clientes(provedor)
     cliente = criar_cliente(mongo_uri)
     _telemetria_da_sessao.exportador.clear()
     try:
-        yield Rastreamento(_telemetria_da_sessao.exportador, cliente[banco.name])
+        yield Rastreamento(
+            _telemetria_da_sessao.exportador, cliente[banco.name], provedor
+        )
     finally:
         cliente.close()
         PymongoInstrumentor().uninstrument()
@@ -159,7 +166,7 @@ class TestRequisicao:
         jwks_publicado: dict[str, Any],
         emitir_token: Callable[..., str],
     ) -> None:
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app) as api:
             rastreamento.exportador.clear()
             resposta = api.get(
@@ -190,7 +197,7 @@ class TestRequisicao:
         emitir_token: Callable[..., str],
     ) -> None:
         pai = "4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7"
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app) as api:
             rastreamento.exportador.clear()
             api.get(
@@ -210,7 +217,7 @@ class TestRequisicao:
         jwks_publicado: dict[str, Any],
     ) -> None:
         _, token = salvar_orcamento_pendente(rastreamento.banco)
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app) as api:
             rastreamento.exportador.clear()
             api.post(
@@ -233,7 +240,7 @@ class TestRequisicao:
         AMQP e cada copia de retry."""
         _, token = salvar_orcamento_pendente(rastreamento.banco)
         grande = ",".join(f"v{i:02d}={'x' * 100}" for i in range(32))
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app) as api:
             api.post(
                 f"/api/v1/publico/orcamentos/{token}/decisao",
@@ -353,7 +360,7 @@ class TestSemRuido:
         self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
     ) -> None:
         marcar_versao(rastreamento.banco)
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app) as api:
             rastreamento.exportador.clear()
             texto = api.get("/metrics").text
@@ -420,7 +427,7 @@ class TestSemTokenNemId:
     ) -> None:
         orcamento_id, token = salvar_orcamento_pendente(rastreamento.banco)
         caminho = f"/api/v1/publico/orcamentos/{token}"
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app) as api:
             rastreamento.exportador.clear()
             consulta = api.get(caminho)
@@ -456,7 +463,7 @@ class TestSemTokenNemId:
     def test_checkout_do_simulador_nao_leva_token_nem_id_em_atributo_algum(
         self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
     ) -> None:
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         pagamento = solicitar_pagamento(app, rastreamento.banco)
         token = token_do_checkout(pagamento.checkout_url)
         pagina = f"/simulador/checkout/{pagamento.id}"
@@ -495,7 +502,7 @@ class TestSemTokenNemId:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(ConsultarOrcamentos, "por_id", quebrar)
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         with TestClient(app, raise_server_exceptions=False) as api:
             rastreamento.exportador.clear()
             resposta = api.get(
@@ -539,7 +546,7 @@ class TestPropagacao:
     def test_baggage_do_chamador_nao_e_aceito_pela_api(
         self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any]
     ) -> None:
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
 
         @app.get("/baggage-do-chamador")
         def ler() -> dict[str, str]:
@@ -649,7 +656,7 @@ class TestSemTextoDeErro:
                     raise RuntimeError(msg)
                 await self.app(scope, receive, send)
 
-        app = criar_app(configuracao(), banco=rastreamento.banco)
+        app = rastreamento.criar_app()
         app.add_middleware(Explode)
         with TestClient(app, raise_server_exceptions=False) as api:
             rastreamento.exportador.clear()

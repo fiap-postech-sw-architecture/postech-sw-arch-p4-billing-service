@@ -51,6 +51,9 @@ x-traces: &traces
   OTEL_ENABLED: ${OTEL_ENABLED:-false}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
   OTEL_SERVICE_NAME: billing-service
+  # Prazo de saida dos spans (o SDK le as duas): ver o ConfigMap do cluster.
+  OTEL_BSP_EXPORT_TIMEOUT: "2000"
+  OTEL_EXPORTER_OTLP_TIMEOUT: "2"
 
 # Heartbeat em arquivo tocado a cada volta do laco: saudavel com o arquivo
 # recente e "pronto" (conexao com o broker estabelecida).

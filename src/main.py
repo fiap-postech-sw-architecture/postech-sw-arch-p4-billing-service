@@ -40,6 +40,7 @@ from src.precos.interfaces.router import router as router_precos
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from opentelemetry.sdk.trace import TracerProvider
     from pymongo.database import Database
 
     from src.compartilhado.dominio.relogio import Relogio
@@ -56,18 +57,25 @@ def criar_app(
     banco: Database[Documento] | None = None,
     gateway: GatewayPagamento | None = None,
     relogio: Relogio = agora_utc,
+    provedor: TracerProvider | None = None,
 ) -> FastAPI:
-    """Monta a API. ``banco``, ``gateway`` e ``relogio`` injetados servem aos testes.
+    """Monta a API. ``banco``, ``gateway``, ``relogio`` e ``provedor`` injetados
+    servem aos testes.
 
     E a fabrica do uvicorn (``--factory``): o log JSON e configurado aqui, antes
-    da primeira linha do servidor, e nao no lifespan.
+    da primeira linha do servidor, e nao no lifespan. Sem ``provedor``, a API
+    instala o do processo (``configurar_telemetria``) e o encerra no fim do
+    lifespan, o que descarrega os spans: o uvicorn re-levanta o SIGTERM depois do
+    desligamento e o processo morre sem rodar o ``atexit`` do SDK. Quem injeta o
+    provider e dono dele.
     """
     configurar_logging()
     config = config or Configuracao.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
     # Antes de criar o cliente do MongoDB (no lifespan): o PyMongo so rastreia
     # os clientes criados depois da instrumentacao.
-    provedor = configurar_telemetria("api")
+    dono_do_provedor = provedor is None
+    provedor = provedor or configurar_telemetria("api")
     gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
 
@@ -93,6 +101,8 @@ def criar_app(
                 cliente.close()
             if isinstance(gateway, MercadoPagoGateway):
                 gateway.fechar()
+            if dono_do_provedor:
+                provedor.shutdown()
 
     app = FastAPI(
         title="PytStop Billing Service",

@@ -395,3 +395,41 @@ class TestSemTextoDeErro:
         assert dict(terminado.attributes or {}) == {
             "pytstop.falha": "ConnectionResetError"
         }
+
+
+class ProvedorEspia(TracerProvider):
+    """Provider que conta os ``shutdown``."""
+
+    def __init__(self) -> None:
+        super().__init__(shutdown_on_exit=False)
+        self.encerrado = 0
+
+    def shutdown(self) -> None:
+        self.encerrado += 1
+        super().shutdown()
+
+
+class TestEncerramentoDaApi:
+    """O uvicorn re-levanta o SIGTERM depois do desligamento gracioso e o processo
+    morre sem rodar o ``atexit`` do SDK: so o ``shutdown`` do lifespan descarrega
+    os spans que ainda esperam no lote."""
+
+    def test_api_encerra_o_provider_que_ela_instalou(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        espia = ProvedorEspia()
+        monkeypatch.setattr("src.main.configurar_telemetria", lambda _processo: espia)
+
+        with TestClient(criar_app(configuracao(), banco=MagicMock())):
+            assert espia.encerrado == 0
+
+        assert espia.encerrado == 1
+
+    def test_api_nao_encerra_o_provider_que_recebeu(self) -> None:
+        """Quem injeta o provider e dono dele (o dos testes serve a toda a sessao)."""
+        espia = ProvedorEspia()
+
+        with TestClient(criar_app(configuracao(), banco=MagicMock(), provedor=espia)):
+            pass
+
+        assert espia.encerrado == 0

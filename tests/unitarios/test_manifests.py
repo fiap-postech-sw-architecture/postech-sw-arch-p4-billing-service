@@ -8,6 +8,7 @@ ConfigMap sem o kubectl e sobem as configuracoes com eles.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
+from src.compartilhado.infraestrutura.mensageria.telemetria import criar_provedor
 from src.configuracao import (
     Configuracao,
     ConfiguracaoDoBanco,
@@ -27,6 +29,10 @@ from src.configuracao import (
 
 RAIZ = Path(__file__).resolve().parents[2]
 K8S = RAIZ / "k8s"
+
+# Variaveis que o ConfigMap entrega e o SDK do OpenTelemetry le sozinho (o
+# codigo do servico nao cita o nome): o prazo de saida dos spans no desligamento.
+LIDAS_PELO_SDK = frozenset({"OTEL_BSP_EXPORT_TIMEOUT", "OTEL_EXPORTER_OTLP_TIMEOUT"})
 
 # O que os Secrets entregam ao pod (secretKeyRef e a MONGODB_URI montada no
 # pod); os valores sao de mentira.
@@ -121,10 +127,38 @@ def test_toda_variavel_do_configmap_e_lida_pelo_codigo() -> None:
     sem_leitor = [
         variavel
         for variavel in _literais(K8S / "base" / "kustomization.yaml")
-        if f'"{variavel}"' not in codigo and "${" + variavel not in entrypoint
+        if f'"{variavel}"' not in codigo
+        and "${" + variavel not in entrypoint
+        and variavel not in LIDAS_PELO_SDK
     ]
 
     assert sem_leitor == []
+
+
+def test_o_prazo_de_saida_dos_spans_do_configmap_limita_o_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Com o Jaeger fora e a fila de spans cheia, o SIGTERM do rollout esperava
+    21 s (30 s com a fila maior) e a API perdia o resto: o pod tem 30 s de
+    ``terminationGracePeriodSeconds``. Os prazos do ConfigMap (e do compose) fecham
+    a saida em poucos segundos."""
+    literais = _literais(K8S / "base" / "kustomization.yaml")
+    compose = yaml.safe_load((RAIZ / "docker-compose.yml").read_text())["x-traces"]
+    for variavel in sorted(LIDAS_PELO_SDK):
+        assert str(compose[variavel]) == literais[variavel]
+        monkeypatch.setenv(variavel, literais[variavel])
+    provedor = criar_provedor(
+        {"OTEL_ENABLED": "true", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:1"},
+        processo="api",
+    )
+    tracer = provedor.get_tracer("teste")
+    for _ in range(1100):  # mais de dois lotes de 512
+        tracer.start_span("trabalho").end()
+
+    inicio = time.monotonic()
+    provedor.shutdown()
+
+    assert time.monotonic() - inicio < 10
 
 
 def test_root_path_do_configmap_e_o_prefixo_da_borda(ambiente: dict[str, str]) -> None:
