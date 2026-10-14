@@ -32,7 +32,7 @@ from src.compartilhado.infraestrutura.mensageria.consumidor import NIVEIS_DE_RET
 from src.consumidor import FILA, criar_handlers
 from src.main import criar_app
 from src.pagamento.infraestrutura.gateway import criar_gateway
-from tests.integracao.apoio import configuracao
+from tests.integracao.apoio import configuracao, provedor_descartavel
 
 RAIZ = contratos.diretorio()
 ORIGEM = (RAIZ / "ORIGEM").read_text(encoding="utf-8").strip()
@@ -320,7 +320,7 @@ def test_sem_os_schemas_a_api_nao_sobe(
     contratos._validadores.cache_clear()
     try:
         with pytest.raises(contratos.ContratosAusentesError, match="CONTRATOS_DIR"):
-            criar_app(configuracao())
+            criar_app(configuracao(), provedor=provedor_descartavel())
     finally:
         monkeypatch.delenv("CONTRATOS_DIR")
         contratos._validadores.cache_clear()

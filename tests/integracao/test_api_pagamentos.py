@@ -30,6 +30,7 @@ from tests.integracao.apoio import (
     RelogioFixo,
     configuracao,
     eventos_do_outbox,
+    provedor_descartavel,
     token_do_checkout,
 )
 
@@ -332,7 +333,11 @@ class TestWebhook:
     def test_sem_segredo_configurado_o_webhook_fica_desligado(
         self, banco: Banco, jwks_publicado: dict[str, Any]
     ) -> None:
-        app = criar_app(configuracao(MP_WEBHOOK_SECRET=""), banco=banco)
+        app = criar_app(
+            configuracao(MP_WEBHOOK_SECRET=""),
+            banco=banco,
+            provedor=provedor_descartavel(),
+        )
         with TestClient(app) as cliente:
             resposta = cliente.post(
                 WEBHOOK, json=notificacao("1"), headers=assinatura("1")
@@ -431,7 +436,12 @@ class TestSimulador:
         self, banco: Banco, jwks_publicado: dict[str, Any]
     ) -> None:
         relogio = RelogioFixo()
-        app = criar_app(configuracao(), banco=banco, relogio=relogio)
+        app = criar_app(
+            configuracao(),
+            banco=banco,
+            relogio=relogio,
+            provedor=provedor_descartavel(),
+        )
         with TestClient(app) as cliente:
             dto = solicitado(app, relogio)
             relogio.avancar(minutes=61)
@@ -459,6 +469,7 @@ class TestModoMercadoPago:
                 MP_ACCESS_TOKEN="TEST-token-de-teste",  # gitleaks:allow
             ),
             banco=banco,
+            provedor=provedor_descartavel(),
         )
         with TestClient(app) as cliente:
             yield cliente

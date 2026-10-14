@@ -145,12 +145,15 @@ def _telemetria_hermetica(
 ) -> None:
     """Nenhum teste troca o provider global nem liga a instrumentacao do PyMongo
     e do httpx por conta propria (o PyMongo so aceita o primeiro provider e
-    registra o ouvinte em todo cliente criado depois). ``criar_app`` recebe um
-    provider descartavel; o teste que quer os spans pede ``rastreamento``."""
-    monkeypatch.setattr(
-        "src.main.configurar_telemetria",
-        lambda _processo: TracerProvider(shutdown_on_exit=False),
-    )
+    registra o ouvinte em todo cliente criado depois). ``criar_app`` sem
+    ``provedor=`` instalaria o do processo: em teste ele falha alto, e o teste
+    passa ``provedor_descartavel()`` ou, para ver os spans, pede ``rastreamento``."""
+
+    def sem_provider_global(_processo: str) -> TracerProvider:
+        msg = "em teste, passe provedor= a criar_app (provedor_descartavel())"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr("src.main.configurar_telemetria", sem_provider_global)
     monkeypatch.setattr(telemetria, "instrumentar_clientes", lambda _provedor: None)
 
 

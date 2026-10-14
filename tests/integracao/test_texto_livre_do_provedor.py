@@ -49,6 +49,7 @@ from tests.integracao.apoio import (
     comando,
     configuracao,
     entregar,
+    provedor_descartavel,
 )
 from tests.integracao.test_api_pagamentos import WEBHOOK, assinatura
 from tests.integracao.test_comandos_da_saga import (
@@ -532,7 +533,9 @@ class TestApi:
         captura: Captura,
     ) -> None:
         # criar_app configura o log de novo, para o stdout: a captura le dele tambem.
-        app = criar_app(configuracao(), banco=banco, gateway=real)
+        app = criar_app(
+            configuracao(), banco=banco, gateway=real, provedor=provedor_descartavel()
+        )
         mp.get("/v1/payments/123").mock(return_value=recusa(403))
 
         with TestClient(app) as api:

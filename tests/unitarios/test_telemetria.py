@@ -28,7 +28,7 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
     instrumentar_clientes,
 )
 from src.main import criar_app
-from tests.integracao.apoio import configuracao
+from tests.integracao.apoio import configuracao, provedor_descartavel
 from tests.spans import tudo_que_o_span_leva
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -288,7 +288,11 @@ def test_api_nao_deixa_o_fastapi_montar_o_export_otlp_na_partida(
     logger.addHandler(coletor)
     try:
         # Banco injetado: o lifespan nao abre conexao.
-        with TestClient(criar_app(configuracao(), banco=MagicMock())):
+        with TestClient(
+            criar_app(
+                configuracao(), banco=MagicMock(), provedor=provedor_descartavel()
+            )
+        ):
             pass
     finally:
         logger.removeHandler(coletor)

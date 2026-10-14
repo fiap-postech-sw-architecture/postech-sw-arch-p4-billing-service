@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from src.main import criar_app
 from tests.conftest import SUB_DO_TESTE
-from tests.integracao.apoio import configuracao
+from tests.integracao.apoio import configuracao, provedor_descartavel
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -251,7 +251,9 @@ def test_jwks_pendurado_nao_atrasa_rota_publica_nem_prende_requests(
 
     monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", pendurar)
     autorizado = {"Authorization": f"Bearer {emitir_token('admin')}"}
-    with TestClient(criar_app(configuracao(), banco=banco)) as cliente:
+    with TestClient(
+        criar_app(configuracao(), banco=banco, provedor=provedor_descartavel())
+    ) as cliente:
         primeira = threading.Thread(
             target=cliente.get,
             args=("/api/v1/precos/servicos",),

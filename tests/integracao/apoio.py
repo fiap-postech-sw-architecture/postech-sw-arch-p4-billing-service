@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
 import pika
+from opentelemetry.sdk.trace import TracerProvider
 from pymongo import MongoClient, monitoring
 
 from src.configuracao import Configuracao
@@ -149,6 +150,13 @@ class RelogioFixo:
     def avancar(self, **delta: float) -> datetime:
         self.agora += timedelta(**delta)
         return self.agora
+
+
+def provedor_descartavel() -> TracerProvider:
+    """Provider so para a API de um teste que nao olha spans: ``criar_app`` nao
+    instala o provider global nem instrumenta o PyMongo e o httpx por conta propria
+    (o teste que quer os spans pede ``rastreamento``)."""
+    return TracerProvider(shutdown_on_exit=False)
 
 
 def configuracao(**extra: str) -> Configuracao:
