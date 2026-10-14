@@ -203,6 +203,20 @@ def tipos(banco: Banco) -> list[str]:
     ]
 
 
+# Atributos que todo LogRecord tem; o que sobra veio do `extra=` do caso de uso.
+CAMPOS_DO_LOGRECORD = frozenset(
+    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
+) | {"message", "asctime"}
+
+
+def extras_do_log(registro: logging.LogRecord) -> dict[str, object]:
+    return {
+        campo: valor
+        for campo, valor in registro.__dict__.items()
+        if campo not in CAMPOS_DO_LOGRECORD
+    }
+
+
 class TestSolicitarPagamento:
     def test_cria_cobranca_e_grava_pagamento_solicitado(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
@@ -1047,6 +1061,51 @@ class TestEstornarPagamento:
         assert final is not None
         assert final.status == "ESTORNADO"
         assert metricas.estornos == [MotivoEstorno.PAGAMENTO_APOS_ENCERRAMENTO]
+
+    def test_log_do_checkout_que_o_provedor_recusou_fechar_leva_so_o_codigo(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        pendente = solicitado(banco, gateway, relogio)
+        email = "maria.souza1987@example.com"
+        # Token no formato do Mercado Pago, montado aqui para nao ser um literal.
+        credencial = "-".join(
+            (
+                "APP_USR",
+                "3128571255318271",
+                "101411",
+                "5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b",
+                "123456789",
+            )
+        )
+        gateway.erro_no_cancelamento = GatewayPagamentoRecusouError(
+            f"Mercado Pago respondeu 400: SENTINELA payer {email} token {credencial}"
+        )
+        relogio.avancar(minutes=5)
+
+        with caplog.at_level(logging.WARNING):
+            estornar(banco, gateway, relogio, metricas).executar(
+                ordem_id=pendente.ordem_id,
+                pagamento_id=pendente.id,
+                motivo="cancelamento",
+            )
+
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "checkout_close_refused"
+        ]
+        assert registro.levelno == logging.WARNING
+        assert extras_do_log(registro) == {
+            "pagamento_id": str(pendente.id),
+            "codigo": "GATEWAY_PAGAMENTO_RECUSOU",
+        }
+        # Nem no registro inteiro (extras, mensagem, traceback) nem no texto do pytest.
+        visivel = f"{registro.__dict__} {caplog.text}"
+        for texto in ("SENTINELA", "maria.souza", credencial, "respondeu 400"):
+            assert texto not in visivel
 
     def test_cancelamento_com_provedor_fora_propaga_sem_gravar(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo

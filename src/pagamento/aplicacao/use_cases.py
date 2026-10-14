@@ -243,7 +243,7 @@ class ProcessarNotificacaoPagamento:
     ) -> Pagamento:
         # Falha transitoria propaga: o provedor reenvia a notificacao (ou a
         # conciliacao repete) e o estorno sai de novo com a mesma chave.
-        falha: str | None = None
+        recusa: str | None = None
         try:
             self._gateway.estornar(
                 referencia,
@@ -252,8 +252,12 @@ class ProcessarNotificacaoPagamento:
                 ),
             )
         except GatewayPagamentoRecusouError as exc:
-            if not _estornado_no_provedor(self._gateway, referencia):
-                falha = exc.mensagem
+            recusa = exc.mensagem
+        # Fora do except: um erro daqui nasceria com a recusa (o texto do provedor)
+        # em __context__, e o log com traceback o escreveria.
+        falha: str | None = None
+        if recusa is not None and not _estornado_no_provedor(self._gateway, referencia):
+            falha = recusa
 
         def trabalho() -> tuple[Pagamento, bool]:
             atual = _obter(self._pagamentos, pagamento.id)
@@ -515,11 +519,13 @@ class EstornarPagamento:
             )
         except GatewayPagamentoRecusouError as exc:
             # Fechar o checkout nao e condicao para compensar: quem pagar nele
-            # depois cai na aprovacao tardia, que o Billing estorna sozinho.
+            # depois cai na aprovacao tardia, que o Billing estorna sozinho. O log
+            # leva so o codigo: a mensagem e o texto do provedor, e o motivo da
+            # recusa sai no `mercadopago_request_rejected` do adaptador.
             self._metricas.cancelamento_de_cobranca_recusado()
             _log.warning(
                 "checkout_close_refused",
-                extra={"pagamento_id": str(pagamento.id), "erro": exc.mensagem},
+                extra={"pagamento_id": str(pagamento.id), **exc.detalhe_de_log},
             )
         return self._concluir(
             pagamento.id, PlanoDeCompensacao.CANCELAR_COBRANCA, motivo
@@ -527,6 +533,7 @@ class EstornarPagamento:
 
     def _estornar(self, pagamento: Pagamento, motivo: str) -> PagamentoDTO:
         referencia = pagamento.referencia_pagamento or ""
+        recusa: str | None = None
         # Estornado pelo painel (intervencao manual): so registra e responde.
         if not _estornado_no_provedor(self._gateway, referencia):
             try:
@@ -537,10 +544,15 @@ class EstornarPagamento:
                 if not _estornado_no_provedor(self._gateway, referencia):
                     raise
             except GatewayPagamentoRecusouError as exc:
-                # Uma tentativa anterior pode ter estornado e caido antes de
-                # gravar aqui: o provedor recusa o segundo estorno.
-                if not _estornado_no_provedor(self._gateway, referencia):
-                    return self._falhar(pagamento.id, exc.mensagem)
+                recusa = exc.mensagem
+            # Uma tentativa anterior pode ter estornado e caido antes de gravar
+            # aqui: o provedor recusa o segundo estorno. Fora do except: um erro da
+            # conferencia ou da gravacao nasceria com a recusa (o texto do
+            # provedor) em __context__, e o consumidor o escreve com traceback.
+            if recusa is not None and not _estornado_no_provedor(
+                self._gateway, referencia
+            ):
+                return self._falhar(pagamento.id, recusa)
         dto = self._concluir(
             pagamento.id, PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR, motivo
         )

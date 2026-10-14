@@ -474,6 +474,7 @@ class TestRetry:
         tentativa: int,
         fila: str,
         spans: InMemorySpanExporter,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         handler.erro = AutoReconnect("banco fora")
         canal = CanalDeTeste()
@@ -481,9 +482,10 @@ class TestRetry:
         cabecalhos = {"x-tentativa": tentativa} if tentativa else {}
         usuario = "billing" if tentativa else "os"
 
-        resultado = entregar(
-            consumidor, canal, envelope, user_id=usuario, cabecalhos=cabecalhos
-        )
+        with caplog.at_level(logging.WARNING):
+            resultado = entregar(
+                consumidor, canal, envelope, user_id=usuario, cabecalhos=cabecalhos
+            )
 
         assert (resultado, canal.confirmadas, canal.rejeitadas) == ("retry", [1], [])
         [(exchange, routing_key, corpo, copia)] = canal.publicadas
@@ -507,6 +509,16 @@ class TestRetry:
             copia.headers["traceparent"].split("-")[2]
             == f"{consumo.context.span_id:016x}"
         )
+        # O log do retry traz o nome da classe do erro, nunca o texto dele.
+        [aviso] = [
+            r for r in caplog.records if r.getMessage() == "command_retry_scheduled"
+        ]
+        assert (aviso.__dict__["tipo"], aviso.__dict__["tentativa"]) == (
+            "CancelarOrcamento",
+            tentativa + 1,
+        )
+        assert aviso.__dict__["erro"] == "AutoReconnect"
+        assert "banco fora" not in str(aviso.__dict__)
 
     def test_sexta_falha_vai_para_a_dlq(
         self, consumidor: ConsumidorDeComandos, handler: HandlerDeTeste
