@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
@@ -67,6 +68,81 @@ def gerar(app: FastAPI, *, ha: timedelta = timedelta(0)) -> tuple[OrcamentoDTO, 
     [envelope] = eventos_do_outbox(banco, "OrcamentoGerado")
     link: str = envelope["dados"]["link_decisao"]
     return dto, link.removeprefix(URL_PUBLICA)
+
+
+def decisoes(decisao: str) -> tuple[float, float]:
+    """(quantidade, soma em segundos) de ``pytstop_orcamentos_tempo_decisao_*``."""
+    nome = "pytstop_orcamentos_tempo_decisao_segundos"
+    return tuple(  # type: ignore[return-value]
+        REGISTRY.get_sample_value(f"{nome}_{sufixo}", {"decisao": decisao}) or 0.0
+        for sufixo in ("count", "sum")
+    )
+
+
+class TestMetricaDoTempoAteADecisao:
+    def test_decisao_pelo_link_conta_o_tempo_desde_a_geracao(
+        self, api: TestClient, app: FastAPI
+    ) -> None:
+        _, caminho = gerar(app, ha=timedelta(hours=2))
+        antes = decisoes("aprovado")
+
+        resposta = api.post(f"{caminho}/decisao", json={"decisao": "aprovar"})
+
+        assert resposta.status_code == 200
+        quantidade, soma = decisoes("aprovado")
+        assert quantidade == antes[0] + 1
+        # Gerado ha 2 h (relogio do teste) e decidido agora, com folga para a
+        # execucao do teste.
+        assert 7200 <= soma - antes[1] < 7260
+
+    def test_recusa_pelo_atendente_entra_na_serie_da_recusa(
+        self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos
+    ) -> None:
+        dto, _ = gerar(app, ha=timedelta(minutes=30))
+        aprovados = decisoes("aprovado")
+        antes = decisoes("recusado")
+
+        resposta = api.post(
+            f"/api/v1/orcamentos/{dto.id}/decisao",
+            json={"decisao": "recusar"},
+            headers=cabecalhos("atendente"),
+        )
+
+        assert resposta.status_code == 200
+        quantidade, soma = decisoes("recusado")
+        assert quantidade == antes[0] + 1
+        assert 1800 <= soma - antes[1] < 1860
+        assert decisoes("aprovado") == aprovados
+
+    def test_decisao_depois_do_prazo_nao_conta(
+        self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos
+    ) -> None:
+        vencido, _ = gerar(app, ha=timedelta(hours=73))
+        antes = (decisoes("aprovado"), decisoes("recusado"))
+
+        resposta = api.post(
+            f"/api/v1/orcamentos/{vencido.id}/decisao",
+            json={"decisao": "aprovar"},
+            headers=cabecalhos("atendente"),
+        )
+
+        assert resposta.status_code == 410
+        assert (decisoes("aprovado"), decisoes("recusado")) == antes
+
+    def test_segunda_decisao_e_link_invalido_nao_contam(
+        self, api: TestClient, app: FastAPI
+    ) -> None:
+        _, caminho = gerar(app)
+        api.post(f"{caminho}/decisao", json={"decisao": "recusar"})
+        antes = (decisoes("aprovado"), decisoes("recusado"))
+
+        segunda = api.post(f"{caminho}/decisao", json={"decisao": "aprovar"})
+        invalido = api.post(
+            f"{PREFIXO}/token-invalido/decisao", json={"decisao": "aprovar"}
+        )
+
+        assert (segunda.status_code, invalido.status_code) == (404, 404)
+        assert (decisoes("aprovado"), decisoes("recusado")) == antes
 
 
 class TestApiInterna:

@@ -23,6 +23,7 @@ import pika
 from pika.adapters.utils.connection_workflow import AMQPConnectorStackTimeout
 from pika.exceptions import AMQPError, ChannelClosedByBroker, NackError, UnroutableError
 
+from src.compartilhado.infraestrutura.mensageria.metricas import RECONEXOES
 from src.compartilhado.infraestrutura.processo import sinalizar
 
 if TYPE_CHECKING:
@@ -243,8 +244,11 @@ def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos 
     conexao que cai logo depois de aberta (o broker fechando o canal a cada
     mensagem, por permissao, ou cancelando o consumidor) tambem espera antes de
     reconectar; so a que durou ``espera_maxima`` volta a reconectar na hora.
+    Cada espera conta em ``pytstop_reconexoes_ao_broker_total{componente}``
+    (``processo`` e o componente); o pedido de parada nao conta.
     """
     espera = min(1.0, espera_maxima)
+    reconexoes = RECONEXOES.labels(componente=processo)
     while not parar.is_set():
         duracao = _conectar_e_trabalhar(
             canal,
@@ -257,6 +261,8 @@ def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos 
         if duracao is not None and duracao >= espera_maxima:
             espera = min(1.0, espera_maxima)
             continue
+        if not parar.is_set():
+            reconexoes.inc()
         parar.wait(espera * _aleatorio.uniform(0.5, 1.0))
         espera = min(espera * 2, espera_maxima)
     sinalizar(heartbeat, pronto=False)

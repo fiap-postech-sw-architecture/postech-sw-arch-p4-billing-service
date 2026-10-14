@@ -21,6 +21,7 @@ from pika.exceptions import (
     NackError,
     StreamLostError,
 )
+from prometheus_client import REGISTRY
 
 from src.compartilhado.infraestrutura.mensageria import amqp
 from src.compartilhado.infraestrutura.mensageria.amqp import CanalAmqp, manter_conectado
@@ -127,6 +128,15 @@ def _rodar(
 def _canal_fechado_pelo_broker() -> None:
     msg = "canal fechado pelo broker"
     raise ChannelWrongStateError(msg)
+
+
+def _reconexoes(componente: str) -> float:
+    return (
+        REGISTRY.get_sample_value(
+            "pytstop_reconexoes_ao_broker_total", {"componente": componente}
+        )
+        or 0.0
+    )
 
 
 def test_canal_fechado_logo_depois_de_abrir_reconecta_com_backoff(
@@ -393,6 +403,52 @@ def test_conexao_estavel_que_cai_reconecta_na_hora(
 
     assert canal.aberturas == 2
     assert parar.esperas == [1.0]
+
+
+def test_cada_espera_antes_de_reconectar_conta_uma_reconexao_do_componente(
+    tmp_path: Path, sorteio: SorteioAnotado
+) -> None:
+    antes = {c: _reconexoes(c) for c in ("relay", "consumidor")}
+    parar = EsperaAnotada(ate=3)
+
+    # Broker fora desde o boot: tres esperas, tres reconexoes do consumidor.
+    _rodar(
+        CanalSemBroker(falha_ao_abrir=True),
+        _canal_fechado_pelo_broker,
+        parar,
+        tmp_path / "hb",
+    )
+
+    assert _reconexoes("consumidor") == antes["consumidor"] + 3
+    assert _reconexoes("relay") == antes["relay"]
+
+
+def test_reconexao_na_hora_depois_de_conexao_estavel_nao_e_espera(
+    tmp_path: Path, sorteio: SorteioAnotado
+) -> None:
+    antes = _reconexoes("consumidor")
+    # 1a conexao durou 30 s: reconecta sem esperar; a 2a caiu em 0,5 s e espera.
+    instantes = iter([0.0, 30.0, 100.0, 100.5])
+
+    _rodar(
+        CanalSemBroker(),
+        _canal_fechado_pelo_broker,
+        EsperaAnotada(ate=1),
+        tmp_path / "hb",
+        cronometro=lambda: next(instantes),
+    )
+
+    assert _reconexoes("consumidor") == antes + 1
+
+
+def test_pedido_de_parada_nao_conta_como_reconexao(tmp_path: Path) -> None:
+    antes = _reconexoes("consumidor")
+    parar = EsperaAnotada(ate=99)
+
+    # SIGTERM com a conexao de pe: o laco sai, nao reconecta.
+    _rodar(CanalSemBroker(), parar.set, parar, tmp_path / "hb")
+
+    assert _reconexoes("consumidor") == antes
 
 
 def test_consumo_cancelado_pelo_broker_reconecta_com_backoff(

@@ -45,6 +45,7 @@ from src.compartilhado.infraestrutura.mensageria.amqp import MensagemRecusadaErr
 from src.compartilhado.infraestrutura.mensageria.metricas import (
     MENSAGENS_CONSUMIDAS,
     TIPO_DESCONHECIDO,
+    preinicializar_consumidas,
 )
 from src.compartilhado.infraestrutura.mensageria.telemetria import (
     contexto_atual,
@@ -129,6 +130,7 @@ class ConsumidorDeComandos:
         self._fila = fila
         self._usuario = usuario
         self._relogio = relogio
+        preinicializar_consumidas(handlers)
         # O handler roda fora da thread da conexao: a do pika so atende o
         # broker quando o codigo dela volta ao pika, e um handler mais lento que
         # o heartbeat derrubaria a conexao no meio da mensagem.

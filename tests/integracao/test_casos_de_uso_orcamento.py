@@ -27,7 +27,7 @@ from src.orcamento.dominio.exceptions import (
     OrcamentoNaoEncontradoError,
     OrcamentoVencidoError,
 )
-from src.orcamento.dominio.orcamento import TipoItem
+from src.orcamento.dominio.orcamento import StatusOrcamento, TipoItem
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.orcamento.infraestrutura.tabela_de_precos import TabelaDePrecosMongoAdapter
 from src.precos.aplicacao.use_cases import PrecosDePecas, PrecosDeServicos
@@ -40,6 +40,7 @@ from tests.factories import ATENDENTE_SUB
 from tests.integracao.apoio import (
     LINK,
     URL_PUBLICA,
+    MetricasDeOrcamentoEspia,
     RelogioFixo,
     eventos_do_outbox,
     token_do_link,
@@ -76,9 +77,19 @@ def gerar(banco: Banco, relogio: RelogioFixo) -> GerarOrcamento:
     )
 
 
-def decidir(banco: Banco, relogio: RelogioFixo) -> DecidirOrcamento:
+def decidir(
+    banco: Banco,
+    relogio: RelogioFixo,
+    metricas: MetricasDeOrcamentoEspia | None = None,
+) -> DecidirOrcamento:
     uow = MongoUnitOfWork(banco)
-    return DecidirOrcamento(uow, MongoOrcamentoRepository(uow), LINK, relogio)
+    return DecidirOrcamento(
+        uow,
+        MongoOrcamentoRepository(uow),
+        LINK,
+        metricas or MetricasDeOrcamentoEspia(),
+        relogio,
+    )
 
 
 def consultar(banco: Banco, relogio: RelogioFixo) -> ConsultarOrcamentos:
@@ -369,6 +380,91 @@ class TestDecidirOrcamento:
             caso.por_link(token_do_link(dto.id, dto.valido_ate), aprovar=True)
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
         assert len(eventos_do_outbox(banco, "OrcamentoRecusado")) == 1
+
+
+class TestTempoAteADecisao:
+    """``pytstop_orcamentos_tempo_decisao_segundos``: da geracao a decisao, e so
+    depois de a decisao comitar."""
+
+    def test_aprovacao_pelo_link_conta_o_tempo_desde_a_geracao(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        dto = gerado(banco, relogio)
+        relogio.avancar(hours=1)
+        metricas = MetricasDeOrcamentoEspia()
+
+        decidir(banco, relogio, metricas).por_link(
+            token_do_link(dto.id, dto.valido_ate), aprovar=True
+        )
+
+        assert metricas.decisoes == [(StatusOrcamento.APROVADO, 3600.0)]
+
+    def test_recusa_pelo_atendente_conta_o_tempo_e_a_decisao(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        dto = gerado(banco, relogio)
+        relogio.avancar(hours=2, minutes=30)
+        metricas = MetricasDeOrcamentoEspia()
+
+        decidir(banco, relogio, metricas).por_atendente(
+            dto.id, aprovar=False, decidido_por=ATENDENTE_SUB
+        )
+
+        assert metricas.decisoes == [(StatusOrcamento.RECUSADO, 9000.0)]
+
+    def test_decisao_que_nao_vale_nao_conta(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        dto = gerado(banco, relogio)
+        metricas = MetricasDeOrcamentoEspia()
+        caso = decidir(banco, relogio, metricas)
+        caso.por_atendente(dto.id, aprovar=True, decidido_por=ATENDENTE_SUB)
+        metricas.decisoes.clear()
+
+        with pytest.raises(TransicaoStatusInvalidaError):
+            caso.por_atendente(dto.id, aprovar=False, decidido_por=ATENDENTE_SUB)
+        with pytest.raises(LinkDeDecisaoInvalidoError):
+            caso.por_link("adulterado.1.x", aprovar=True)
+        vencido = gerado(banco, relogio)
+        relogio.avancar(hours=73)
+        with pytest.raises(OrcamentoVencidoError):
+            caso.por_atendente(vencido.id, aprovar=True, decidido_por=ATENDENTE_SUB)
+
+        assert metricas.decisoes == []
+
+    def test_transacao_abortada_nao_conta(
+        self, banco: Banco, relogio: RelogioFixo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A contagem e depois do commit: a falha ao gravar a outbox desfaz a
+        decisao inteira, e a metrica tem de ficar como estava."""
+        dto = gerado(banco, relogio)
+        metricas = MetricasDeOrcamentoEspia()
+
+        def falhar(*_args: Any, **_opcoes: Any) -> None:
+            msg = "falha ao gravar a outbox"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(MongoUnitOfWork, "_gravar_outbox", falhar)
+        with pytest.raises(RuntimeError, match="outbox"):
+            decidir(banco, relogio, metricas).por_atendente(
+                dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
+            )
+
+        assert metricas.decisoes == []
+        assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
+
+    def test_relogio_de_outro_pod_atrasado_nao_gera_tempo_negativo(
+        self, banco: Banco, relogio: RelogioFixo
+    ) -> None:
+        dto = gerado(banco, relogio)
+        relogio.avancar(seconds=-5)
+        metricas = MetricasDeOrcamentoEspia()
+
+        decidir(banco, relogio, metricas).por_atendente(
+            dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
+        )
+
+        assert metricas.decisoes == [(StatusOrcamento.APROVADO, 0.0)]
 
 
 class TestExpirarECancelar:

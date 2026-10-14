@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from prometheus_client import REGISTRY
 
-from src.pagamento.dominio.estados import MotivoEstorno
+from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
 from src.pagamento.infraestrutura.metricas import MetricasPrometheus
 
 
@@ -30,3 +31,31 @@ def test_estornos_por_motivo_e_recusas_do_provedor() -> None:
     assert (
         amostra("pytstop_cancelamentos_de_cobranca_recusados_total") == nao_fechados + 1
     )
+
+
+def test_valor_confirmado_e_estornado_em_centavos_inteiros() -> None:
+    metricas = MetricasPrometheus()
+    nome = "pytstop_pagamentos_valor_centavos_total"
+    confirmado = amostra(nome, estado="confirmado")
+    estornado = amostra(nome, estado="estornado")
+
+    metricas.valor_registrado(StatusPagamento.CONFIRMADO, 33500)
+    metricas.valor_registrado(StatusPagamento.CONFIRMADO, 1)
+    metricas.valor_registrado(StatusPagamento.ESTORNADO, 33500)
+
+    assert amostra(nome, estado="confirmado") == confirmado + 33501
+    assert amostra(nome, estado="estornado") == estornado + 33500
+
+
+@pytest.mark.parametrize(
+    "estado",
+    [
+        s
+        for s in StatusPagamento
+        if s not in {StatusPagamento.CONFIRMADO, StatusPagamento.ESTORNADO}
+    ],
+)
+def test_outro_estado_nao_vira_serie_nova(estado: StatusPagamento) -> None:
+    """Rotulo fechado: so ``confirmado`` e ``estornado`` contam valor."""
+    with pytest.raises(KeyError):
+        MetricasPrometheus().valor_registrado(estado, 100)

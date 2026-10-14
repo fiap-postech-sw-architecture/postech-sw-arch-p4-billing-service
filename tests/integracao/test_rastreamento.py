@@ -291,7 +291,8 @@ class TestSemRuido:
                 for caminho in ("/api/v1/saude", "/api/v1/saude/pronto")
             ]
 
-        assert "http_request_duration_seconds" in texto
+        # A raspagem consultou o banco (coletor da outbox): sem pai, sem span.
+        assert "pytstop_outbox_mais_antiga_segundos" in texto
         assert sondas == [200, 200]
         assert rastreamento.spans == ()
 

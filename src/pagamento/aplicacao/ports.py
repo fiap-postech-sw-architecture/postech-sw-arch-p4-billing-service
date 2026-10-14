@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from src.compartilhado.dominio.dinheiro import Dinheiro
     from src.pagamento.dominio.cobranca import SituacaoNoProvedor
-    from src.pagamento.dominio.estados import MotivoEstorno
+    from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
 
 
 class GatewayPagamentoIndisponivelError(DependenciaIndisponivelError):
@@ -134,13 +134,14 @@ class OrcamentosPort(Protocol):
 
 
 class MetricasDePagamento(Protocol):
-    """Contadores do pagamento (``pytstop_pagamentos_estornados_total``, a
-    falha do estorno automatico e o checkout que o provedor recusou fechar),
-    implementados na infraestrutura.
+    """Contadores do pagamento (``pytstop_pagamentos_estornados_total``, o valor
+    confirmado e estornado, a falha do estorno automatico e o checkout que o
+    provedor recusou fechar), implementados na infraestrutura.
 
-    Contagem pelo menos uma vez: no consumidor o caso de uso conta antes de a
-    transacao da mensagem comitar, e o handler repetido (conflito na
-    transacao, copia de retry) conta de novo.
+    Na API e no ``prazos`` o caso de uso conta depois do commit. No consumidor a
+    contagem e pelo menos uma vez: o caso de uso conta antes de a transacao da
+    mensagem comitar, e o handler repetido (conflito na transacao, copia de
+    retry) conta de novo.
     """
 
     def estorno_concluido(self, motivo: MotivoEstorno) -> None: ...
@@ -148,3 +149,9 @@ class MetricasDePagamento(Protocol):
     def estorno_automatico_falhou(self) -> None: ...
 
     def cancelamento_de_cobranca_recusado(self) -> None: ...
+
+    def valor_registrado(self, estado: StatusPagamento, centavos: int) -> None:
+        """Soma o valor do pagamento que entrou em ``CONFIRMADO`` ou que, ja
+        confirmado, foi a ``ESTORNADO``; a aprovacao tardia estornada direto nao
+        entra (ela e o ``estorno_concluido``)."""
+        ...

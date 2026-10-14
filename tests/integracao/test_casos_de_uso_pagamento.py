@@ -30,7 +30,11 @@ from src.pagamento.aplicacao.use_cases import (
     SolicitarPagamento,
 )
 from src.pagamento.dominio.cobranca import SituacaoNoProvedor
-from src.pagamento.dominio.estados import MotivoEstorno, StatusNoProvedor
+from src.pagamento.dominio.estados import (
+    MotivoEstorno,
+    StatusNoProvedor,
+    StatusPagamento,
+)
 from src.pagamento.dominio.exceptions import (
     OrcamentoNaoAprovadoError,
     PagamentoNaoEncontradoError,
@@ -758,6 +762,7 @@ class TestEstornarPagamento:
             "motivo": "compensacao",
         }
         assert metricas.estornos == [MotivoEstorno.COMPENSACAO]
+        assert metricas.valores == [(StatusPagamento.ESTORNADO, 33500)]
 
     def test_repetir_republica_o_estornado_sem_chamar_o_provedor(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
@@ -856,6 +861,7 @@ class TestEstornarPagamento:
         assert gateway.estornos == []
         assert len(eventos_do_outbox(banco, "PagamentoEstornado")) == 1
         assert metricas.estornos == [MotivoEstorno.COMPENSACAO]
+        assert metricas.valores == [(StatusPagamento.ESTORNADO, 33500)]
 
     def test_estorno_em_processamento_mas_ja_estornado_na_consulta_conclui(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
@@ -957,6 +963,7 @@ class TestEstornarPagamento:
         assert motivo.startswith("Mercado Pago respondeu 400: payment too old")
         assert len(motivo) == 500
         assert metricas.estornos == []
+        assert metricas.valores == []
 
     def test_recusa_porque_ja_estornado_no_provedor_conclui_o_estorno(
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
@@ -1142,3 +1149,156 @@ class TestEstornarPagamento:
         assert resultado.checkout_url is not None  # cancelou a cobranca real
         assert len(gateway.cancelamentos) == 1
         assert banco["pagamentos"].count_documents({}) == 1
+
+
+class TestValorDoPagamento:
+    """``pytstop_pagamentos_valor_centavos_total``: o pagamento que entra em
+    CONFIRMADO e o confirmado que vai a ESTORNADO, em centavos inteiros."""
+
+    def test_confirmacao_soma_o_valor_depois_do_commit_uma_vez(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        dto = solicitado(banco, gateway, relogio)
+        gateway.respostas["999"] = tentativa(dto.id)
+
+        resultado = processar(banco, gateway, relogio, metricas).executar("999")
+
+        assert resultado is not None
+        assert resultado.status == "CONFIRMADO"
+        assert metricas.valores == [(StatusPagamento.CONFIRMADO, 33500)]
+
+        # O provedor reenvia a notificacao: o valor nao entra de novo.
+        processar(banco, gateway, relogio, metricas).executar("999")
+        assert metricas.valores == [(StatusPagamento.CONFIRMADO, 33500)]
+
+    def test_o_pagamento_pelo_checkout_do_simulador_tambem_soma(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        dto = solicitado(banco, gateway, relogio)
+        assert dto.checkout_url is not None
+
+        SimularResultadoPagamento(
+            gateway,
+            MongoPagamentoRepository(MongoUnitOfWork(banco)),
+            processar(banco, gateway, relogio, metricas),
+            relogio,
+        ).executar(dto.id, token=token_do_checkout(dto.checkout_url), aprovar=True)
+
+        assert metricas.valores == [(StatusPagamento.CONFIRMADO, 33500)]
+
+    def test_recusa_e_tentativa_em_andamento_nao_somam(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        dto = solicitado(banco, gateway, relogio)
+        for referencia, status, bruto in (
+            ("a", StatusNoProvedor.RECUSADO, "rejected"),
+            ("b", StatusNoProvedor.EM_ANDAMENTO, "in_process"),
+        ):
+            gateway.respostas[referencia] = tentativa(
+                dto.id, status, referencia=referencia, bruto=bruto
+            )
+            processar(banco, gateway, relogio, metricas).executar(referencia)
+
+        assert metricas.valores == []
+
+    def test_aprovacao_tardia_estornada_direto_nao_entra(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        """O dinheiro entrou e saiu sem passar por CONFIRMADO: ele esta em
+        ``pytstop_pagamentos_estornados_total``, nao no faturamento."""
+        dto = solicitado(banco, gateway, relogio)
+        relogio.avancar(minutes=61)
+        uow = MongoUnitOfWork(banco)
+        ExpirarPagamentosVencidos(
+            uow, MongoPagamentoRepository(uow), relogio
+        ).executar()
+        gateway.respostas["999"] = tentativa(dto.id)
+
+        processar(banco, gateway, relogio, metricas).executar("999")
+
+        assert metricas.estornos == [MotivoEstorno.PAGAMENTO_APOS_ENCERRAMENTO]
+        assert metricas.valores == []
+
+    def test_valor_divergente_estornado_na_hora_nao_entra(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        dto = solicitado(banco, gateway, relogio)
+        gateway.respostas["999"] = tentativa(dto.id, valor=dinheiro("1.00"))
+
+        processar(banco, gateway, relogio, metricas).executar("999")
+
+        assert metricas.estornos == [MotivoEstorno.PAGAMENTO_APOS_ENCERRAMENTO]
+        assert metricas.valores == []
+
+    def test_cancelar_a_cobranca_aberta_nao_soma(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        dto = solicitado(banco, gateway, relogio)
+
+        estornar(banco, gateway, relogio, metricas).executar(
+            ordem_id=dto.ordem_id, pagamento_id=dto.id, motivo="cancelamento"
+        )
+
+        assert metricas.valores == []
+
+    def test_repetir_a_compensacao_nao_soma_o_estorno_de_novo(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+    ) -> None:
+        pago = confirmado(banco, gateway, relogio)
+        for _ in range(2):
+            estornar(banco, gateway, relogio, metricas).executar(
+                ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x"
+            )
+
+        assert metricas.valores == [(StatusPagamento.ESTORNADO, 33500)]
+
+    def test_falha_na_transacao_da_confirmacao_nao_soma(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        metricas: MetricasEspia,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A contagem e depois do commit: transacao abortada nao conta."""
+        dto = solicitado(banco, gateway, relogio)
+        gateway.respostas["999"] = tentativa(dto.id)
+
+        def falhar(*_args: Any, **_opcoes: Any) -> None:
+            msg = "falha ao gravar a outbox"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(MongoUnitOfWork, "_gravar_outbox", falhar)
+        with pytest.raises(RuntimeError, match="outbox"):
+            processar(banco, gateway, relogio, metricas).executar("999")
+
+        assert metricas.valores == []
+        assert consultar(banco, dto.id).status == "SOLICITADO"

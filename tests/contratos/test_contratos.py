@@ -29,8 +29,9 @@ import yaml
 
 from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mensageria.consumidor import NIVEIS_DE_RETRY
-from src.consumidor import FILA
+from src.consumidor import FILA, criar_handlers
 from src.main import criar_app
+from src.pagamento.infraestrutura.gateway import criar_gateway
 from tests.integracao.apoio import configuracao
 
 RAIZ = contratos.diretorio()
@@ -46,12 +47,9 @@ COPIADOS = sorted(
     for caminho in RAIZ.rglob("*")
     if caminho.is_file() and caminho.name != "ORIGEM"
 )
-COMANDOS = {
-    "GerarOrcamento",
-    "CancelarOrcamento",
-    "SolicitarPagamento",
-    "EstornarPagamento",
-}
+# O que o asyncapi.yaml diz que o OS produz; test_asyncapi_diz_quem_publica...
+# prova que e exatamente isso (e que o resto o Billing produz).
+COMANDOS = contratos.COMANDOS
 
 
 def _no_platform(copia: Path) -> str:
@@ -206,6 +204,12 @@ def test_asyncapi_diz_quem_publica_cada_tipo_do_billing() -> None:
     eventos = contratos.tipos_com_contrato() - COMANDOS
     assert {produtores[tipo] for tipo in COMANDOS} == {"os"}
     assert {produtores[tipo] for tipo in eventos} == {"billing"}
+
+
+def test_consumidor_tem_um_handler_para_cada_comando_e_so_para_eles() -> None:
+    config = configuracao().comandos
+    assert set(criar_handlers(config, gateway=criar_gateway(config))) == COMANDOS
+    assert contratos.eventos_publicados() == contratos.tipos_com_contrato() - COMANDOS
 
 
 @pytest.mark.parametrize("tipo", sorted(contratos.tipos_com_contrato() - COMANDOS))

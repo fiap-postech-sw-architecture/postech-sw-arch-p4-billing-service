@@ -45,6 +45,16 @@ if TYPE_CHECKING:
     Banco = Database[dict[str, Any]]
 
 WEBHOOK = "/api/v1/webhooks/mercadopago"
+VALOR_CONFIRMADO = {"estado": "confirmado"}
+
+
+def centavos_confirmados() -> float:
+    return (
+        REGISTRY.get_sample_value(
+            "pytstop_pagamentos_valor_centavos_total", VALOR_CONFIRMADO
+        )
+        or 0.0
+    )
 
 
 def assinatura(data_id: str, request_id: str = "req-mp-1") -> dict[str, str]:
@@ -143,6 +153,7 @@ class TestWebhook:
         referencia = app.state.gateway_pagamento.registrar_resultado(
             pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=True
         )
+        antes = centavos_confirmados()
 
         resposta = api.post(
             WEBHOOK,
@@ -155,6 +166,8 @@ class TestWebhook:
         assert resposta.json() == {"processado": True}
         [envelope] = eventos_do_outbox(app.state.banco, "PagamentoConfirmado")
         assert envelope["dados"]["pagamento_id"] == str(dto.id)
+        # R$ 335,00 em centavos inteiros, somado depois do commit.
+        assert centavos_confirmados() == antes + 33500
 
     @pytest.mark.parametrize(
         "com_data_no_corpo", [True, False], ids=["data", "sem-data"]

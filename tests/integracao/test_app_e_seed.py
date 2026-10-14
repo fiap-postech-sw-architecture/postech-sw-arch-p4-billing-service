@@ -50,6 +50,16 @@ def test_metrics_expoe_http_e_dependencias(api: TestClient) -> None:
         'http_request_duration_seconds_count{method="GET",rota="/api/v1/saude"' in texto
     )
     assert "pytstop_circuit_breaker_aberto" in texto
+    # Coletor da outbox, registrado na API: a idade sobrevive ao relay parado.
+    for nome in (
+        "outbox_pendentes",
+        "outbox_dead",
+        "pytstop_outbox_mais_antiga_segundos",
+        "pytstop_orcamentos_tempo_decisao_segundos_count",
+        "pytstop_pagamentos_valor_centavos_total",
+        "pytstop_mercadopago_requisicoes_total",
+    ):
+        assert f"\n{nome}" in f"\n{texto}"
 
 
 def test_openapi_documenta_as_rotas_do_billing(api: TestClient) -> None:

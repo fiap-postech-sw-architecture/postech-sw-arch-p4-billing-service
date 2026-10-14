@@ -29,8 +29,12 @@ from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
 from src.compartilhado.dominio.relogio import agora_utc
+from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mensageria.amqp import MensagemRecusadaError
-from src.compartilhado.infraestrutura.mensageria.metricas import MENSAGENS_PUBLICADAS
+from src.compartilhado.infraestrutura.mensageria.metricas import (
+    MENSAGENS_PUBLICADAS,
+    preinicializar_publicadas,
+)
 from src.compartilhado.infraestrutura.mensageria.telemetria import (
     contexto_atual,
     contexto_de,
@@ -109,6 +113,7 @@ class RelayDaOutbox:
         self._usuario = usuario
         self._relogio = relogio
         self._lease = lease
+        preinicializar_publicadas(contratos.eventos_publicados())
 
     def entregar_pendentes(self, limite: int) -> int:
         """Reivindica e entrega ate ``limite`` linhas; devolve quantas pegou.

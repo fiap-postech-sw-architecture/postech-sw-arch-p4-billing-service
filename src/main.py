@@ -8,22 +8,26 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI
+from prometheus_client import REGISTRY
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
 from src.compartilhado.infraestrutura.mensageria.telemetria import (
     configurar_telemetria,
 )
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
+from src.compartilhado.infraestrutura.unit_of_work import COLECAO_OUTBOX
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
 from src.compartilhado.interfaces.rastreamento import instrumentar_api
 from src.compartilhado.interfaces.router_saude import router as router_saude
 from src.configuracao import Configuracao, ModoMercadoPago
 from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK, LinkDeDecisao
+from src.orcamento.infraestrutura.metricas import MetricasDeOrcamentoPrometheus
 from src.orcamento.interfaces.router import router as router_orcamentos
 from src.orcamento.interfaces.router_publico import router as router_publico
 from src.pagamento.infraestrutura.gateway import criar_gateway
@@ -77,9 +81,14 @@ def criar_app(
         # init, ``python -m src.banco``).
         cliente = None if banco is not None else criar_cliente(config.mongodb_uri)
         app.state.banco = banco if cliente is None else cliente[config.mongodb_banco]
+        # Idade da outbox na raspagem da API: com o relay parado ela segue
+        # exportada, e e ela que mantem o alerta de outbox parada de pe.
+        coletor = ColetorDaOutbox(COLECAO_OUTBOX, app.state.banco)
+        REGISTRY.register(coletor)
         try:
             yield
         finally:
+            REGISTRY.unregister(coletor)
             if cliente is not None:
                 cliente.close()
             if isinstance(gateway, MercadoPagoGateway):
@@ -121,6 +130,7 @@ def _montar_estado(
     app.state.relogio = relogio
     app.state.gateway_pagamento = gateway
     app.state.metricas_pagamento = MetricasPrometheus()
+    app.state.metricas_orcamento = MetricasDeOrcamentoPrometheus()
     app.state.link_decisao = LinkDeDecisao(
         segredo=config.link_segredo, url_base=f"{config.url_publica}{CAMINHO_DO_LINK}"
     )
