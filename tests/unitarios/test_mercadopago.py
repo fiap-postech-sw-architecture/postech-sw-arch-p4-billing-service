@@ -37,6 +37,7 @@ from src.pagamento.aplicacao.ports import (
     GatewayPagamentoRecusouError,
     ItemCobranca,
 )
+from src.pagamento.dominio.cobranca import SituacaoNoProvedor
 from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura import mercadopago
 from src.pagamento.infraestrutura.mercadopago import (
@@ -770,8 +771,11 @@ class LogDoAdaptador:
     def linhas(self) -> list[dict[str, Any]]:
         return [json.loads(linha) for linha in self.texto.splitlines() if linha]
 
+    def eventos(self, nome: str) -> list[dict[str, Any]]:
+        return [linha for linha in self.linhas() if linha["event"] == nome]
+
     def recusas(self) -> list[dict[str, Any]]:
-        return [linha for linha in self.linhas() if linha["event"] == EVENTO_DE_RECUSA]
+        return self.eventos(EVENTO_DE_RECUSA)
 
     def avisos(self) -> list[dict[str, Any]]:
         """De WARNING para cima: o httpx escreve cada chamada em INFO."""
@@ -1206,6 +1210,65 @@ class TestLogDaRecusa:
 
         assert uma_recusa(log)["causas"] == ["***.***.789-**", "***", "ok_1"]
         assert "123.456" not in log.texto
+
+
+class TestLogDoStatusDesconhecido:
+    """Status de pagamento que o mapa nao conhece: a cobranca nao muda, e o log traz o
+    status so se ele tiver o formato do vocabulario do provedor."""
+
+    def consultar(
+        self, gateway: MercadoPagoGateway, status: str
+    ) -> SituacaoNoProvedor | None:
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/1").respond(
+                200, json=pagamento_no_provedor(status=status)
+            )
+            return gateway.consultar_pagamento("1")
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param("novo_status", id="novo-status"),
+            pytest.param("a", id="uma-letra"),
+            pytest.param("_", id="sublinhado"),
+            pytest.param("a" * 40, id="quarenta"),
+        ],
+    )
+    def test_status_no_formato_sai_no_log(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, status: str
+    ) -> None:
+        situacao = self.consultar(gateway, status)
+
+        assert situacao is not None
+        assert situacao.status is StatusNoProvedor.EM_ANDAMENTO
+        [linha] = log.eventos("mercadopago_unknown_status")
+        assert linha["level"] == "warning"
+        assert campos_do_evento(linha) == {"status": status}
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param("Novo Status", id="maiuscula-e-espaco"),
+            pytest.param("novo-status", id="hifen"),
+            pytest.param("novo_status2", id="digito"),
+            pytest.param("novo_status\n", id="quebra-de-linha-no-fim"),
+            pytest.param("a" * 41, id="quarenta-e-um"),
+            pytest.param("ação", id="acento"),
+            pytest.param("SENTINELA payer x@y.com", id="texto-livre"),
+        ],
+    )
+    def test_status_fora_do_formato_sai_sem_o_campo_e_e_contado(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, status: str
+    ) -> None:
+        antes = contador("consultar_pagamento", "status_desconhecido")
+
+        situacao = self.consultar(gateway, status)
+
+        assert situacao is not None
+        assert situacao.status is StatusNoProvedor.EM_ANDAMENTO
+        [linha] = log.eventos("mercadopago_unknown_status")
+        assert campos_do_evento(linha) == {}
+        assert contador("consultar_pagamento", "status_desconhecido") == antes + 1
 
 
 class TestCircuitBreaker:

@@ -96,10 +96,11 @@ _ESTORNO_RECUSADO = frozenset({"rejected", "cancelled"})
 # Id de pagamento do Mercado Pago (numerico); a regex so impede que um valor
 # vindo do webhook mude o caminho da URL (``../``, ``?``).
 _REFERENCIA_VALIDA = re.compile(r"[A-Za-z0-9_-]{1,64}")
-# Vocabulario do corpo de erro que pode ir para o log: ``error`` (ex.:
-# ``bad_request``) e ``cause[].code`` (ex.: ``4001``). Sempre ``fullmatch``: o
-# ``$`` do ``re`` aceitaria uma quebra de linha no fim.
-_ERRO_DO_PROVEDOR = re.compile(r"[a-z_]{1,40}")
+# Vocabulario do provedor que pode ir para o log: ``error`` do corpo de erro (ex.:
+# ``bad_request``), ``status`` de pagamento que o mapa nao conhece e
+# ``cause[].code`` (ex.: ``4001``). Sempre ``fullmatch``: o ``$`` do ``re``
+# aceitaria uma quebra de linha no fim.
+_TERMO_DO_PROVEDOR = re.compile(r"[a-z_]{1,40}")
 _CODIGO_DE_CAUSA = re.compile(r"[A-Za-z0-9_.-]{1,40}")
 _MAXIMO_DE_CAUSAS = 10
 _NAO_ENCONTRADO = 404
@@ -449,9 +450,11 @@ def _situacao(dados: dict[str, Any], operacao: str) -> SituacaoNoProvedor:
 def _status_no_provedor(status: str, operacao: str) -> StatusNoProvedor:
     conhecido = _STATUS.get(status)
     if conhecido is None:
-        # Status novo no provedor: nao muda a cobranca, mas fica visivel.
+        # Status novo no provedor: nao muda a cobranca, mas fica visivel. O valor
+        # vem de fora: so entra no log se tiver o formato do vocabulario dele.
         MERCADOPAGO_REQUISICOES.labels(operacao, "status_desconhecido").inc()
-        _log.warning("mercadopago_unknown_status", status=status)
+        campos = {"status": status} if _TERMO_DO_PROVEDOR.fullmatch(status) else {}
+        _log.warning("mercadopago_unknown_status", **campos)
         return StatusNoProvedor.EM_ANDAMENTO
     return conhecido
 
@@ -497,7 +500,7 @@ def _ler_recusa(resposta: httpx.Response) -> _Recusa:
     return _Recusa(
         resposta.status_code,
         f"Mercado Pago respondeu {resposta.status_code}: {mensagem or 'sem detalhe'}",
-        _texto_no_formato(corpo, "error", _ERRO_DO_PROVEDOR),
+        _texto_no_formato(corpo, "error", _TERMO_DO_PROVEDOR),
         _codigos_das_causas(corpo.get("cause")),
     )
 
