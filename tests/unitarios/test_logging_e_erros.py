@@ -237,10 +237,82 @@ class TestLogging:
     def test_email_e_mascarado(self, entrada: str, saida: str) -> None:
         assert scrub_pii(None, "info", {"event": entrada})["event"] == saida
 
+    @pytest.mark.parametrize("prefixo", ["APP_USR", "TEST"])
+    @pytest.mark.parametrize(
+        "usuario", ["123456789", "12345678901"], ids=["usuario", "usuario-com-cpf"]
+    )
+    def test_token_do_mercado_pago_e_mascarado_em_qualquer_texto(
+        self, prefixo: str, usuario: str
+    ) -> None:
+        # Token no formato do Mercado Pago, montado aqui para nao ser um literal.
+        hexadecimais = "5e4d3c2b1a0f9e8d" + "7c6b5a4f3e2d1c0b"
+        token = "-".join((prefixo, "3128571255318271", "101411", hexadecimais, usuario))
+        evento = scrub_pii(
+            None,
+            "info",
+            {
+                "event": f"recusa com o token {token} no corpo",
+                "lista": [f"Bearer {token}"],
+                "exception": f"Traceback\n  GatewayPagamentoRecusouError: {token}\n",
+            },
+        )
+        assert evento == {
+            "event": "recusa com o token *** no corpo",
+            "lista": ["Bearer ***"],
+            "exception": "Traceback\n  GatewayPagamentoRecusouError: ***\n",
+        }
+        assert redigir_pii_erro(f"falha {token}") == "falha ***"
+
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            pytest.param(
+                "TESTE-3128571255318271-101411-5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b-12345",
+                id="prefixo-parecido",
+            ),
+            pytest.param(
+                "LATEST-3128571255318271-101411-5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b-12345",
+                id="test-no-meio-de-palavra",
+            ),
+            pytest.param(
+                "APP_USR-3128571255318271-101411-5e4d3c2b-123456789", id="hex-curto"
+            ),
+            pytest.param(
+                "APP_USR-6ea4d1f4-9f33-4b45-a0e6-19a5ec6fb2c5", id="chave-publica-uuid"
+            ),
+            pytest.param("TEST-1234", id="test-curto"),
+            pytest.param("APP_USR", id="so-o-prefixo"),
+            pytest.param(
+                "sim-pref-732ffc02-3465-4237-a5f6-12fd4a2b3be0", id="ref-do-simulador"
+            ),
+            pytest.param("pytstop-os-demo-2026", id="senha-de-demonstracao"),
+        ],
+    )
+    def test_texto_parecido_com_token_do_mercado_pago_fica_como_esta(
+        self, texto: str
+    ) -> None:
+        assert scrub_pii(None, "info", {"event": texto})["event"] == texto
+
     @pytest.mark.parametrize(
         "hostil",
-        ["a." * 40_000, "x@" + "a." * 40_000, "x@" + "a-" * 40_000, "a" * 80_000 + "@"],
-        ids=["pontos", "dominio-com-pontos", "dominio-com-hifens", "local-sem-fim"],
+        [
+            "a." * 40_000,
+            "x@" + "a." * 40_000,
+            "x@" + "a-" * 40_000,
+            "a" * 80_000 + "@",
+            "APP_USR-" + "1" * 80_000,
+            "TEST-1-" * 11_000,
+            "APP_USR-1-123456-" + "a" * 80_000,
+        ],
+        ids=[
+            "pontos",
+            "dominio-com-pontos",
+            "dominio-com-hifens",
+            "local-sem-fim",
+            "token-so-com-digitos",
+            "token-com-prefixos-repetidos",
+            "token-com-hex-longo",
+        ],
     )
     def test_texto_hostil_de_80_kb_e_varrido_em_menos_de_100_ms(
         self, hostil: str
