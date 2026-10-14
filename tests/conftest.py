@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -17,9 +18,18 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from prometheus_client import REGISTRY
+
+from src.compartilhado.infraestrutura.mensageria import telemetria
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def valor_da_metrica(nome: str, **rotulos: str) -> float:
+    """Valor de uma amostra do ``REGISTRY`` (0 se a serie ainda nao existe)."""
+    return REGISTRY.get_sample_value(nome, rotulos) or 0.0
+
 
 KID_TESTE = "chave-de-teste"
 # O OS emite o id do usuario (UUID) no sub.
@@ -108,18 +118,47 @@ def dns(monkeypatch: pytest.MonkeyPatch) -> DnsDeTeste:
     return falso
 
 
+@dataclass(frozen=True, slots=True)
+class TelemetriaDeTeste:
+    """O provider da sessao (o do processo: amostrador real, exportador em
+    memoria) e o exportador onde os spans terminados aparecem."""
+
+    provedor: TracerProvider
+    exportador: InMemorySpanExporter
+
+
 @pytest.fixture(scope="session")
-def _exportador_de_spans() -> InMemorySpanExporter:
-    # O provider global do OpenTelemetry so e instalado uma vez por processo.
+def _telemetria_da_sessao() -> TelemetriaDeTeste:
+    # O provider global do OpenTelemetry so e instalado uma vez por processo. E o
+    # mesmo ``criar_provedor`` dos processos, com o amostrador de producao.
     exportador = InMemorySpanExporter()
-    provedor = TracerProvider()
+    provedor = telemetria.criar_provedor({}, processo="teste")
     provedor.add_span_processor(SimpleSpanProcessor(exportador))
     trace.set_tracer_provider(provedor)
-    return exportador
+    telemetria.instalar_propagador()
+    return TelemetriaDeTeste(provedor, exportador)
+
+
+@pytest.fixture(autouse=True)
+def _telemetria_hermetica(
+    _telemetria_da_sessao: TelemetriaDeTeste, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nenhum teste troca o provider global nem liga a instrumentacao do PyMongo
+    e do httpx por conta propria (o PyMongo so aceita o primeiro provider e
+    registra o ouvinte em todo cliente criado depois). ``criar_app`` sem
+    ``provedor=`` instalaria o do processo: em teste ele falha alto, e o teste
+    passa ``provedor_descartavel()`` ou, para ver os spans, pede ``rastreamento``."""
+
+    def sem_provider_global(_processo: str) -> TracerProvider:
+        msg = "em teste, passe provedor= a criar_app (provedor_descartavel())"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr("src.main.configurar_telemetria", sem_provider_global)
+    monkeypatch.setattr(telemetria, "instrumentar_clientes", lambda _provedor: None)
 
 
 @pytest.fixture
-def spans(_exportador_de_spans: InMemorySpanExporter) -> InMemorySpanExporter:
+def spans(_telemetria_da_sessao: TelemetriaDeTeste) -> InMemorySpanExporter:
     """Spans terminados durante o teste (provider do SDK em memoria)."""
-    _exportador_de_spans.clear()
-    return _exportador_de_spans
+    _telemetria_da_sessao.exportador.clear()
+    return _telemetria_da_sessao.exportador

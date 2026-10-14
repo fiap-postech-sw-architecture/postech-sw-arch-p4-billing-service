@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
 import pika
+from opentelemetry.sdk.trace import TracerProvider
 from pymongo import MongoClient, monitoring
 
 from src.configuracao import Configuracao
@@ -31,9 +32,10 @@ if TYPE_CHECKING:
     from src.compartilhado.infraestrutura.mensageria.consumidor import (
         ConsumidorDeComandos,
     )
+    from src.orcamento.dominio.orcamento import StatusOrcamento
     from src.pagamento.aplicacao.ports import CobrancaCriada, ItemCobranca
     from src.pagamento.dominio.cobranca import SituacaoNoProvedor
-    from src.pagamento.dominio.estados import MotivoEstorno
+    from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
 
 URL_PUBLICA = "http://billing.teste"
 SEGREDO_WEBHOOK = "segredo-do-webhook-de-teste"
@@ -150,6 +152,13 @@ class RelogioFixo:
         return self.agora
 
 
+def provedor_descartavel() -> TracerProvider:
+    """Provider so para a API de um teste que nao olha spans: ``criar_app`` nao
+    instala o provider global nem instrumenta o PyMongo e o httpx por conta propria
+    (o teste que quer os spans pede ``rastreamento``)."""
+    return TracerProvider(shutdown_on_exit=False)
+
+
 def configuracao(**extra: str) -> Configuracao:
     return Configuracao.do_ambiente(
         {
@@ -164,11 +173,22 @@ def configuracao(**extra: str) -> Configuracao:
     )
 
 
+class MetricasDeOrcamentoEspia:
+    """``MetricasDeOrcamento`` que guarda as chamadas (sem Prometheus)."""
+
+    def __init__(self) -> None:
+        self.decisoes: list[tuple[StatusOrcamento, float]] = []
+
+    def decisao_registrada(self, decisao: StatusOrcamento, segundos: float) -> None:
+        self.decisoes.append((decisao, segundos))
+
+
 class MetricasEspia:
     """``MetricasDePagamento`` que guarda as chamadas (sem Prometheus)."""
 
     def __init__(self) -> None:
         self.estornos: list[MotivoEstorno] = []
+        self.valores: list[tuple[StatusPagamento, int]] = []
         self.estornos_automaticos_recusados = 0
         self.cancelamentos_recusados = 0
 
@@ -180,6 +200,9 @@ class MetricasEspia:
 
     def cancelamento_de_cobranca_recusado(self) -> None:
         self.cancelamentos_recusados += 1
+
+    def valor_registrado(self, estado: StatusPagamento, centavos: int) -> None:
+        self.valores.append((estado, centavos))
 
 
 class GatewayRoteirizado(GatewayPagamentoSimulado):

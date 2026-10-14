@@ -95,6 +95,11 @@ configMapGenerator:
       - OTEL_ENABLED=true
       - OTEL_SERVICE_NAME=billing-service
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger.pytstop-plataforma.svc.cluster.local:4317
+      # Prazo de saida dos spans (o SDK le as duas): com o Jaeger fora, o SIGTERM
+      # do rollout espera cerca de 2 s por lote, e nao os 30 s do padrao, que
+      # eram todo o terminationGracePeriodSeconds do pod.
+      - OTEL_BSP_EXPORT_TIMEOUT=2000
+      - OTEL_EXPORTER_OTLP_TIMEOUT=2
   - name: billing-mongo-scripts
     files:
       - replica-set.js

@@ -1,0 +1,12 @@
+# Valores ficticios de teste que chegaram ao historico deste PR com um formato que
+# as regras acusam. Hoje o codigo nao tem nenhum deles (a constante do token se
+# chama LINK_FICTICIO e o texto do erro do pika nao e uma URL com senha), e o
+# historico publicado nao se reescreve: a excecao e o fingerprint de cada achado
+# (commit, arquivo, regra e linha), e nada alem dele. Depois do squash do PR esses
+# commits somem da main e as linhas podem sair.
+#
+# TOKEN = "<uuid>.<prazo>.<assinatura>" do teste do hook de URL (generic-api-key).
+e382e8f28ef61b90a6606107835139a2239adaed:tests/unitarios/test_rastreamento.py:generic-api-key:17
+# amqp://billing:<texto>@rabbitmq no erro simulado do pika (pytstop-url-amqp-com-senha).
+6c00a8045c13b37af3a1f7caff3d480b60fc9f58:tests/integracao/test_consumidor.py:pytstop-url-amqp-com-senha:789
+6c00a8045c13b37af3a1f7caff3d480b60fc9f58:tests/integracao/test_rastreamento.py:pytstop-url-amqp-com-senha:606

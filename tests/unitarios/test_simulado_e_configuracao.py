@@ -380,6 +380,28 @@ class TestConfiguracao:
                 {"ENVIRONMENT": "test", "MP_MODE": "mercadopago"}
             )
 
+    @pytest.mark.parametrize("pontas", ["\n", "\r\n", " ", "\t\n"])
+    def test_token_do_mercado_pago_perde_as_pontas_em_branco(self, pontas: str) -> None:
+        """Secret criado de um arquivo com quebra de linha no fim: o h11 recusaria
+        o cabecalho ``Authorization`` e o erro citaria o token."""
+        config = Configuracao.do_ambiente(
+            {**PRODUCAO, "MP_ACCESS_TOKEN": f"{pontas}APP_USR-1{pontas}"}
+        )
+        assert config.mp_access_token == "APP_USR-1"
+
+    def test_token_so_com_espacos_vale_como_ausente(self) -> None:
+        with pytest.raises(ValueError, match="exige MP_ACCESS_TOKEN"):
+            Configuracao.do_ambiente({**PRODUCAO, "MP_ACCESS_TOKEN": " \n"})
+
+    @pytest.mark.parametrize("controle", ["\n", "\r", "\x00", "\t", "\x7f"])
+    def test_token_com_caractere_de_controle_recusa_o_boot_sem_citar_o_valor(
+        self, controle: str
+    ) -> None:
+        token = f"APP_USR-PARTE-1{controle}PARTE-2"
+        with pytest.raises(ValueError, match="caractere de controle") as erro:
+            Configuracao.do_ambiente({**PRODUCAO, "MP_ACCESS_TOKEN": token})
+        assert "PARTE" not in str(erro.value)
+
     def test_prazos_curtos_para_demo(self) -> None:
         config = Configuracao.do_ambiente(
             {

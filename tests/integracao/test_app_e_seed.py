@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 from pymongo import MongoClient
 from pymongo.errors import WriteError
 
@@ -28,7 +29,7 @@ from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
 from src.precos.aplicacao.use_cases import PrecosDeServicos
 from src.precos.infraestrutura.repository import MongoPrecoServicoRepository
-from tests.integracao.apoio import configuracao
+from tests.integracao.apoio import configuracao, provedor_descartavel
 
 if TYPE_CHECKING:
     from pymongo.database import Database
@@ -50,6 +51,27 @@ def test_metrics_expoe_http_e_dependencias(api: TestClient) -> None:
         'http_request_duration_seconds_count{method="GET",rota="/api/v1/saude"' in texto
     )
     assert "pytstop_circuit_breaker_aberto" in texto
+    # Coletor da outbox, registrado na API: a idade sobrevive ao relay parado.
+    for nome in (
+        "outbox_pendentes",
+        "outbox_dead",
+        "pytstop_outbox_mais_antiga_segundos",
+        "pytstop_orcamentos_tempo_decisao_segundos_count",
+        "pytstop_pagamentos_valor_centavos_total",
+        "pytstop_mercadopago_requisicoes_total",
+    ):
+        assert f"\n{nome}" in f"\n{texto}"
+
+
+def test_encerrar_a_api_tira_o_coletor_da_outbox_do_registro(banco: Banco) -> None:
+    """O registro recusa um segundo coletor com os mesmos nomes: se o lifespan nao
+    desfizesse o seu, a API seguinte (ou outro teste) falharia ao registrar."""
+    for _ in range(2):
+        with TestClient(
+            criar_app(configuracao(), banco=banco, provedor=provedor_descartavel())
+        ):
+            assert REGISTRY.get_sample_value("outbox_pendentes") is not None
+        assert REGISTRY.get_sample_value("outbox_pendentes") is None
 
 
 def test_openapi_documenta_as_rotas_do_billing(api: TestClient) -> None:
@@ -69,7 +91,11 @@ def test_openapi_documenta_as_rotas_do_billing(api: TestClient) -> None:
 
 
 def test_swagger_em_todo_ambiente_e_sem_redirect_de_barra(banco: Banco) -> None:
-    app = criar_app(configuracao(**PRODUCAO, SIMULADOR_PERMITIDO="true"), banco=banco)
+    app = criar_app(
+        configuracao(**PRODUCAO, SIMULADOR_PERMITIDO="true"),
+        banco=banco,
+        provedor=provedor_descartavel(),
+    )
     with TestClient(app, follow_redirects=False) as cliente:
         assert cliente.get("/docs").status_code == 200
         assert cliente.get("/redoc").status_code == 200
@@ -100,7 +126,7 @@ def test_log_do_uvicorn_sai_em_json_desde_a_fabrica(
     servidor = logging.getLogger("uvicorn.error")
     servidor.handlers = [logging.StreamHandler()]
     servidor.propagate = False
-    criar_app(configuracao(), banco=banco)
+    criar_app(configuracao(), banco=banco, provedor=provedor_descartavel())
     servidor.info("Started server process [%d]", 7)
     linha = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert (linha["event"], linha["level"]) == ("Started server process [7]", "info")
@@ -116,7 +142,10 @@ class TestBancoEProntidao:
         jwks_publicado: dict[str, Any],
     ) -> None:
         nome = f"teste_{uuid4().hex}"
-        app = criar_app(configuracao(MONGODB_URI=mongo_uri, MONGODB_DB=nome))
+        app = criar_app(
+            configuracao(MONGODB_URI=mongo_uri, MONGODB_DB=nome),
+            provedor=provedor_descartavel(),
+        )
         monkeypatch.setenv("ENVIRONMENT", "test")
         monkeypatch.setenv("MONGODB_URI", mongo_uri)
         monkeypatch.setenv("MONGODB_DB", nome)
@@ -142,7 +171,11 @@ class TestBancoEProntidao:
         self, jwks_publicado: dict[str, Any]
     ) -> None:
         inalcancavel = criar_cliente("mongodb://127.0.0.1:1/?directConnection=true")
-        app = criar_app(configuracao(), banco=inalcancavel["billing"])
+        app = criar_app(
+            configuracao(),
+            banco=inalcancavel["billing"],
+            provedor=provedor_descartavel(),
+        )
         try:
             with TestClient(app) as cliente:
                 assert cliente.get("/api/v1/saude").status_code == 200
@@ -158,9 +191,15 @@ class TestBancoEProntidao:
 
     @pytest.mark.parametrize(
         ("versao", "aceita"),
-        [(2, False), (3, True), (VERSAO_DO_BANCO + 1, True)],
+        [
+            (2, False),
+            (3, False),
+            (VERSAO_DO_BANCO, True),
+            (VERSAO_DO_BANCO + 1, True),
+        ],
         ids=[
             "anterior-ao-indice-ttl-das-mortas",
+            "anterior-ao-indice-da-idade-da-outbox",
             "atual",
             "banco-a-frente-apos-rollout-undo",
         ],
@@ -279,7 +318,7 @@ def test_simulador_permitido_em_producao_sobe_e_fica_no_log(
     banco: Banco, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = configuracao(**PRODUCAO, SIMULADOR_PERMITIDO="true")
-    app = criar_app(config, banco=banco)
+    app = criar_app(config, banco=banco, provedor=provedor_descartavel())
     with TestClient(app) as cliente:
         assert cliente.get("/api/v1/saude").json()["modo"] == "simulado"
     assert "payment_simulator_enabled_in_production" in capsys.readouterr().out

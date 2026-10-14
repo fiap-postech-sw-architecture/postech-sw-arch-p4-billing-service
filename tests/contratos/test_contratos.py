@@ -29,9 +29,10 @@ import yaml
 
 from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mensageria.consumidor import NIVEIS_DE_RETRY
-from src.consumidor import FILA
+from src.consumidor import FILA, criar_handlers
 from src.main import criar_app
-from tests.integracao.apoio import configuracao
+from src.pagamento.infraestrutura.gateway import criar_gateway
+from tests.integracao.apoio import configuracao, provedor_descartavel
 
 RAIZ = contratos.diretorio()
 ORIGEM = (RAIZ / "ORIGEM").read_text(encoding="utf-8").strip()
@@ -46,12 +47,9 @@ COPIADOS = sorted(
     for caminho in RAIZ.rglob("*")
     if caminho.is_file() and caminho.name != "ORIGEM"
 )
-COMANDOS = {
-    "GerarOrcamento",
-    "CancelarOrcamento",
-    "SolicitarPagamento",
-    "EstornarPagamento",
-}
+# O que o asyncapi.yaml diz que o OS produz; test_asyncapi_diz_quem_publica...
+# prova que e exatamente isso (e que o resto o Billing produz).
+COMANDOS = contratos.COMANDOS
 
 
 def _no_platform(copia: Path) -> str:
@@ -208,6 +206,12 @@ def test_asyncapi_diz_quem_publica_cada_tipo_do_billing() -> None:
     assert {produtores[tipo] for tipo in eventos} == {"billing"}
 
 
+def test_consumidor_tem_um_handler_para_cada_comando_e_so_para_eles() -> None:
+    config = configuracao().comandos
+    assert set(criar_handlers(config, gateway=criar_gateway(config))) == COMANDOS
+    assert contratos.eventos_publicados() == contratos.tipos_com_contrato() - COMANDOS
+
+
 @pytest.mark.parametrize("tipo", sorted(contratos.tipos_com_contrato() - COMANDOS))
 def test_routing_key_do_evento_e_a_do_asyncapi(tipo: str) -> None:
     documento = yaml.safe_load((RAIZ / "asyncapi.yaml").read_text(encoding="utf-8"))
@@ -316,7 +320,7 @@ def test_sem_os_schemas_a_api_nao_sobe(
     contratos._validadores.cache_clear()
     try:
         with pytest.raises(contratos.ContratosAusentesError, match="CONTRATOS_DIR"):
-            criar_app(configuracao())
+            criar_app(configuracao(), provedor=provedor_descartavel())
     finally:
         monkeypatch.delenv("CONTRATOS_DIR")
         contratos._validadores.cache_clear()

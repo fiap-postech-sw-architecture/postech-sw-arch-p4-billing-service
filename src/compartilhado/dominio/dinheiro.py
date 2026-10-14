@@ -68,6 +68,11 @@ class Dinheiro(ValueObject):
             msg = f"Moeda deve ter 3 letras maiusculas: {self.moeda}"
             raise ValorInvalidoError(msg)
 
+    @property
+    def centavos(self) -> int:
+        """Valor em centavos inteiros, exato porque o VO fixa duas casas decimais."""
+        return int(self.valor * 100)
+
     def __add__(self, outro: Dinheiro) -> Dinheiro:
         if not isinstance(outro, Dinheiro):
             return NotImplemented

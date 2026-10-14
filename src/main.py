@@ -8,18 +8,26 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI
+from prometheus_client import REGISTRY
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.jwks import ValidadorDeTokenJWKS
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
+from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
+from src.compartilhado.infraestrutura.mensageria.telemetria import (
+    configurar_telemetria,
+)
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
 from src.compartilhado.infraestrutura.mongo import criar_cliente
+from src.compartilhado.infraestrutura.unit_of_work import COLECAO_OUTBOX
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
+from src.compartilhado.interfaces.rastreamento import instrumentar_api
 from src.compartilhado.interfaces.router_saude import router as router_saude
 from src.configuracao import Configuracao, ModoMercadoPago
 from src.orcamento.aplicacao.link_decisao import CAMINHO_DO_LINK, LinkDeDecisao
+from src.orcamento.infraestrutura.metricas import MetricasDeOrcamentoPrometheus
 from src.orcamento.interfaces.router import router as router_orcamentos
 from src.orcamento.interfaces.router_publico import router as router_publico
 from src.pagamento.infraestrutura.gateway import criar_gateway
@@ -32,6 +40,7 @@ from src.precos.interfaces.router import router as router_precos
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from opentelemetry.sdk.trace import TracerProvider
     from pymongo.database import Database
 
     from src.compartilhado.dominio.relogio import Relogio
@@ -48,15 +57,26 @@ def criar_app(
     banco: Database[Documento] | None = None,
     gateway: GatewayPagamento | None = None,
     relogio: Relogio = agora_utc,
+    provedor: TracerProvider | None = None,
 ) -> FastAPI:
-    """Monta a API. ``banco``, ``gateway`` e ``relogio`` injetados servem aos testes.
+    """Monta a API. ``banco``, ``gateway``, ``relogio`` e ``provedor`` injetados
+    servem aos testes.
 
     E a fabrica do uvicorn (``--factory``): o log JSON e configurado aqui, antes
-    da primeira linha do servidor, e nao no lifespan.
+    da primeira linha do servidor, e nao no lifespan. Sem ``provedor``, a API
+    instala o do processo (``configurar_telemetria``) e o encerra no fim do
+    lifespan, o que descarrega os spans sem depender de o uvicorn ser o PID 1:
+    como PID 1 (o container) o ``atexit`` do SDK ja rodava, mas fora dele o
+    uvicorn re-levanta o SIGTERM e o processo morre sem rodar o ``atexit``. Quem
+    injeta o provider e dono dele.
     """
     configurar_logging()
     config = config or Configuracao.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
+    # Antes de criar o cliente do MongoDB (no lifespan): o PyMongo so rastreia
+    # os clientes criados depois da instrumentacao.
+    dono_do_provedor = provedor is None
+    provedor = provedor or configurar_telemetria("api")
     gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
 
@@ -70,13 +90,20 @@ def criar_app(
         # init, ``python -m src.banco``).
         cliente = None if banco is not None else criar_cliente(config.mongodb_uri)
         app.state.banco = banco if cliente is None else cliente[config.mongodb_banco]
+        # Idade da outbox na raspagem da API: com o relay parado ela segue
+        # exportada, e e ela que mantem o alerta de outbox parada de pe.
+        coletor = ColetorDaOutbox(COLECAO_OUTBOX, app.state.banco)
+        REGISTRY.register(coletor)
         try:
             yield
         finally:
+            REGISTRY.unregister(coletor)
             if cliente is not None:
                 cliente.close()
             if isinstance(gateway, MercadoPagoGateway):
                 gateway.fechar()
+            if dono_do_provedor:
+                provedor.shutdown()
 
     app = FastAPI(
         title="PytStop Billing Service",
@@ -92,12 +119,12 @@ def criar_app(
         # Sem o export automatico do FastAPI: com o endpoint OTLP no ambiente
         # ele soma exportadores http/protobuf na partida, que pedem o extra
         # fastapi[opentelemetry] (o endpoint do cluster e gRPC) e deixavam um
-        # aviso no log de boot. A API ainda nao exporta traces nem metricas (nao
-        # instala o SDK, ver mensageria/telemetria.py); a flag so tira o aviso,
-        # e os spans nativos e a leitura do traceparent ficam como estavam. Quem
-        # exporta, por gRPC, sao o relay, o consumidor e o prazos.
+        # aviso no log de boot. Quem exporta, por gRPC, e o provider do processo
+        # (mensageria/telemetria.py), e os spans do FastAPI saem da instrumentacao
+        # de rastreamento.py, que desliga a telemetria nativa dele.
         telemetry={"auto_configure": False},
     )
+    instrumentar_api(app, provedor)
     _montar_estado(app, config, gateway, relogio)
     _incluir_rotas(app, config)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -114,6 +141,7 @@ def _montar_estado(
     app.state.relogio = relogio
     app.state.gateway_pagamento = gateway
     app.state.metricas_pagamento = MetricasPrometheus()
+    app.state.metricas_orcamento = MetricasDeOrcamentoPrometheus()
     app.state.link_decisao = LinkDeDecisao(
         segredo=config.link_segredo, url_base=f"{config.url_publica}{CAMINHO_DO_LINK}"
     )

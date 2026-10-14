@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
@@ -24,6 +25,7 @@ from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.compartilhado.infraestrutura.mensageria import contratos
 from src.compartilhado.infraestrutura.mensageria.telemetria import (
     configurar_telemetria,
+    marcar_falha,
     tracer,
 )
 from src.compartilhado.infraestrutura.mongo import conferir_versao, criar_cliente
@@ -45,8 +47,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from opentelemetry.trace import Span
     from pymongo.database import Database
 
+    from src.compartilhado.dominio.aggregate_root import AggregateRoot
     from src.compartilhado.dominio.relogio import Relogio
     from src.compartilhado.infraestrutura.mongo import Documento
     from src.pagamento.aplicacao.ports import GatewayPagamento, MetricasDePagamento
@@ -62,13 +66,43 @@ ULTIMO_CICLO = Gauge(
 
 
 class _UnidadeDoPrazo(MongoUnitOfWork):
-    """Cada transacao do ``prazos`` (expiracao ou conciliacao de um registro)
-    num span proprio: o evento gravado nela sai com span link para este trace
-    (ADR-043). Ciclo sem nada vencido nem a conciliar nao abre span."""
+    """Cada transacao do ``prazos`` que ESCREVE (expiracao ou conciliacao que muda
+    o registro) num span proprio, aberto na primeira escrita: o evento gravado
+    nela sai com span link para este trace (ADR-043).
+
+    Transacao sem escrita (ciclo sem nada vencido, conciliacao que reaplica uma
+    tentativa ja registrada) nao abre span: as consultas dela nascem sem pai e o
+    amostrador as descarta, entao um ciclo ocioso nao deixa trace, nem com o
+    gateway de conciliacao ligado. Toda escrita do ``prazos`` passa por ``gravar``.
+    """
+
+    def __init__(
+        self, banco: Database[Documento], *, relogio: Relogio = agora_utc
+    ) -> None:
+        super().__init__(banco, relogio=relogio)
+        self._pilha: ExitStack | None = None
+        self._span: Span | None = None
 
     def executar[T](self, trabalho: Callable[[], T]) -> T:
-        with tracer.start_as_current_span("prazos"):
-            return super().executar(trabalho)
+        with ExitStack() as pilha:
+            self._pilha = pilha
+            try:
+                return super().executar(trabalho)
+            except Exception as exc:
+                if self._span is not None:
+                    marcar_falha(self._span, exc)
+                raise
+            finally:
+                self._pilha = self._span = None
+
+    def gravar(
+        self, colecao: str, agregado: AggregateRoot, documento: Documento
+    ) -> None:
+        if self._span is None and self._pilha is not None:
+            self._span = self._pilha.enter_context(
+                tracer.start_as_current_span("prazos")
+            )
+        super().gravar(colecao, agregado, documento)
 
 
 @dataclass(frozen=True, slots=True)

@@ -62,7 +62,10 @@ audit:
 # job build do CI: sobe a stack (o --wait espera o healthcheck de cada servico,
 # inclusive relay e consumidor prontos, conectados ao RabbitMQ; servico doente
 # derruba o --wait), publica um GerarOrcamento como o OS e espera o
-# OrcamentoGerado (scripts/smoke_mensageria.py), confere a readiness da API
+# OrcamentoGerado (scripts/smoke_mensageria.py), confere que o /metrics de cada
+# um dos quatro processos lista as series do catalogo que sao dele, as de rotulo
+# fechado em zero e as do fluxo que acabou de rodar em 1
+# (scripts/smoke_metricas.py), confere a readiness da API
 # (MongoDB preparado), que rota autenticada sem token responde 401, que a
 # resposta nao anuncia o servidor (os cabecalhos vem de uma variavel: num pipe,
 # a falha do curl seria engolida e o smoke passaria sem ter olhado nada), que a
@@ -95,6 +98,14 @@ smoke:
 	&& echo "relay e consumidor prontos (healthcheck: conectados ao RabbitMQ)" \
 	&& $(SMOKE_COMPOSE) exec -T -e SMOKE_OS_URL=$(SMOKE_OS_URL) relay \
 		python - < scripts/smoke_mensageria.py \
+	&& $(SMOKE_COMPOSE) exec -T api \
+		python - api http://127.0.0.1:8000/metrics < scripts/smoke_metricas.py \
+	&& $(SMOKE_COMPOSE) exec -T relay \
+		python - relay http://127.0.0.1:9100/metrics < scripts/smoke_metricas.py \
+	&& $(SMOKE_COMPOSE) exec -T consumidor \
+		python - consumidor http://127.0.0.1:9100/metrics < scripts/smoke_metricas.py \
+	&& $(SMOKE_COMPOSE) exec -T prazos \
+		python - prazos http://127.0.0.1:9100/metrics < scripts/smoke_metricas.py \
 	&& curl -fsS --max-time 5 $(SMOKE_URL)/api/v1/saude/pronto && echo \
 	&& codigo="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 $(SMOKE_URL)/api/v1/precos/servicos)" \
 	&& test "$$codigo" = 401 \
@@ -115,7 +126,7 @@ smoke:
 	&& { $(SMOKE_COMPOSE) exec -T -e ENVIRONMENT=production api python -c "$(SMOKE_GUARDA)" 2>&1 \
 		| grep -q 'ORCAMENTO_LINK_SECRET usa o valor de demonstracao' \
 		|| { echo "smoke: com ENVIRONMENT=production a imagem aceita o segredo de demonstracao" >&2; false; }; } \
-	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server, usuario 1001, boot em JSON, sem access log do uvicorn, sem aviso de telemetria, segredo de demonstracao recusado em producao" \
+	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server, usuario 1001, boot em JSON, sem access log do uvicorn, sem aviso de telemetria, metricas dos quatro processos, segredo de demonstracao recusado em producao" \
 	|| status=$$?; \
 	if [ $$status -ne 0 ]; then $(SMOKE_COMPOSE) logs --no-color --tail=200; fi; \
 	$(SMOKE_COMPOSE) down -v; \

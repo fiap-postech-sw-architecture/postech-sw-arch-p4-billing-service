@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC
 from decimal import Decimal
+from itertools import product
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -74,6 +75,26 @@ MERCADOPAGO_REQUISICOES = Counter(
     "Chamadas ao Mercado Pago por operacao e resultado.",
     ["operacao", "resultado"],
 )
+# Os rotulos sao fechados (RFC-004, secao 9): as 35 combinacoes nascem com zero,
+# e o painel de falhas nao perde a primeira de cada uma.
+OPERACOES: Final = (
+    "criar_cobranca",
+    "cancelar_cobranca",
+    "consultar_pagamento",
+    "buscar_pagamentos",
+    "estornar",
+)
+RESULTADOS: Final = (
+    "sucesso",
+    "recusado",
+    "nao_encontrado",
+    "falha_transitoria",
+    "resposta_invalida",
+    "circuito_aberto",
+    "status_desconhecido",
+)
+for _operacao, _resultado in product(OPERACOES, RESULTADOS):
+    MERCADOPAGO_REQUISICOES.labels(_operacao, _resultado)
 
 # Status de uma TENTATIVA de pagamento no Mercado Pago. `rejected` e uma recusa
 # (o agregado conta ate PAGAMENTO_MAX_RECUSAS); `refunded` e estorno. Os demais

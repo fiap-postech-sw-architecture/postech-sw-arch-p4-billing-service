@@ -43,14 +43,17 @@ x-comandos: &comandos
 x-broker: &broker
   RABBITMQ_URL: amqp://billing:${RABBITMQ_BILLING_PASSWORD:-pytstop-billing-demo-2026}@rabbitmq:5672/%2F  # gitleaks:allow
 
-# Variaveis OTEL: os processos com o SDK do OpenTelemetry (relay, consumidor,
-# prazos) as usam para exportar traces; a API ainda nao exporta, mas leva as
-# mesmas (como no ConfigMap do cluster) porque o FastAPI le o endpoint OTLP na
-# partida, e o smoke confere que isso nao gera aviso no log.
+# Variaveis OTEL: os quatro processos (api, relay, consumidor, prazos) instalam
+# o SDK do OpenTelemetry e exportam os traces com OTEL_ENABLED=true. O endpoint
+# no ambiente da API (como no ConfigMap do cluster) tambem e o que o FastAPI le
+# na partida; o smoke confere que ele nao gera aviso no log.
 x-traces: &traces
   OTEL_ENABLED: ${OTEL_ENABLED:-false}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
   OTEL_SERVICE_NAME: billing-service
+  # Prazo de saida dos spans (o SDK le as duas): ver o ConfigMap do cluster.
+  OTEL_BSP_EXPORT_TIMEOUT: "2000"
+  OTEL_EXPORTER_OTLP_TIMEOUT: "2"
 
 # Heartbeat em arquivo tocado a cada volta do laco: saudavel com o arquivo
 # recente e "pronto" (conexao com o broker estabelecida).

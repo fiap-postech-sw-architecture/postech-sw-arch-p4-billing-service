@@ -27,6 +27,12 @@ dependencies = [
     # (ADR-043), ligada por OTEL_ENABLED.
     "opentelemetry-sdk>=1.45.1,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
+    # Instrumentacao da API, do MongoDB e do cliente HTTP do Mercado Pago. Par
+    # casado com o SDK 1.45.x: o SDK exige opentelemetry-semantic-conventions
+    # ==0.66bN, entao atualizar o SDK e estes tres juntos.
+    "opentelemetry-instrumentation-fastapi>=0.66b1,<0.67",
+    "opentelemetry-instrumentation-pymongo>=0.66b1,<0.67",
+    "opentelemetry-instrumentation-httpx>=0.66b1,<0.67",
 ]
 
 [dependency-groups]

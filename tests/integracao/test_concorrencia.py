@@ -54,6 +54,7 @@ from tests.factories import (
 from tests.integracao.apoio import (
     LINK,
     GatewayRoteirizado,
+    MetricasDeOrcamentoEspia,
     MetricasEspia,
     RelogioFixo,
     eventos_do_outbox,
@@ -158,9 +159,9 @@ def test_corrida_entre_decisao_e_expiracao_tem_um_so_vencedor(
             MongoOrcamentoRepository(uow), "obter_por_id", barreira, espera("decisao")
         )
         try:
-            return DecidirOrcamento(uow, repo, LINK, no_limite).por_atendente(
-                gerado.id, aprovar=True, decidido_por=ATENDENTE_SUB
-            )
+            return DecidirOrcamento(
+                uow, repo, LINK, MetricasDeOrcamentoEspia(), no_limite
+            ).por_atendente(gerado.id, aprovar=True, decidido_por=ATENDENTE_SUB)
         finally:
             comitou["decisao"].set()
 

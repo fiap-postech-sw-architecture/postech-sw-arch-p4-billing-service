@@ -42,7 +42,11 @@ if TYPE_CHECKING:
     from src.compartilhado.dominio.relogio import Relogio
     from src.orcamento.aplicacao.dtos import ItemSolicitado
     from src.orcamento.aplicacao.link_decisao import LinkDeDecisao
-    from src.orcamento.aplicacao.ports import Cotacao, TabelaDePrecosPort
+    from src.orcamento.aplicacao.ports import (
+        Cotacao,
+        MetricasDeOrcamento,
+        TabelaDePrecosPort,
+    )
     from src.orcamento.dominio.repository import OrcamentoRepository
 
 _log = logging.getLogger(__name__)
@@ -195,18 +199,24 @@ def _codigos(itens: Sequence[ItemSolicitado], tipo: TipoItem) -> list[str]:
 
 
 class DecidirOrcamento:
-    """Decisao do cliente: pelo link publico assinado ou pelo atendente."""
+    """Decisao do cliente: pelo link publico assinado ou pelo atendente.
+
+    O tempo ate a decisao vai para a metrica depois do commit: decisao que nao
+    comitou (conflito com a expiracao, falha da transacao) nao conta.
+    """
 
     def __init__(
         self,
         uow: UnitOfWork,
         orcamentos: OrcamentoRepository,
         link: LinkDeDecisao,
+        metricas: MetricasDeOrcamento,
         relogio: Relogio = agora_utc,
     ) -> None:
         self._uow = uow
         self._orcamentos = orcamentos
         self._link = link
+        self._metricas = metricas
         self._relogio = relogio
 
     def por_link(self, token: str, *, aprovar: bool) -> OrcamentoDTO:
@@ -240,16 +250,20 @@ class DecidirOrcamento:
         canal: CanalDecisao,
         decidido_por: str | None = None,
     ) -> OrcamentoDTO:
-        def trabalho() -> Orcamento:
+        def trabalho() -> tuple[Orcamento, float]:
             # Relido a cada tentativa: se a expiracao comitou antes, a decisao
             # ve o orcamento EXPIRADO e falha (sem sobrescrever).
             orcamento = _obter(self._orcamentos, orcamento_id)
+            agora = self._relogio()
             decidir = orcamento.aprovar if aprovar else orcamento.recusar
-            decidir(canal=canal, agora=self._relogio(), decidido_por=decidido_por)
+            decidir(canal=canal, agora=agora, decidido_por=decidido_por)
             self._orcamentos.salvar(orcamento)
-            return orcamento
+            # Da geracao a decisao; o relogio de outro pod pode atrasar alguns ms.
+            return orcamento, max(0.0, (agora - orcamento.criado_em).total_seconds())
 
-        return OrcamentoDTO.de(self._uow.executar(trabalho))
+        orcamento, segundos = self._uow.executar(trabalho)
+        self._metricas.decisao_registrada(orcamento.status, segundos)
+        return OrcamentoDTO.de(orcamento)
 
 
 class ExpirarOrcamentosVencidos:

@@ -15,6 +15,7 @@ def obter_decidir_orcamento(request: Request) -> DecidirOrcamento:
         uow,
         MongoOrcamentoRepository(uow),
         request.app.state.link_decisao,
+        request.app.state.metricas_orcamento,
         request.app.state.relogio,
     )
 

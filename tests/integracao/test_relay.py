@@ -12,6 +12,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -19,9 +20,9 @@ from uuid import uuid4
 import pika
 import pytest
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, StatusCode
 from pika.exceptions import AMQPConnectionError, StreamLostError
-from prometheus_client import REGISTRY
+from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
 from pymongo import MongoClient
 from pymongo.errors import AutoReconnect
 
@@ -34,6 +35,7 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
 from src.compartilhado.infraestrutura.mensageria.metricas import ColetorDaOutbox
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox, _Linha
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_atual
+from src.compartilhado.infraestrutura.mongo import criar_cliente
 from src.compartilhado.infraestrutura.processo import CONECTANDO, PRONTO
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
@@ -300,7 +302,7 @@ class TestEntrega:
 
 class TestFalhas:
     def test_recusa_conta_tentativa_com_os_atrasos_do_p3_ate_dead(
-        self, banco: Banco
+        self, banco: Banco, spans: InMemorySpanExporter
     ) -> None:
         relogio = RelogioFixo()
         _gravar_orcamentos(banco)
@@ -327,9 +329,20 @@ class TestFalhas:
         assert morta["morta_em"] == relogio.agora
         relogio.avancar(hours=1)
         assert relay.entregar_pendentes(1) == 0
+        # Cada tentativa recusada marca o span com a classe da falha, sem texto.
+        publicacoes = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert len(publicacoes) == 5
+        assert {(s.status.status_code, s.status.description) for s in publicacoes} == {
+            (StatusCode.ERROR, None)
+        }
+        assert {(s.attributes or {})["pytstop.falha"] for s in publicacoes} == {
+            "MensagemRecusadaError"
+        }
 
     def test_queda_do_broker_devolve_a_linha_sem_gastar_tentativa(
-        self, banco: Banco
+        self, banco: Banco, spans: InMemorySpanExporter
     ) -> None:
         relogio = RelogioFixo()
         _gravar_orcamentos(banco)
@@ -338,13 +351,22 @@ class TestFalhas:
         with pytest.raises(StreamLostError):
             relay.entregar_pendentes(10)
 
+        [publicacao] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert publicacao.status.status_code is StatusCode.ERROR
+        assert (publicacao.attributes or {})["pytstop.falha"] == "StreamLostError"
+
         [linha] = _linhas(banco)
         assert (linha["status"], linha["tentativas"]) == ("pendente", 0)
         assert linha["proxima_tentativa_em"] == relogio.agora
         assert "reivindicacao" not in linha
 
     def test_defeito_ao_publicar_conta_tentativa_em_vez_de_derrubar_o_relay(
-        self, banco: Banco, caplog: pytest.LogCaptureFixture
+        self,
+        banco: Banco,
+        caplog: pytest.LogCaptureFixture,
+        spans: InMemorySpanExporter,
     ) -> None:
         relogio = RelogioFixo()
         _gravar_orcamentos(banco)
@@ -352,6 +374,13 @@ class TestFalhas:
 
         with caplog.at_level(logging.ERROR):
             assert relay.entregar_pendentes(1) == 1
+
+        [publicacao] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert publicacao.status.status_code is StatusCode.ERROR
+        assert publicacao.status.description is None
+        assert (publicacao.attributes or {})["pytstop.falha"] == "ValueError"
 
         [linha] = _linhas(banco)
         assert (linha["status"], linha["tentativas"]) == ("pendente", 1)
@@ -664,29 +693,163 @@ class TestLacoDoProcesso:
 
 
 class TestMetricas:
+    AGORA = RelogioFixo().agora
+
+    def _situacoes(self, banco: Banco, **idades: Any) -> None:
+        """Uma linha por situacao, gravada ``idade`` segundos antes de ``AGORA``."""
+        situacoes = ("pendente", "em_entrega", "dead", "entregue")
+        _gravar_orcamentos(banco, len(situacoes))
+        for linha, status in zip(_linhas(banco), situacoes, strict=True):
+            idade = idades.get(status, 0)
+            banco["outbox"].update_one(
+                {"_id": linha["_id"]},
+                {
+                    "$set": {
+                        "status": status,
+                        "criado_em": self.AGORA - timedelta(seconds=idade),
+                    }
+                },
+            )
+
+    def _amostras(self, banco: Banco) -> dict[str, float]:
+        coletor = ColetorDaOutbox("outbox", banco, relogio=RelogioFixo(self.AGORA))
+        return {familia.name: familia.samples[0].value for familia in coletor.collect()}
+
     def test_pendentes_em_entrega_e_dead_contados_a_cada_scrape(
         self, banco: Banco
     ) -> None:
-        _gravar_orcamentos(banco, 4)
-        situacoes = ("pendente", "em_entrega", "dead", "entregue")
-        for linha, status in zip(_linhas(banco), situacoes, strict=True):
-            banco["outbox"].update_one(
-                {"_id": linha["_id"]}, {"$set": {"status": status}}
-            )
-        amostras = {
-            familia.name: familia.samples[0].value
-            for familia in ColetorDaOutbox("outbox", banco).collect()
-        }
+        self._situacoes(banco)
         # Pendente e em entrega ainda nao foram confirmadas pelo broker.
-        assert amostras == {"outbox_pendentes": 2, "outbox_dead": 1}
+        assert self._amostras(banco) == {
+            "outbox_pendentes": 2,
+            "outbox_dead": 1,
+            "pytstop_outbox_mais_antiga_segundos": 0,
+        }
 
-    def test_banco_fora_deixa_os_gauges_sem_dado(self) -> None:
-        inalcancavel = _banco_inalcancavel()
+    def test_idade_e_a_da_pendente_ou_em_entrega_mais_antiga(
+        self, banco: Banco
+    ) -> None:
+        # A morta e a entregue sao as mais velhas e nao contam.
+        self._situacoes(banco, pendente=100, em_entrega=500, dead=2000, entregue=900)
+        amostras = self._amostras(banco)
+        assert amostras["pytstop_outbox_mais_antiga_segundos"] == 500
+
+        # A pendente na frente da em entrega.
+        banco["outbox"].update_many(
+            {"status": "pendente"},
+            {"$set": {"criado_em": self.AGORA - timedelta(seconds=700)}},
+        )
+        amostras = self._amostras(banco)
+        assert amostras["pytstop_outbox_mais_antiga_segundos"] == 700
+
+    def test_pendente_esperando_o_backoff_continua_contando(self, banco: Banco) -> None:
+        """Falha do broker: a linha volta para pendente com a proxima tentativa
+        no futuro, e e ela que mostra o broker fora."""
+        self._situacoes(banco, pendente=300)
+        banco["outbox"].update_many(
+            {"status": {"$in": ["pendente", "em_entrega"]}},
+            {"$set": {"proxima_tentativa_em": self.AGORA + timedelta(seconds=64)}},
+        )
+        assert self._amostras(banco)["pytstop_outbox_mais_antiga_segundos"] == 300
+
+    def test_sem_pendente_a_idade_e_zero(self, banco: Banco) -> None:
+        self._situacoes(banco)
+        banco["outbox"].update_many({}, {"$set": {"status": "entregue"}})
+        assert self._amostras(banco) == {
+            "outbox_pendentes": 0,
+            "outbox_dead": 0,
+            "pytstop_outbox_mais_antiga_segundos": 0,
+        }
+
+    def test_relogio_atrasado_nao_gera_idade_negativa(self, banco: Banco) -> None:
+        """A linha gravada por outro pod, com o relogio adiantado."""
+        self._situacoes(banco, pendente=-5)
+        banco["outbox"].update_many(
+            {"status": "em_entrega"}, {"$set": {"status": "dead"}}
+        )
+        assert self._amostras(banco)["pytstop_outbox_mais_antiga_segundos"] == 0
+
+    def test_o_relogio_padrao_e_o_do_dominio(self, banco: Banco) -> None:
+        self._situacoes(banco, pendente=60)
+        [familia] = [
+            f
+            for f in ColetorDaOutbox("outbox", banco).collect()
+            if f.name == "pytstop_outbox_mais_antiga_segundos"
+        ]
+        # As linhas de teste sao de 06/10/2026: a idade real passa de um dia.
+        assert familia.samples[0].value > 86400
+
+    def test_registrar_o_coletor_nao_consulta_o_banco(self) -> None:
+        """O boot da API nao espera o MongoDB (o registro so descobre os nomes
+        por ``collect`` sem o ``describe``)."""
+
+        class ColecaoQueNaoDeviaSerConsultada:
+            def count_documents(self, *_args: Any, **_opcoes: Any) -> int:
+                raise AssertionError("consultou o banco no registro")
+
+            find_one = count_documents
+
+        class Banco:
+            def __getitem__(self, _nome: str) -> Any:
+                return ColecaoQueNaoDeviaSerConsultada()
+
+        registro = CollectorRegistry()
+        # Banco de mentira: so o registro e exercitado, sem o MongoDB.
+        coletor = ColetorDaOutbox("outbox", Banco())  # type: ignore[arg-type]
+        assert [f.name for f in coletor.describe()] == [
+            "outbox_pendentes",
+            "outbox_dead",
+            "pytstop_outbox_mais_antiga_segundos",
+        ]
+        assert [f.samples for f in coletor.describe()] == [[], [], []]
+
+        registro.register(coletor)
+        registro.unregister(coletor)
+
+    def test_segundo_coletor_com_os_mesmos_nomes_e_recusado(self, banco: Banco) -> None:
+        """Duas raspagens iguais na mesma resposta repetiriam a serie."""
+        registro = CollectorRegistry()
+        registro.register(ColetorDaOutbox("outbox", banco))
+
+        with pytest.raises(ValueError, match="Duplicated timeseries"):
+            registro.register(ColetorDaOutbox("outbox", banco))
+
+    def test_banco_fora_responde_no_prazo_e_sem_as_series(self) -> None:
+        """Com o cliente de producao (5 s para achar o servidor, 10 s por
+        operacao) a raspagem levava 10,1 s, mais que o ``scrape_timeout`` do
+        Prometheus: o alvo ficava ``up=0`` e sumiam as series de HTTP da API.
+        As series ausentes nao viram zero."""
+        registro = CollectorRegistry()
+        morto = criar_cliente("mongodb://127.0.0.1:1/?directConnection=true")
         try:
-            coletor = ColetorDaOutbox("outbox", inalcancavel["billing"])
-            assert list(coletor.collect()) == []
+            registro.register(ColetorDaOutbox("outbox", morto["billing"]))
+            inicio = time.monotonic()
+            texto = generate_latest(registro).decode()
+            duracao = time.monotonic() - inicio
         finally:
-            inalcancavel.close()
+            morto.close()
+
+        assert texto == ""
+        assert duracao < 5
+
+    def test_banco_lento_responde_no_prazo_e_sem_as_series(self) -> None:
+        """Servidor que aceita a conexao e nao responde (mongod travado)."""
+        registro = CollectorRegistry()
+        with socket.socket() as silencioso:
+            silencioso.bind(("127.0.0.1", 0))
+            silencioso.listen()
+            porta = silencioso.getsockname()[1]
+            lento = criar_cliente(f"mongodb://127.0.0.1:{porta}/?directConnection=true")
+            try:
+                registro.register(ColetorDaOutbox("outbox", lento["billing"]))
+                inicio = time.monotonic()
+                texto = generate_latest(registro).decode()
+                duracao = time.monotonic() - inicio
+            finally:
+                lento.close()
+
+        assert texto == ""
+        assert duracao < 5
 
 
 class TestCasosDeBorda:

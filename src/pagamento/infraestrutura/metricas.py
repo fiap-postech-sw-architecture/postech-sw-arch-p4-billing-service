@@ -1,10 +1,15 @@
-"""Metricas do pagamento (catalogo da RFC-004, secao 9)."""
+"""Metricas do pagamento (ADR-043)."""
 
 from __future__ import annotations
 
+import logging
+from typing import Final
+
 from prometheus_client import Counter
 
-from src.pagamento.dominio.estados import MotivoEstorno
+from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
+
+_log = logging.getLogger(__name__)
 
 PAGAMENTOS_ESTORNADOS = Counter(
     "pytstop_pagamentos_estornados",
@@ -21,9 +26,25 @@ CANCELAMENTOS_DE_COBRANCA_RECUSADOS = Counter(
     "Checkouts que o provedor recusou fechar na compensacao: o pagamento "
     "cancela assim mesmo e a aprovacao tardia e estornada.",
 )
-# Series com zero desde o boot: o painel e o alerta nao dependem do 1o estorno.
+# Dinheiro em centavos inteiros: o Prometheus guarda float64, e o painel divide
+# por 100 (a regra de nunca usar float para dinheiro vale ate o ultimo inteiro).
+PAGAMENTOS_VALOR = Counter(
+    "pytstop_pagamentos_valor_centavos",
+    "Valor dos pagamentos que entraram em CONFIRMADO e dos confirmados que "
+    "foram a ESTORNADO, em centavos.",
+    ["estado"],
+)
+# So estes dois estados contam valor; outro e defeito: vai para o log, nao vira
+# serie nova e nao derruba o caso de uso (o pagamento ja comitou).
+_ESTADOS: Final = {
+    StatusPagamento.CONFIRMADO: "confirmado",
+    StatusPagamento.ESTORNADO: "estornado",
+}
+# Series com zero desde o boot: o painel e o alerta nao dependem do 1o evento.
 for _motivo in MotivoEstorno:
     PAGAMENTOS_ESTORNADOS.labels(motivo=_motivo.value)
+for _rotulo in _ESTADOS.values():
+    PAGAMENTOS_VALOR.labels(estado=_rotulo)
 
 
 class MetricasPrometheus:
@@ -37,3 +58,10 @@ class MetricasPrometheus:
 
     def cancelamento_de_cobranca_recusado(self) -> None:
         CANCELAMENTOS_DE_COBRANCA_RECUSADOS.inc()
+
+    def valor_registrado(self, estado: StatusPagamento, centavos: int) -> None:
+        rotulo = _ESTADOS.get(estado)
+        if rotulo is None:
+            _log.error("payment_value_metric_skipped", extra={"status": estado.value})
+            return
+        PAGAMENTOS_VALOR.labels(estado=rotulo).inc(centavos)

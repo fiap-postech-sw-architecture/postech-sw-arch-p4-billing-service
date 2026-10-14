@@ -19,6 +19,10 @@ from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mensageria.contratos import (
     MensagemForaDoContratoError,
 )
+from src.compartilhado.infraestrutura.mensageria.metricas import (
+    MAIS_ANTIGA,
+    PENDENTES,
+)
 from src.compartilhado.infraestrutura.mensageria.telemetria import contexto_de
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
@@ -514,6 +518,41 @@ class TestIndices:
             "morta_em_1",
             "processada_em_1",
         }
+
+    def test_indice_da_idade_da_linha_pendente_mais_antiga(self, banco: Banco) -> None:
+        indice = banco["outbox"].index_information()["status_1_criado_em_1"]
+        assert indice["key"] == [("status", 1), ("criado_em", 1)]
+
+    def test_idade_da_mais_antiga_le_o_indice_e_nao_ordena_em_memoria(
+        self, banco: Banco
+    ) -> None:
+        """A raspagem da API e a do relay pagam a consulta a cada 15 s: com 100 mil
+        pendentes (o broker fora) ordenar em memoria custava 64 ms por raspagem."""
+
+        def estagios(plano: Any) -> list[str]:
+            if isinstance(plano, dict):
+                nomes = [plano["stage"]] if "stage" in plano else []
+                return nomes + [n for v in plano.values() for n in estagios(v)]
+            if isinstance(plano, list):
+                return [n for item in plano for n in estagios(item)]
+            return []
+
+        consulta = banco["outbox"].find(
+            PENDENTES, {"criado_em": 1}, sort=list(MAIS_ANTIGA), limit=1
+        )
+        sem_o_indice = (
+            banco["outbox"]
+            .find(PENDENTES, {"criado_em": 1}, sort=list(MAIS_ANTIGA), limit=1)
+            .hint("status_1_proxima_tentativa_em_1__id_1")
+        )
+
+        plano = estagios(consulta.explain()["queryPlanner"]["winningPlan"])
+        contraprova = estagios(sem_o_indice.explain()["queryPlanner"]["winningPlan"])
+
+        assert "IXSCAN" in plano
+        assert "SORT" not in plano
+        # O leitor do plano enxerga a ordenacao em memoria quando ela existe.
+        assert "SORT" in contraprova
 
     def test_indice_do_claim_do_relay(self, banco: Banco) -> None:
         indice = banco["outbox"].index_information()[

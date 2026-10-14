@@ -27,6 +27,12 @@ if TYPE_CHECKING:
 
 VERSAO: Final = 1
 EXCHANGE_EVENTOS: Final = "pytstop.eventos"
+# Comandos da saga que o Billing consome (RFC-004, secao 5.3). Os demais tipos
+# com contrato sao os eventos que ele publica; o asyncapi.yaml copiado diz quem
+# produz cada um, e um teste confere as duas listas contra ele.
+COMANDOS: Final = frozenset(
+    {"GerarOrcamento", "CancelarOrcamento", "SolicitarPagamento", "EstornarPagamento"}
+)
 _ENVELOPE: Final = "envelope"
 _PADRAO: Final = Path(__file__).resolve().parents[4] / "contratos"
 
@@ -73,6 +79,11 @@ def tipos_com_contrato() -> frozenset[str]:
     """Tipos de mensagem com schema copiado (sem o do envelope); carrega os
     schemas, entao serve de conferencia no boot dos processos."""
     return frozenset(_validadores()) - {_ENVELOPE}
+
+
+def eventos_publicados() -> frozenset[str]:
+    """Tipos de evento que o Billing publica: os com contrato, menos os comandos."""
+    return tipos_com_contrato() - COMANDOS
 
 
 def _conferir(validador: Draft202012Validator, instancia: object, onde: str) -> None:

@@ -234,6 +234,12 @@ class ProcessarNotificacaoPagamento:
             _ignorada(situacao.referencia, "payment_not_found")
             return None
         pagamento, resultado = aplicado
+        if resultado is ResultadoNotificacao.CONFIRMADO:
+            # Depois do commit: o conflito de transacao repete o trabalho, e o
+            # valor tem de entrar uma vez so.
+            self._metricas.valor_registrado(
+                StatusPagamento.CONFIRMADO, pagamento.valor_em_centavos
+            )
         if resultado is ResultadoNotificacao.ESTORNO_AUTOMATICO:
             pagamento = self._estornar_automaticamente(pagamento, situacao.referencia)
         return PagamentoDTO.de(pagamento)
@@ -557,6 +563,9 @@ class EstornarPagamento:
             pagamento.id, PlanoDeCompensacao.ESTORNAR_NO_PROVEDOR, motivo
         )
         self._metricas.estorno_concluido(MotivoEstorno.COMPENSACAO)
+        self._metricas.valor_registrado(
+            StatusPagamento.ESTORNADO, pagamento.valor_em_centavos
+        )
         return dto
 
     def _concluir(
