@@ -293,7 +293,7 @@ def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
     ``OVERLAY``, o nome antigo, segue valendo quando ``KIND_OVERLAY`` nao e
     dado."""
     resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
-        ["make", "-n", "kind-deploy", *variaveis],  # noqa: S607
+        ["make", "-n", "--no-print-directory", "kind-deploy", *variaveis],  # noqa: S607
         cwd=RAIZ,
         capture_output=True,
         text=True,
