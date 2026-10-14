@@ -749,7 +749,7 @@ class TestSemTextoDeErro:
     ) -> None:
         salvar_orcamento_pendente(rastreamento.banco)
         rastreamento.exportador.clear()
-        broker = AMQPConnectionError("amqp://billing:SEGREDO-DO-BROKER@rabbitmq")
+        broker = AMQPConnectionError("conexao recusada: SEGREDO-DO-BROKER")
         relay = RelayDaOutbox(
             rastreamento.banco, PublicadorFalso(erro=broker), usuario="billing"
         )

@@ -786,7 +786,7 @@ class TestRastreamento:
     ) -> None:
         """A conexao cai com o handler rodando: o consumidor devolve o erro ao laco
         que reconecta, e o span fica com o tipo, nao com o texto do pika."""
-        handler.erro = AMQPConnectionError("amqp://billing:SEGREDO-DO-BROKER@rabbitmq")
+        handler.erro = AMQPConnectionError("conexao recusada: SEGREDO-DO-BROKER")
 
         with pytest.raises(AMQPConnectionError):
             entregar(consumidor, CanalDeTeste(), _cancelar())

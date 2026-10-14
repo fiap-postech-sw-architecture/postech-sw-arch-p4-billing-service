@@ -14,9 +14,11 @@ from src.compartilhado.interfaces.rastreamento import (
     trocar_url_pelo_template,
 )
 
-TOKEN = "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60.4102444800.c2VnbWVudG8tYXNzaW5hZG8"
+LINK_FICTICIO = (
+    "0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60.4102444800.c2VnbWVudG8tYXNzaW5hZG8"
+)
 ROTA = "/api/v1/publico/orcamentos/{token}/decisao"
-CAMINHO = f"/api/v1/publico/orcamentos/{TOKEN}/decisao"
+CAMINHO = f"/api/v1/publico/orcamentos/{LINK_FICTICIO}/decisao"
 
 
 def novo_span(atributos: dict[str, Any]) -> trace.Span:
@@ -91,7 +93,7 @@ def test_sem_rota_casada_nada_do_caminho_cru_fica_no_span() -> None:
         "url.full": "https://billing.teste/nao_roteada",
         "url.query": "REDACTED",
     }
-    assert TOKEN not in str(atributos)
+    assert LINK_FICTICIO not in str(atributos)
 
 
 def test_nao_cria_atributo_que_a_instrumentacao_nao_gravou() -> None:

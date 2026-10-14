@@ -41,16 +41,9 @@ regexes = ['''^pytstop-[a-z-]+-demo-2026$''']
 # comentario, e o teste de contrato exige a copia identica a origem): o link de
 # decisao e o checkout apontam para http://localhost e carregam um token
 # ilustrativo.
-#
-# Token ficticio do teste que prova que o span da requisicao nao leva o token
-# (tests/unitarios/test_rastreamento.py): um uuid e um prazo inventados, no
-# formato do token do link, que nao assinam nem abrem nada. A regra olha o
-# valor e nao a linha, porque o gitleaks decodifica o ultimo trecho (base64) e
-# acusa a mesma linha uma segunda vez, ja decodificada.
 [allowlist]
-description = "Exemplos de contrato e token ficticio do teste do span da requisicao"
+description = "Exemplos de contrato"
 regexTarget = "line"
 regexes = [
   '''"(link_decisao|checkout_url)": "http://localhost/''',
-  '''0e3e4a2b-3c0a-4f5e-8d6e-1b2c3d4e5f60\.4102444800\.''',
 ]
