@@ -533,9 +533,9 @@ class EstornarPagamento:
 
     def _estornar(self, pagamento: Pagamento, motivo: str) -> PagamentoDTO:
         referencia = pagamento.referencia_pagamento or ""
+        recusa: str | None = None
         # Estornado pelo painel (intervencao manual): so registra e responde.
         if not _estornado_no_provedor(self._gateway, referencia):
-            recusa: str | None = None
             try:
                 self._gateway.estornar(
                     referencia, chave_idempotencia=chave_de_estorno(pagamento.id)
