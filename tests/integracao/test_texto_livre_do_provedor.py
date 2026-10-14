@@ -1,4 +1,4 @@
-"""O texto livre da recusa do Mercado Pago nao sai em nenhum log do Billing.
+"""O texto livre da recusa do Mercado Pago nao sai nos logs por onde a recusa passa.
 
 Cada teste faz o adaptador real (httpx com respx) receber uma recusa 4xx cujo corpo
 traz um texto sentinela, e-mail e token de aparencia real, e percorre um caminho que
