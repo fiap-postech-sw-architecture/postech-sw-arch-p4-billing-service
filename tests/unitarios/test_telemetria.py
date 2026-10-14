@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace import TracerProvider, export
 from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
     SpanExporter,
@@ -227,6 +227,20 @@ def test_tracestate_acima_do_limite_w3c_e_descartado(
         )
 
 
+def test_contexto_de_descarta_o_tracestate_acima_do_limite() -> None:
+    """O teto vale na leitura (AMQP e documento da outbox), alem da saida."""
+    grande = ",".join(f"k{i:02d}=v{'x' * 11}" for i in range(32))
+
+    def estado(valor: str) -> int:
+        contexto = telemetria.contexto_de(
+            {"traceparent": TRACEPARENT, "tracestate": valor}
+        )
+        return len(trace.get_current_span(contexto).get_span_context().trace_state)
+
+    assert estado(grande) == 0
+    assert estado("pytstop=abc") == 1
+
+
 def test_tracestate_longo_que_chega_por_fora_do_contexto_de_nao_sai(
     spans: InMemorySpanExporter,
 ) -> None:
@@ -283,13 +297,20 @@ def test_api_nao_deixa_o_fastapi_montar_o_export_otlp_na_partida(
 
 
 class Gravador(SpanExporter):
-    """Exportador que guarda o que recebe (o de verdade vai para o Jaeger)."""
+    """Exportador que guarda o texto de erro que o span levava NO MOMENTO de
+    exportar (o de verdade serializa e manda ao Jaeger nesse instante; guardar o
+    span e olhar depois enxergaria o que um processador posterior tirou)."""
 
     def __init__(self) -> None:
-        self.spans: list[ReadableSpan] = []
+        self.vistos: list[tuple[str | None, list[str]]] = []
 
     def export(self, spans: Any) -> Any:
-        self.spans += spans
+        for span in spans:
+            mensagens = [
+                str((evento.attributes or {}).get("exception.message"))
+                for evento in span.events
+            ]
+            self.vistos.append((span.status.description, mensagens))
         return SpanExportResult.SUCCESS
 
 
@@ -370,9 +391,12 @@ class TestSemTextoDeErro:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """O processador entra antes do exportador OTLP que o proprio
-        ``criar_provedor`` soma: o que sai do processo ja vem sem o texto."""
+        ``criar_provedor`` soma: o que sai do processo ja vem sem o texto. O lote
+        de producao exporta mais tarde e enxerga o mesmo objeto, entao o teste troca
+        o ``BatchSpanProcessor`` por um sincrono, onde a ordem decide."""
         gravador = Gravador()
         monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", lambda **_: gravador)
+        monkeypatch.setattr(export, "BatchSpanProcessor", SimpleSpanProcessor)
         provedor = telemetria.criar_provedor({"OTEL_ENABLED": "true"}, processo="api")
 
         with (
@@ -383,9 +407,7 @@ class TestSemTextoDeErro:
             raise ValueError(msg)
         provedor.shutdown()
 
-        [span] = gravador.spans
-        assert span.status.description is None
-        assert "exception.message" not in (span.events[0].attributes or {})
+        assert gravador.vistos == [(None, ["None"])]
 
     def test_marcar_falha_leva_o_nome_da_classe_e_nao_o_texto(self) -> None:
         exportador = InMemorySpanExporter()

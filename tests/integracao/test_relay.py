@@ -20,7 +20,7 @@ from uuid import uuid4
 import pika
 import pytest
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, StatusCode
 from pika.exceptions import AMQPConnectionError, StreamLostError
 from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
 from pymongo import MongoClient
@@ -302,7 +302,7 @@ class TestEntrega:
 
 class TestFalhas:
     def test_recusa_conta_tentativa_com_os_atrasos_do_p3_ate_dead(
-        self, banco: Banco
+        self, banco: Banco, spans: InMemorySpanExporter
     ) -> None:
         relogio = RelogioFixo()
         _gravar_orcamentos(banco)
@@ -329,9 +329,20 @@ class TestFalhas:
         assert morta["morta_em"] == relogio.agora
         relogio.avancar(hours=1)
         assert relay.entregar_pendentes(1) == 0
+        # Cada tentativa recusada marca o span com a classe da falha, sem texto.
+        publicacoes = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert len(publicacoes) == 5
+        assert {(s.status.status_code, s.status.description) for s in publicacoes} == {
+            (StatusCode.ERROR, None)
+        }
+        assert {(s.attributes or {})["pytstop.falha"] for s in publicacoes} == {
+            "MensagemRecusadaError"
+        }
 
     def test_queda_do_broker_devolve_a_linha_sem_gastar_tentativa(
-        self, banco: Banco
+        self, banco: Banco, spans: InMemorySpanExporter
     ) -> None:
         relogio = RelogioFixo()
         _gravar_orcamentos(banco)
@@ -340,13 +351,22 @@ class TestFalhas:
         with pytest.raises(StreamLostError):
             relay.entregar_pendentes(10)
 
+        [publicacao] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert publicacao.status.status_code is StatusCode.ERROR
+        assert (publicacao.attributes or {})["pytstop.falha"] == "StreamLostError"
+
         [linha] = _linhas(banco)
         assert (linha["status"], linha["tentativas"]) == ("pendente", 0)
         assert linha["proxima_tentativa_em"] == relogio.agora
         assert "reivindicacao" not in linha
 
     def test_defeito_ao_publicar_conta_tentativa_em_vez_de_derrubar_o_relay(
-        self, banco: Banco, caplog: pytest.LogCaptureFixture
+        self,
+        banco: Banco,
+        caplog: pytest.LogCaptureFixture,
+        spans: InMemorySpanExporter,
     ) -> None:
         relogio = RelogioFixo()
         _gravar_orcamentos(banco)
@@ -354,6 +374,13 @@ class TestFalhas:
 
         with caplog.at_level(logging.ERROR):
             assert relay.entregar_pendentes(1) == 1
+
+        [publicacao] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.PRODUCER
+        ]
+        assert publicacao.status.status_code is StatusCode.ERROR
+        assert publicacao.status.description is None
+        assert (publicacao.attributes or {})["pytstop.falha"] == "ValueError"
 
         [linha] = _linhas(banco)
         assert (linha["status"], linha["tentativas"]) == ("pendente", 1)
