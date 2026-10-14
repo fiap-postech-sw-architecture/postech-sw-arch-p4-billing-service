@@ -213,15 +213,30 @@ make check
 make audit
 ```
 
-O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit e o pytest com o gate de 90%; o `make audit` roda o pip-audit nas dependências de runtime.
+O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit, o pytest com o gate de 95% e o `diff-cover` (90% no código que a branch muda em relação à `origin/main`); o `make audit` roda o pip-audit nas dependências de runtime.
 
 - **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração e OpenTelemetry.
 - **Contrato** (`tests/contratos`): a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam.
 - **Integração** via testcontainers, com MongoDB 7.0.43 real em replica set e RabbitMQ 4.3.6 com as definitions da plataforma:
   - API e casos de uso: matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência e corridas reais entre decisão, webhook e expiração.
   - Mensageria: relays concorrentes e lease retomado; consumidor com origem, contrato, entrada hostil, retry por nível e DLQ; os quatro comandos com a causa de cada resposta; e o fluxo de ponta a ponta do comando publicado ao evento em `pytstop.eventos`, com o trace encadeado, a mensagem venenosa, a mensagem sem rota, o alarme de memória e o broker parado.
-- **Gate:** 90% de linhas e ramos (`.coveragerc`); o SonarQube aplica o quality gate (ADR-041). O resumo da cobertura (o número do gate, que soma linhas e ramos, e o detalhe por pacote) sai de `make test` seguido de `uv run python scripts/cobertura_resumo.py coverage.xml`, e o CI publica o mesmo resumo no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)).
+- **Gate:** 95% de linhas e ramos no total (`.coveragerc`) e 90% no código novo (`make diff-cover`, que o job `test` roda em todo pull request); o SonarQube aplica o quality gate, com o mínimo de 80% do enunciado (ADR-041). O resumo da cobertura (o número do gate, que soma linhas e ramos, e o detalhe por pacote) sai de `make test` seguido de `uv run python scripts/cobertura_resumo.py coverage.xml`, e o CI publica o mesmo resumo no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)).
 - **Resumos no CI:** além do log do passo, o resultado do `pip-audit` e do `trivy` sobre a imagem do serviço vai para o summary dos jobs `pip-audit` e `trivy` do `security.yml` (`scripts/ci/registra-no-summary.sh`, que mantém o código de saída da ferramenta), ao lado do relatório das imagens de terceiros.
+
+## Cobertura
+
+**100,00% no gate** (linhas e ramos somados): 4.277 linhas e 566 ramos, nenhuma perdida, com 1.228 testes (unitários e de integração com MongoDB e RabbitMQ reais). O gate é de 95% (`fail_under` no `.coveragerc`) e o código novo precisa de 90% (`make diff-cover`). Medido em 14/10/2026 na árvore do commit `264da4e` da `main`: [run do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/38529740787), job `test`, com a tabela no summary. Ficam fora da medição só o `if __name__ == "__main__"` de cada um dos cinco processos (`# pragma: no cover`) e os `Protocol` puros dos repositórios e da unidade de trabalho (`omit` do `.coveragerc`).
+
+| Pacote | Linhas | Cobertas | Cobertura |
+|---|---:|---:|---:|
+| `src` (processos) | 534 | 534 | 100,0% |
+| `src/compartilhado` | 1.428 | 1.428 | 100,0% |
+| `src/orcamento` | 651 | 651 | 100,0% |
+| `src/pagamento` | 1.227 | 1.227 | 100,0% |
+| `src/precos` | 437 | 437 | 100,0% |
+| **total** | 4.277 | 4.277 | 100,0% |
+
+Por camada: `dominio` 889 linhas, `aplicacao` 759, `infraestrutura` 1.491 e `interfaces` 604, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
 
 ## Implantação
 

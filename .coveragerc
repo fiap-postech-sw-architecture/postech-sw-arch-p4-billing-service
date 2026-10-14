@@ -1,5 +1,6 @@
 # Gate de cobertura do servico (ADR-041 e RFC-004, secao 10.2: fail_under =
-# 90; o enunciado pede 80). Mede ramos, nao so linhas: if/for exercitados de um lado so aparecem.
+# 95; o enunciado pede 80). Mede ramos, nao so linhas: if/for exercitados de um
+# lado so aparecem. O diff-cover (make diff-cover) exige 90% no codigo novo.
 # Herdado do p3 @ 08dcffe, sem os caminhos de UI e relay.
 
 [run]
@@ -13,7 +14,7 @@ omit =
     src/compartilhado/aplicacao/unit_of_work.py
 
 [report]
-fail_under = 90
+fail_under = 95
 show_missing = True
 skip_covered = True
 exclude_also =
