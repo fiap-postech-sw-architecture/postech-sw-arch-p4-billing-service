@@ -92,8 +92,10 @@ def criar_app(
         # Sem o export automatico do FastAPI: com o endpoint OTLP no ambiente
         # ele soma exportadores http/protobuf na partida, que pedem o extra
         # fastapi[opentelemetry] (o endpoint do cluster e gRPC) e deixavam um
-        # aviso no log de boot. A telemetria de cada processo e a de
-        # mensageria/telemetria.py.
+        # aviso no log de boot. A API ainda nao exporta traces nem metricas (nao
+        # instala o SDK, ver mensageria/telemetria.py); a flag so tira o aviso,
+        # e os spans nativos e a leitura do traceparent ficam como estavam. Quem
+        # exporta, por gRPC, sao o relay, o consumidor e o prazos.
         telemetry={"auto_configure": False},
     )
     _montar_estado(app, config, gateway, relogio)
