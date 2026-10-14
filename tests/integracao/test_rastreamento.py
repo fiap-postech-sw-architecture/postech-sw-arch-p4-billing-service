@@ -580,6 +580,10 @@ class TestSemTokenNemId:
         # Requisicao sem falha: nenhum SERVER com status de erro (por onde o
         # alvo cru chegaria ao Jaeger, na descricao).
         assert {s.status.status_code for s in servidores} == {StatusCode.UNSET}
+        # So o SERVER e as consultas: o POST le o corpo, e o span de cada
+        # ``receive`` do ASGI (varios por requisicao) fica de fora.
+        consultas = rastreamento.do_tipo(SpanKind.CLIENT)
+        assert len(rastreamento.spans) == len(servidores) + len(consultas)
         valores = tudo_que_os_spans_levam(rastreamento.spans)
         assert [v for v in valores if token in v or orcamento_id in v] == []
 
@@ -607,8 +611,33 @@ class TestSemTokenNemId:
             "POST /api/v1/simulador/pagamentos/{pagamento_id}/aprovar",
         ]
         assert {s.status.status_code for s in servidores} == {StatusCode.UNSET}
+        consultas = rastreamento.do_tipo(SpanKind.CLIENT)
+        assert len(rastreamento.spans) == len(servidores) + len(consultas)
         valores = tudo_que_os_spans_levam(rastreamento.spans)
         assert [v for v in valores if token in v or str(pagamento.id) in v] == []
+
+    def test_user_agent_e_ip_do_chamador_nao_vao_para_o_span(
+        self,
+        rastreamento: Rastreamento,
+        jwks_publicado: dict[str, Any],
+        emitir_token: Callable[..., str],
+    ) -> None:
+        with TestClient(
+            rastreamento.criar_app(), client=("203.0.113.77", 51234)
+        ) as api:
+            rastreamento.exportador.clear()
+            api.get(
+                "/api/v1/precos/servicos",
+                headers=autorizacao(emitir_token, "admin")
+                | {"User-Agent": "Mozilla/5.0 CANARY-UA"},
+            )
+
+        [servidor] = rastreamento.do_tipo(SpanKind.SERVER)
+        atributos = dict(servidor.attributes or {})
+        assert atributos["http.user_agent"] == "REDACTED"
+        assert atributos["net.peer.ip"] == "REDACTED"
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [t for t in textos if "CANARY" in t or "203.0.113" in t] == []
 
     def test_excecao_da_requisicao_nao_vai_para_o_span(
         self,

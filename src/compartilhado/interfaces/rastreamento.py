@@ -43,7 +43,29 @@ _ATRIBUTOS_DE_CAMINHO: Final = ("url.path", "http.target")
 # URL inteira: url.full (convencao nova) e http.url (antiga).
 _ATRIBUTOS_DE_URL: Final = ("url.full", "http.url")
 _QUERY: Final = "url.query"
-_QUERY_REDIGIDA: Final = "REDACTED"
+_REDIGIDO: Final = "REDACTED"
+# Dado de quem chamou que a operacao nao usa: o User-Agent (texto livre, sem
+# limite) e o par da conexao (no cluster, o pod do Kong). Convencao antiga e nova.
+_TEXTOS_DO_CHAMADOR: Final = (
+    "http.user_agent",
+    "user_agent.original",
+    "net.peer.ip",
+    "client.address",
+)
+_PORTAS_DO_CHAMADOR: Final = ("net.peer.port", "client.port")
+
+
+def _substituicoes(rota: str) -> dict[str, str | int]:
+    """O que troca cada atributo que o span tiver, na ordem em que a troca roda:
+    a query primeiro, porque a URL (abaixo) e montada com o Host do chamador, e a
+    instrumentacao engole o erro de um hook que levanta (o que vem depois nao
+    roda, e o span sai com o valor cru)."""
+    return {
+        _QUERY: _REDIGIDO,
+        **dict.fromkeys(_TEXTOS_DO_CHAMADOR, _REDIGIDO),
+        **dict.fromkeys(_PORTAS_DO_CHAMADOR, 0),
+        **dict.fromkeys(_ATRIBUTOS_DE_CAMINHO, rota),
+    }
 
 
 def trocar_url_pelo_template(span: Span, _escopo: MutableMapping[str, Any]) -> None:
@@ -53,14 +75,9 @@ def trocar_url_pelo_template(span: Span, _escopo: MutableMapping[str, Any]) -> N
         return
     atributos = span.attributes or {}
     rota = str(atributos.get(_ROTA, ROTA_NAO_ROTEADA))
-    # A query primeiro: a URL abaixo e montada com o Host do chamador, e a
-    # instrumentacao engole o erro de um hook que levanta (o que vem depois nao
-    # roda, e o span sai com o valor cru).
-    if _QUERY in atributos:
-        span.set_attribute(_QUERY, _QUERY_REDIGIDA)
-    for nome in _ATRIBUTOS_DE_CAMINHO:
+    for nome, valor in _substituicoes(rota).items():
         if nome in atributos:
-            span.set_attribute(nome, rota)
+            span.set_attribute(nome, valor)
     for nome in _ATRIBUTOS_DE_URL:
         url = atributos.get(nome)
         if isinstance(url, str):

@@ -131,6 +131,37 @@ def test_host_malformado_nao_deixa_o_token_nem_a_query_no_span(
     assert [t for t in textos if LINK_FICTICIO in t or "SEGREDO" in t] == []
 
 
+@pytest.mark.parametrize(
+    "dados",
+    [
+        {
+            "http.user_agent": "Mozilla/5.0 CANARY-UA",
+            "net.peer.ip": "203.0.113.77",
+            "net.peer.port": 51234,
+        },
+        {
+            "user_agent.original": "Mozilla/5.0 CANARY-UA",
+            "client.address": "203.0.113.77",
+            "client.port": 51234,
+        },
+    ],
+    ids=["convencao-antiga", "convencao-nova"],
+)
+def test_user_agent_e_par_da_conexao_viram_valor_fixo(dados: dict[str, Any]) -> None:
+    """Texto livre sem limite e endereco de rede de quem chamou: a operacao nao
+    usa, e o Jaeger guarda por contagem de traces, sem como apagar um titular."""
+    span = novo_span({"http.route": ROTA, **dados})
+
+    trocar_url_pelo_template(span, {})
+
+    atributos = atributos_de(span)
+    assert {k: v for k, v in atributos.items() if k != "http.route"} == {
+        k: (0 if k.endswith("port") else "REDACTED") for k in dados
+    }
+    textos = tudo_que_o_span_leva(lido(span))
+    assert [t for t in textos if "CANARY" in t or "203.0.113" in t] == []
+
+
 def test_o_hook_so_troca_atributos_e_nao_marca_erro() -> None:
     span = novo_span({"http.route": ROTA, "http.url": f"http://x{CAMINHO}?q=1"})
 
