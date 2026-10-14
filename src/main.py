@@ -65,9 +65,10 @@ def criar_app(
     E a fabrica do uvicorn (``--factory``): o log JSON e configurado aqui, antes
     da primeira linha do servidor, e nao no lifespan. Sem ``provedor``, a API
     instala o do processo (``configurar_telemetria``) e o encerra no fim do
-    lifespan, o que descarrega os spans: o uvicorn re-levanta o SIGTERM depois do
-    desligamento e o processo morre sem rodar o ``atexit`` do SDK. Quem injeta o
-    provider e dono dele.
+    lifespan, o que descarrega os spans sem depender de o uvicorn ser o PID 1:
+    como PID 1 (o container) o ``atexit`` do SDK ja rodava, mas fora dele o
+    uvicorn re-levanta o SIGTERM e o processo morre sem rodar o ``atexit``. Quem
+    injeta o provider e dono dele.
     """
     configurar_logging()
     config = config or Configuracao.do_ambiente()

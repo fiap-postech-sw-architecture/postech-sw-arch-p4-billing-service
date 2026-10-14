@@ -415,9 +415,10 @@ class ProvedorEspia(TracerProvider):
 
 
 class TestEncerramentoDaApi:
-    """O uvicorn re-levanta o SIGTERM depois do desligamento gracioso e o processo
-    morre sem rodar o ``atexit`` do SDK: so o ``shutdown`` do lifespan descarrega
-    os spans que ainda esperam no lote."""
+    """Fora do PID 1 (no host) o uvicorn re-levanta o SIGTERM depois do desligamento
+    gracioso e o processo morre sem rodar o ``atexit`` do SDK: so o ``shutdown`` do
+    lifespan descarrega os spans que ainda esperam no lote. Como PID 1 (o
+    container) o ``atexit`` ja rodava."""
 
     def test_api_encerra_o_provider_que_ela_instalou(
         self, monkeypatch: pytest.MonkeyPatch
