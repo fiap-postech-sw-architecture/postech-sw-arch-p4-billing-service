@@ -68,9 +68,11 @@ audit:
 # a falha do curl seria engolida e o smoke passaria sem ter olhado nada), que a
 # API roda como o usuario 1001, que as linhas de boot do uvicorn saem em JSON e
 # que ele nao escreve access log (so o `http_request` estruturado do
-# middleware) e que a imagem, com ENVIRONMENT=production, recusa o segredo de
-# demonstracao do compose (o compose sobe com development); derruba tudo com
-# os volumes, inclusive em falha (depois de mostrar os logs).
+# middleware), que o boot nao traz o aviso da telemetria automatica do FastAPI
+# (o compose leva o endpoint OTLP no ambiente) e que a imagem, com
+# ENVIRONMENT=production, recusa o segredo de demonstracao do compose (o compose
+# sobe com development); derruba tudo com os volumes, inclusive em falha (depois
+# de mostrar os logs).
 # Projeto e portas proprios para nao derrubar a stack do compose-up nem a do
 # platform.
 SMOKE_PORT ?= 18002
@@ -108,10 +110,12 @@ smoke:
 		|| { echo "smoke: o access log estruturado (http_request) nao saiu" >&2; false; }; } \
 	&& { ! printf '%s\n' "$$logs" | grep -q 'uvicorn.access' \
 		|| { echo "smoke: o uvicorn escreveu access log (--no-access-log nao vale)" >&2; false; }; } \
+	&& { ! printf '%s\n' "$$logs" | grep -q 'automatic telemetry' \
+		|| { echo "smoke: o FastAPI avisou que a telemetria automatica falhou (telemetry auto_configure)" >&2; false; }; } \
 	&& { $(SMOKE_COMPOSE) exec -T -e ENVIRONMENT=production api python -c "$(SMOKE_GUARDA)" 2>&1 \
 		| grep -q 'ORCAMENTO_LINK_SECRET usa o valor de demonstracao' \
 		|| { echo "smoke: com ENVIRONMENT=production a imagem aceita o segredo de demonstracao" >&2; false; }; } \
-	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server, usuario 1001, boot em JSON, sem access log do uvicorn, segredo de demonstracao recusado em producao" \
+	&& echo "smoke ok: readiness 200, rota autenticada sem token 401, sem header server, usuario 1001, boot em JSON, sem access log do uvicorn, sem aviso de telemetria, segredo de demonstracao recusado em producao" \
 	|| status=$$?; \
 	if [ $$status -ne 0 ]; then $(SMOKE_COMPOSE) logs --no-color --tail=200; fi; \
 	$(SMOKE_COMPOSE) down -v; \
