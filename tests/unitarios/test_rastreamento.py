@@ -116,6 +116,18 @@ def test_span_sem_gravacao_e_ignorado() -> None:
     trocar_url_pelo_template(NonRecordingSpan(contexto), {})
 
 
+def test_span_que_grava_mas_nao_e_do_sdk_e_ignorado() -> None:
+    """Outro SDK de tracing (um fornecedor, um proxy) entrega um span que grava e
+    nao tem ``attributes``: o hook nao pode quebrar a requisicao."""
+
+    class SpanDeOutroSdk(NonRecordingSpan):
+        def is_recording(self) -> bool:
+            return True
+
+    contexto = SpanContext(1, 1, is_remote=False, trace_flags=TraceFlags(1))
+    trocar_url_pelo_template(SpanDeOutroSdk(contexto), {})
+
+
 def test_span_ja_encerrado_nao_e_mexido() -> None:
     span = novo_span({"http.route": ROTA, "http.target": CAMINHO})
     span.end()

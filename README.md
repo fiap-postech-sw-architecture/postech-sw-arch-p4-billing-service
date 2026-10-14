@@ -60,7 +60,7 @@ Comando que o domínio recusa, e que não é repetição, tem três destinos (AD
 
 Provedor fora do ar não é recusa: o comando volta pela fila de retry. **Lápide:** a compensação que chega antes do comando original (passo em voo, RFC-004 seção 4.5) grava o agregado já encerrado (orçamento `CANCELADO` sem linhas, pagamento `CANCELADO` sem cobrança) e responde; o original, quando chegar, encontra a lápide pelo índice único de `ordem_id` e é descartado.
 
-Fatos que não vêm de comando: `OrcamentoAprovado`/`OrcamentoRecusado` (pelo link ou pelo atendente, com `decidido_por` = `sub` do atendente), `OrcamentoExpirado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado` e o `PagamentoEstornado` do estorno automático. O `causation_id` deles é o comando que abriu o fluxo (`GerarOrcamento` para os do orçamento, `SolicitarPagamento` para os do pagamento), guardado no documento em `aberto_por` com o contexto de trace, e o evento sai como filho desse contexto, com um *span link* para o trace de quem retomou o passo: a saga segue num trace só (ADR-043). O processo `prazos` abre um span por registro que expira ou concilia; a requisição HTTP entra no link quando a API ganhar a instrumentação do FastAPI.
+Fatos que não vêm de comando: `OrcamentoAprovado`/`OrcamentoRecusado` (pelo link ou pelo atendente, com `decidido_por` = `sub` do atendente), `OrcamentoExpirado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado` e o `PagamentoEstornado` do estorno automático. O `causation_id` deles é o comando que abriu o fluxo (`GerarOrcamento` para os do orçamento, `SolicitarPagamento` para os do pagamento), guardado no documento em `aberto_por` com o contexto de trace, e o evento sai como filho desse contexto, com um *span link* para o trace de quem retomou o passo: a saga segue num trace só (ADR-043). O processo `prazos` abre um span por registro que expira ou concilia, e a requisição HTTP (decisão pelo link ou pelo atendente, webhook, checkout do simulador) entra no link: a API instrumenta o FastAPI (seção [Observabilidade](#observabilidade)).
 
 O estorno automático (aprovação tardia, de valor ou moeda diferentes, ou segunda tentativa paga do mesmo checkout) publica `PagamentoEstornado{motivo=pagamento_apos_encerramento}` com o pagamento em qualquer estado: `RECUSADO`, `EXPIRADO` e `CANCELADO` passam a `ESTORNADO`, enquanto `SOLICITADO`, `CONFIRMADO` e `ESTORNADO` ficam como estão. Esse fato leva no `causation_id` o id do `SolicitarPagamento`. O mesmo `motivo` aparece na resposta ao `EstornarPagamento` que chega depois do estorno automático, mas com o id do comando no `causation_id`. A saga reconhece a resposta ao `EstornarPagamento` pelo `causation_id`, de qualquer `motivo`; o estorno automático só atualiza o resumo do pagamento na OS (ADR-040, passo 7; RFC-004, seção 5.2).
 
@@ -98,7 +98,7 @@ Variáveis (lista completa com valores de demonstração em [`.env.example`](.en
 | `PRAZOS_INTERVALO_SEGUNDOS`, `PRAZOS_HEARTBEAT`, `METRICS_PORT` | `30`, `/tmp/prazos-heartbeat`, `9100` | processo `prazos` (`METRICS_PORT`, a porta do `/metrics`, vale para os três processos sem API, como no OS e na Execução) |
 | `RABBITMQ_URL` | sem padrão | broker com o usuário do serviço (`amqp://billing:<senha>@<host>:5672/%2F`), exigido pelo relay e pelo consumidor; o usuário vai no `user_id` de toda publicação |
 | `RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT` | `/tmp/relay-heartbeat`, `/tmp/consumidor-heartbeat` | arquivo de vida do relay e do consumidor |
-| `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | `false`, `http://jaeger:4317`, `billing-service` | exportação dos traces do relay, do consumidor e do `prazos` pelo protocolo do OpenTelemetry (OTLP) sobre gRPC; desligada, o contexto de trace segue nas mensagens do mesmo jeito, nos headers `traceparent`/`tracestate` do padrão W3C Trace Context |
+| `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | `false`, `http://jaeger:4317`, `billing-service` | exportação dos traces da API, do relay, do consumidor e do `prazos` pelo protocolo do OpenTelemetry (OTLP) sobre gRPC; desligada, o contexto de trace segue nas mensagens do mesmo jeito, nos headers `traceparent`/`tracestate` do padrão W3C Trace Context |
 | `CONTRATOS_DIR` | `contratos/` do repositório (`/app/contratos` na imagem) | schemas das mensagens |
 | `RUN_SEED_ON_STARTUP` | `false` (o compose liga) | seed idempotente da tabela de preços no boot da API |
 | `ROOT_PATH` | vazio | prefixo da borda (`/billing` no Kubernetes), passado ao `--root-path` do uvicorn: o Swagger de `/billing/docs` busca o `/billing/openapi.json`, e o OpenAPI leva o prefixo em `servers` (ADR-038) |
@@ -149,8 +149,8 @@ RabbitMQ 4.3.6 com a topologia da plataforma (ADR-036; RFC-004, seções 5.1 a 5
   ```
 
   `matchedCount: 1` é o sinal de que a linha estava `dead` e voltou a `pendente`; `matchedCount: 0` quer dizer que o `_id` não existe ou a linha já não estava `dead`, e nada mudou. O filtro `status: "dead"` é a guarda: sem ele, o comando devolveria ao relay uma linha já `entregue` (ou `pendente`) e a mensagem sairia de novo.
-- **Rastreamento (ADR-043):** o relay publica num span de produtor (`PRODUCER`) filho do contexto gravado na outbox, com *span link* para quem retomou o passo quando a linha o traz, e injeta o seu no header. O consumidor abre o span de consumidor (`CONSUMER`) filho da publicação, e a outbox gravada nele leva esse contexto adiante. Os logs JSON levam `correlation_id`, `trace_id` e `span_id`. Laço ocioso não abre span.
-- **Métricas** (porta `METRICS_PORT` de cada processo): `pytstop_mensagens_publicadas_total{tipo}`, `pytstop_mensagens_consumidas_total{tipo,resultado}` (`processada`, `duplicada`, `ignorada`, `retry`, `dlq`) e, no relay, `outbox_pendentes` e `outbox_dead`, os nomes do p3.
+- **Rastreamento (ADR-043):** o relay publica num span de produtor (`PRODUCER`) filho do contexto gravado na outbox, com *span link* para quem retomou o passo quando a linha o traz, e injeta o seu no header. O consumidor abre o span de consumidor (`CONSUMER`) filho da publicação, e a outbox gravada nele leva esse contexto adiante. Os logs JSON levam `correlation_id`, `trace_id` e `span_id`. Laço ocioso não abre span: o poll do relay e a consulta do coletor de métricas são spans de banco sem pai, que o amostrador descarta (seção [Observabilidade](#observabilidade)).
+- **Métricas** (porta `METRICS_PORT` de cada processo): `pytstop_mensagens_publicadas_total{tipo}` no relay, `pytstop_mensagens_consumidas_total{tipo,resultado}` (`processada`, `duplicada`, `ignorada`, `retry`, `dlq`) no consumidor, `pytstop_reconexoes_ao_broker_total{componente}` nos dois e, de relay e API, `outbox_pendentes`, `outbox_dead` (os nomes do p3) e `pytstop_outbox_mais_antiga_segundos`. Tabela completa na seção [Observabilidade](#observabilidade).
 - **Saúde:**
   - Relay e consumidor tocam um arquivo a cada volta do laço (`RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT`), com `pronto` só enquanto a conexão com o broker está de pé; fora dela, inclusive na espera antes de reconectar, o arquivo diz `conectando`. A liveness confere a idade do arquivo, e a readiness, também o conteúdo.
   - É um arquivo só, e não o par heartbeat e pronto do OS e da Execução, porque a mesma sonda lê os dois sinais de uma vez. O `prazos`, sem conexão para provar, só toca o arquivo dele.
@@ -204,7 +204,73 @@ curl -X POST localhost:8002/api/v1/precos/validacao -H "Authorization: Bearer $T
 
 Os 13 eventos do catálogo do Billing (RFC-004, seção 5.3), no envelope da seção 5.2 (`id`, `tipo`, `versao`, `origem`, `correlation_id` = ordem de serviço, `causation_id`, `ocorrido_em`, `dados`): `OrcamentoGerado`, `GeracaoDeOrcamentoFalhou`, `OrcamentoAprovado`, `OrcamentoRecusado`, `OrcamentoExpirado`, `OrcamentoCancelado`, `PagamentoSolicitado`, `PagamentoConfirmado`, `PagamentoRecusado`, `PagamentoExpirado`, `PagamentoCancelado`, `PagamentoEstornado` e `EstornoDePagamentoFalhou`. Todo evento é validado contra os JSON Schemas da plataforma (cópia em `contratos/`) ao entrar na outbox, e os testes conferem um exemplo de cada. `link_decisao` e `checkout_url` carregam token e nunca vão para log.
 
-Métricas próprias: `pytstop_mercadopago_requisicoes_total{operacao,resultado}`, `pytstop_circuit_breaker_aberto{dependencia}`, `pytstop_pagamentos_estornados_total{motivo}`, `pytstop_estornos_automaticos_recusados_total`, `pytstop_cancelamentos_de_cobranca_recusados_total`, `pytstop_webhook_assinatura_invalida_total`, `pytstop_jwks_falhas_total` e `pytstop_prazos_ultimo_ciclo_timestamp_seconds`, além de `http_request_duration_seconds{method,rota,status}` e das métricas de mensageria (seção [Mensageria](#mensageria)).
+As métricas do serviço (HTTP, orçamento, pagamento, Mercado Pago, mensageria e outbox) estão na seção [Observabilidade](#observabilidade).
+
+## Observabilidade
+
+Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/043-observabilidade-distribuida.md). Os quatro processos (API, relay, consumidor e `prazos`) instalam o SDK do OpenTelemetry pela mesma função (`criar_provedor`) e exportam os traces por OTLP/gRPC para o Jaeger quando `OTEL_ENABLED=true`. As métricas são as do Prometheus, no `/metrics` que cada processo já serve (a API na porta 8000 e os outros três na 9100; nenhuma porta nova), com os rótulos `processo` e `namespace` que o Prometheus põe em todo alvo. Painéis e alertas ficam no `platform`, em `observabilidade/`.
+
+### Spans
+
+| Processo | Span | Filhos |
+|---|---|---|
+| API | `SERVER` por requisição, nomeado pelo template (`POST /api/v1/publico/orcamentos/{token}/decisao`), filho do `traceparent` que chegou | `CLIENT` por comando ao MongoDB (`<banco>.<comando>`) e por chamada ao Mercado Pago (httpx) |
+| relay | `publish <tipo>` (`PRODUCER`), filho do contexto gravado na outbox | `CLIENT` do MongoDB (a marcação da linha) |
+| consumidor | `process <tipo>` (`CONSUMER`), filho da publicação | `CLIENT` do MongoDB e do Mercado Pago |
+| `prazos` | `prazos` (`INTERNAL`) por registro que expira ou concilia | `CLIENT` do MongoDB |
+
+- O pika não tem instrumentação própria: os spans de publicação e de consumo são os acima, e o contexto atravessa a outbox e os headers AMQP pela mão do serviço (seção [Mensageria](#mensageria)).
+- O span de banco leva `db.system`, `db.name`, `db.mongodb.collection` e, em `db.statement`, só o nome do comando (`find`, `update`, `commitTransaction`).
+- A decisão do cliente, o webhook e o checkout do simulador gravam o contexto da requisição na outbox, e o evento que a saga publica depois aponta para ela por *span link*.
+- A API nasce no trace de quem a chamou (`traceparent`); o Jaeger guarda cada passo retomado por pessoa, por sistema externo ou por prazo num trace próprio, ligado ao da saga por esse link.
+
+### Amostragem e o que não vira trace
+
+- **Span de cliente sem pai é descartado** (`AmostradorDeRaiz` sob um `ParentBased`): o poll do relay, a consulta do coletor de métricas a cada raspagem e o ciclo ocioso do `prazos` são só consultas ao MongoDB, e cada uma abriria um trace de um span e encheria o Jaeger (cerca de 5.000 traces). Dentro de um trace (requisição, mensagem, ciclo com trabalho) o span de cliente segue o pai. Por isso a conciliação do `prazos` com o Mercado Pago, que consulta o provedor fora de qualquer registro, também não gera trace.
+- `/metrics` e as sondas (`/api/v1/saude` e `/api/v1/saude/pronto`) ficam fora da instrumentação HTTP.
+- Os spans de cada `receive` e `send` do ASGI não são criados (o `SERVER` já leva o status), e o span nativo do FastAPI fica desligado, para não duplicar o `SERVER`.
+
+### O que não é exportado, e por quê
+
+| Fica de fora | Por quê | Como |
+|---|---|---|
+| Token do link de decisão, id do pagamento e token do checkout, no caminho e na query | São credenciais (ADR-039): quem tem o link decide o orçamento e quem tem o checkout paga a cobrança | O hook `trocar_url_pelo_template` grava o template da rota em `http.target`, `http.url` (e `url.path`, `url.full`, `url.query`); requisição que nenhuma rota casou, como o 404 do token com uma barra a mais, fica `nao_roteada` |
+| O documento do MongoDB | Os documentos levam o `link_decisao`, o `checkout_url` e o valor cobrado | `capture_statement` desligado |
+| Cabeçalhos e corpo de requisições e respostas, inclusive `Authorization` e `x-signature` | Segredo e dado do pagador | A instrumentação só os captura se configurada, e não é |
+| Exceção da requisição | A mensagem pode ter dado de entrada | A API responde o envelope de erro e não propaga a exceção ao span |
+
+Duas ressalvas: a mensagem de erro do MongoDB vai no status do span de banco e pode citar a chave duplicada (um id, nunca o documento), e o httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace).
+
+### Métricas
+
+| Métrica | Tipo e rótulos | Processo | Quando conta |
+|---|---|---|---|
+| `http_request_duration_seconds` | histograma `method`, `rota` (template), `status` | API | fim de cada requisição |
+| `pytstop_orcamentos_tempo_decisao_segundos` | histograma `decisao` (`aprovado`, `recusado`); baldes de 1 min a 3 dias | API | depois do commit da decisão, pelo link ou pelo atendente: da geração à decisão. O expirado não entra |
+| `pytstop_pagamentos_valor_centavos_total` | contador `estado` (`confirmado`, `estornado`) | API (webhook e simulador), `prazos` (conciliação), consumidor (estorno) | o pagamento entra em `CONFIRMADO` ou o confirmado vai a `ESTORNADO`, em centavos inteiros. Na API e no `prazos`, depois do commit; no consumidor, pelo menos uma vez, como as demais contagens do pagamento. A aprovação tardia estornada direto não entra (está em `pytstop_pagamentos_estornados_total`) |
+| `pytstop_pagamentos_estornados_total` | contador `motivo` (`compensacao`, `pagamento_apos_encerramento`) | API, `prazos`, consumidor | estorno concluído no provedor |
+| `pytstop_estornos_automaticos_recusados_total`, `pytstop_cancelamentos_de_cobranca_recusados_total` | contadores | API, `prazos`, consumidor | o provedor recusou o estorno automático ou fechar o checkout |
+| `pytstop_mercadopago_requisicoes_total` | contador `operacao` (5) e `resultado` (7) | API, `prazos`, consumidor | cada tentativa; as 35 combinações nascem com zero |
+| `pytstop_circuit_breaker_aberto` | gauge `dependencia` (`mercadopago`, `jwks`) | API, `prazos`, consumidor | abre e fecha |
+| `pytstop_webhook_assinatura_invalida_total`, `pytstop_jwks_falhas_total` | contadores | API | `x-signature` ausente ou inválida; busca ao JWKS que falhou |
+| `pytstop_mensagens_publicadas_total` | contador `tipo` (os 13 eventos) | relay | confirmação do broker |
+| `pytstop_mensagens_consumidas_total` | contador `tipo` (os 4 comandos e `desconhecido`) e `resultado` (5) | consumidor | mensagem resolvida |
+| `outbox_pendentes`, `outbox_dead`, `pytstop_outbox_mais_antiga_segundos` | gauges calculados na raspagem | relay e API | pendentes e em entrega; as `dead`; a idade da linha pendente mais antiga (0 sem pendente) |
+| `pytstop_reconexoes_ao_broker_total` | contador `componente` (`relay`, `consumidor`) | relay, consumidor | cada espera antes de reconectar ao RabbitMQ |
+| `pytstop_prazos_ultimo_ciclo_timestamp_seconds` | gauge | `prazos` | fim de cada ciclo |
+
+- **Nasce com zero:** toda série de rótulo fechado existe no `/metrics` desde o boot do processo que a emite, porque o `increase()` do Prometheus perde o primeiro evento de uma série que só aparece com ele (e, no volume de uma demonstração, o painel mostraria zero). O relay pré-inicializa os eventos que publica, o consumidor os comandos que consome e os dois o próprio `componente`.
+- **Dinheiro em centavos inteiros:** o Prometheus guarda `float64`, então a métrica soma `int(valor * 100)` do `Decimal` e o painel divide por 100.
+- **A raspagem da API consulta o MongoDB** (o coletor da outbox: duas contagens e a linha pendente mais antiga), e com o relay parado a API segue exportando a idade, que é o que mantém o alerta de outbox parada de pé. Com o banco fora, essas três séries somem em vez de zerar. A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
+- `componente`, e não `processo`, é o rótulo das reconexões: o Prometheus já põe `processo` em todo alvo, e um rótulo da métrica com o mesmo nome viraria `exported_processo`.
+
+### Como ver
+
+```bash
+make -C platform port-forward
+```
+
+Abre o Jaeger em `localhost:16686`, o Grafana em `localhost:3000` e o Prometheus em `localhost:9090` (repositório `platform`, com o kind no ar). No Jaeger, o serviço é `billing-service`; filtre pelo nome do span (`process GerarOrcamento`, `publish OrcamentoGerado`, `prazos`, `POST /api/v1/publico/orcamentos/{token}/decisao`) ou pela tag `messaging.message.conversation_id` com o id da ordem de serviço, e pela tag de processo `pytstop.processo` (`api`, `relay`, `consumidor` ou `prazos`). Todo log JSON de um span tem o `trace_id` dele, para ir do log ao trace.
 
 ## Testes e qualidade
 
@@ -215,10 +281,11 @@ make audit
 
 O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit e o pytest com o gate de 90%; o `make audit` roda o pip-audit nas dependências de runtime.
 
-- **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração e OpenTelemetry.
+- **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração, OpenTelemetry (amostrador, hook da URL) e as séries que nascem com zero (cada caso sobe um interpretador novo e lê o `REGISTRY` antes de qualquer evento).
 - **Contrato** (`tests/contratos`): a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam.
 - **Integração** via testcontainers, com MongoDB 7.0.43 real em replica set e RabbitMQ 4.3.6 com as definitions da plataforma:
   - API e casos de uso: matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência e corridas reais entre decisão, webhook e expiração.
+  - Rastreamento (`tests/integracao/test_rastreamento.py`): o provider de produção, com o amostrador real, exporta para a memória. A requisição gera um `SERVER` com filhos de banco no mesmo trace; o ciclo ocioso do relay e do `prazos` e a raspagem do `/metrics` não exportam nenhum span; o link de decisão e o checkout do simulador (GET e POST) não deixam token nem id em atributo algum.
   - Mensageria: relays concorrentes e lease retomado; consumidor com origem, contrato, entrada hostil, retry por nível e DLQ; os quatro comandos com a causa de cada resposta; e o fluxo de ponta a ponta do comando publicado ao evento em `pytstop.eventos`, com o trace encadeado, a mensagem venenosa, a mensagem sem rota, o alarme de memória e o broker parado.
 - **Gate:** 90% de linhas e ramos (`.coveragerc`); o SonarQube aplica o quality gate (ADR-041). O resumo da cobertura (o número do gate, que soma linhas e ramos, e o detalhe por pacote) sai de `make test` seguido de `uv run python scripts/cobertura_resumo.py coverage.xml`, e o CI publica o mesmo resumo no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)).
 - **Resumos no CI:** além do log do passo, o resultado do `pip-audit` e do `trivy` sobre a imagem do serviço vai para o summary dos jobs `pip-audit` e `trivy` do `security.yml` (`scripts/ci/registra-no-summary.sh`, que mantém o código de saída da ferramenta), ao lado do relatório das imagens de terceiros.

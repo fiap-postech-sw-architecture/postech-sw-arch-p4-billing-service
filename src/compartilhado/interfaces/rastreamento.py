@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
 # Regex sobre a URL inteira: a raspagem do Prometheus e as sondas do kubelet
-# (saude, viva, pronta) chegam a cada poucos segundos e nao sao trabalho.
+# (saude e saude/pronto) chegam a cada poucos segundos e nao sao trabalho.
 URLS_SEM_TRACE: Final = "/metrics,/api/v1/saude"
 
 _ROTA: Final = "http.route"

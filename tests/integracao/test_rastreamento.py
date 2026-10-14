@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import pytest
 import respx
@@ -18,7 +19,7 @@ from fastapi.testclient import TestClient
 from opentelemetry import trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, StatusCode
 
 from src.compartilhado.dominio.relogio import agora_utc
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
@@ -28,6 +29,7 @@ from src.compartilhado.infraestrutura.mensageria.telemetria import (
 from src.compartilhado.infraestrutura.mongo import criar_cliente, marcar_versao
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.main import criar_app
+from src.orcamento.aplicacao.use_cases import ConsultarOrcamentos
 from src.orcamento.dominio.orcamento import CanalDecisao
 from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 from src.pagamento.aplicacao.use_cases import SolicitarPagamento
@@ -360,6 +362,35 @@ class TestSemTokenNemId:
         ]
         valores = valores_de(rastreamento.spans)
         assert [v for v in valores if token in v or str(pagamento.id) in v] == []
+
+    def test_excecao_da_requisicao_nao_vai_para_o_span(
+        self,
+        rastreamento: Rastreamento,
+        jwks_publicado: dict[str, Any],
+        emitir_token: Callable[..., str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A API responde o envelope do 500 e a excecao nao chega ao span: a
+        mensagem dela pode ter dado de entrada."""
+
+        def quebrar(*_args: Any, **_opcoes: Any) -> None:
+            msg = "SEGREDO-NA-EXCECAO"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(ConsultarOrcamentos, "por_id", quebrar)
+        app = criar_app(configuracao(), banco=rastreamento.banco)
+        with TestClient(app, raise_server_exceptions=False) as api:
+            rastreamento.exportador.clear()
+            resposta = api.get(
+                f"/api/v1/orcamentos/{uuid4()}",
+                headers=autorizacao(emitir_token, "atendente"),
+            )
+
+        assert resposta.status_code == 500
+        [servidor] = rastreamento.do_tipo(SpanKind.SERVER)
+        assert servidor.status.status_code is StatusCode.ERROR
+        assert servidor.events == ()
+        assert [v for v in valores_de(rastreamento.spans) if "SEGREDO" in v] == []
 
     def test_span_de_banco_leva_o_comando_e_a_colecao_mas_nao_o_documento(
         self, rastreamento: Rastreamento
