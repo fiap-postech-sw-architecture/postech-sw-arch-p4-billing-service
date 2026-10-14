@@ -131,7 +131,24 @@ RabbitMQ 4.3.6 com a topologia da plataforma (ADR-036; RFC-004, seções 5.1 a 5
   - Erro transitório (provedor ou rede fora, banco inacessível ou erro que o próprio MongoDB marca como repetível) publica a cópia na fila de retry do nível da nova tentativa. A cópia sai sem `expiration`: o atraso é o TTL (*time to live*) da própria fila, que a devolve a `billing.comandos`. Ela vai num canal de publicação separado do de consumo, e a original só recebe ack depois da confirmação da cópia.
   - A sexta falha, a cópia recusada e qualquer outro erro (corpo, contrato, tipo, versão, `user_id`, falha de negócio sem evento no contrato ou defeito) vão direto para `billing.comandos.dlq` (`reject` sem requeue).
   - Mensagem na DLQ volta à fila depois de corrigida a causa: no cluster, `make -C platform redrive FILA=billing.comandos` (repositório `platform`) move as mensagens de `billing.comandos.dlq` para `billing.comandos` por um shovel do próprio broker, que preserva as propriedades (ADR-036). O [runbook da saga](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/operacao/runbook-saga.md) do `platform` descreve o diagnóstico antes do redrive.
-- **Retenção por índice TTL:** linhas entregues da outbox somem 7 dias depois (`entregue_em`, só com `status: entregue`) e `mensagens_processadas`, 30 dias depois. As linhas `dead` (alerta pela métrica `outbox_dead`) ficam 30 dias (`morta_em`) para investigação; corrigida a causa, `db.outbox.updateOne({_id: UUID("<id>")}, {$set: {status: "pendente", tentativas: 0, proxima_tentativa_em: new Date()}, $unset: {morta_em: "", ultimo_erro: ""}})` no `mongosh` devolve a linha ao relay.
+- **Retenção por índice TTL:** linhas entregues da outbox somem 7 dias depois (`entregue_em`, só com `status: entregue`) e `mensagens_processadas`, 30 dias depois. As linhas `dead` (alerta pela métrica `outbox_dead`) ficam 30 dias (`morta_em`) para investigação.
+- **Reprocesso de uma linha `dead`:** corrigida a causa (o `ultimo_erro` diz a exceção; envelope fora do contrato não se conserta repetindo), devolva uma linha por vez ao relay, no `mongosh` com o banco `billing`. Não há rota administrativa nem log de auditoria: anote no ticket do incidente o `_id`, o `tipo`, o `envelope.correlation_id`, quem reprocessou e por quê. O [runbook da saga](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/operacao/runbook-saga.md#linha-dead-na-outbox) traz o `kubectl exec` completo.
+
+  Primeiro, a leitura:
+
+  ```javascript
+  db.getSiblingDB("billing").outbox.find({status: "dead"}, {tipo: 1, routing_key: 1, tentativas: 1, ultimo_erro: 1, morta_em: 1, "envelope.correlation_id": 1}).toArray()
+  ```
+
+  Depois, a devolução, com o `_id` da leitura no lugar do UUID de exemplo:
+
+  ```javascript
+  db.getSiblingDB("billing").outbox.updateOne(
+    {_id: UUID("018f3b0e-7c1a-7d2e-9b4f-0123456789ab"), status: "dead"},
+    {$set: {status: "pendente", tentativas: 0, proxima_tentativa_em: new Date()}, $unset: {morta_em: "", ultimo_erro: ""}})
+  ```
+
+  `matchedCount: 1` é o sinal de que a linha estava `dead` e voltou a `pendente`; `matchedCount: 0` quer dizer que o `_id` não existe ou a linha já não estava `dead`, e nada mudou. O filtro `status: "dead"` é a guarda: sem ele, o comando devolveria ao relay uma linha já `entregue` (ou `pendente`) e a mensagem sairia de novo.
 - **Rastreamento (ADR-043):** o relay publica num span de produtor (`PRODUCER`) filho do contexto gravado na outbox, com *span link* para quem retomou o passo quando a linha o traz, e injeta o seu no header. O consumidor abre o span de consumidor (`CONSUMER`) filho da publicação, e a outbox gravada nele leva esse contexto adiante. Os logs JSON levam `correlation_id`, `trace_id` e `span_id`. Laço ocioso não abre span.
 - **Métricas** (porta `METRICS_PORT` de cada processo): `pytstop_mensagens_publicadas_total{tipo}`, `pytstop_mensagens_consumidas_total{tipo,resultado}` (`processada`, `duplicada`, `ignorada`, `retry`, `dlq`) e, no relay, `outbox_pendentes` e `outbox_dead`, os nomes do p3.
 - **Saúde:**
