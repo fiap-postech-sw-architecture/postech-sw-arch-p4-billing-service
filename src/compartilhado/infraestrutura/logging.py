@@ -46,8 +46,9 @@ def adicionar_trace(
     _method_name: str,
     event_dict: MutableMapping[str, Any],
 ) -> MutableMapping[str, Any]:
-    """``trace_id``/``span_id`` do span corrente (relay e consumidor): do log no
-    Loki ao trace no Jaeger (ADR-043). Fora de span, nada."""
+    """``trace_id``/``span_id`` do span corrente (API, relay, consumidor e
+    ``prazos``): do log no Loki ao trace no Jaeger (ADR-043). Fora de span (a
+    requisicao a ``/metrics`` e as sondas nao abrem span), nada."""
     contexto = trace.get_current_span().get_span_context()
     if contexto.is_valid:
         event_dict.setdefault("trace_id", format(contexto.trace_id, "032x"))

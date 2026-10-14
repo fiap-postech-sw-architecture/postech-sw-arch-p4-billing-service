@@ -65,8 +65,8 @@ def criar_app(
     configurar_logging()
     config = config or Configuracao.do_ambiente()
     contratos.tipos_com_contrato()  # schemas das mensagens ou falha no boot
-    # Antes de criar o cliente do MongoDB e o do Mercado Pago: o PyMongo e o
-    # httpx so rastreiam os clientes criados depois da instrumentacao.
+    # Antes de criar o cliente do MongoDB (no lifespan): o PyMongo so rastreia
+    # os clientes criados depois da instrumentacao.
     provedor = configurar_telemetria("api")
     gateway = gateway or criar_gateway(config.comandos)
     producao = config.ambiente == "production"
