@@ -292,6 +292,14 @@ def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
     """``PLATFORM_DIR`` e ``KIND_OVERLAY`` sao os nomes do Execution Service;
     ``OVERLAY``, o nome antigo, segue valendo quando ``KIND_OVERLAY`` nao e
     dado."""
+    # Sem as variaveis do desenvolvedor (nem as que o make pai passa em
+    # MAKEFLAGS, como em `make check OVERLAY=k3s`), e como make filho
+    # (MAKELEVEL), que e como o CI roda: o make 4 avisa o diretorio.
+    ambiente = {
+        chave: valor
+        for chave, valor in os.environ.items()
+        if chave not in {"PLATFORM_DIR", "KIND_OVERLAY", "OVERLAY", "MAKEFLAGS"}
+    }
     resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
         ["make", "-n", "--no-print-directory", "kind-deploy", *variaveis],  # noqa: S607
         cwd=RAIZ,
@@ -299,6 +307,7 @@ def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
         text=True,
         check=False,
         timeout=20,
+        env={**ambiente, "MAKELEVEL": "1"},
     )
 
     assert resultado.returncode == 0, resultado.stderr
