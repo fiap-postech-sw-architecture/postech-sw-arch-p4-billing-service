@@ -297,7 +297,7 @@ class TestCacheDoJwks:
         jwks_falso.erro = fora_do_ar()
         relogio.agora += 3599
         assert validador.validar(token)["papel"] == "admin"  # stale-if-error
-        relogio.agora += 10
+        relogio.agora += 1  # 1 h exata: a copia ja nao vale
         with pytest.raises(JwksIndisponivelError):
             validador.validar(token)
 

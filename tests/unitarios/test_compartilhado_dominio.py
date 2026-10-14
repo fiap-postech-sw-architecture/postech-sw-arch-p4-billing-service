@@ -66,8 +66,8 @@ class TestDinheiro:
 
     @pytest.mark.parametrize(
         "moeda",
-        ["brl", "BR", "BR1", "BRÁ"],
-        ids=["minusculas", "duas-letras", "com-digito", "com-acento"],
+        ["brl", "BR", "BRLX", "BR1", "BRÁ"],
+        ids=["minusculas", "duas-letras", "quatro-letras", "com-digito", "com-acento"],
     )
     def test_moeda_fora_do_iso_4217_e_rejeitada(self, moeda: str) -> None:
         with pytest.raises(ValorInvalidoError, match="maiusculas"):

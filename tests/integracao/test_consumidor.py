@@ -33,6 +33,7 @@ from src.compartilhado.infraestrutura.mensageria.amqp import (
     MensagemRecusadaError,
 )
 from src.compartilhado.infraestrutura.mensageria.consumidor import (
+    TAMANHO_MAXIMO_DO_CORPO,
     ConsumidorDeComandos,
     _Entrega,
 )
@@ -278,6 +279,30 @@ class TestEntradaHostil:
         assert registro.__dict__["detalhe"] == (
             f"corpo de {len(corpo)} bytes, acima de 65536"
         )
+
+    def test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        base = {**_cancelar(), "enchimento": ""}
+        envelope = {
+            **base,
+            "enchimento": "x" * (TAMANHO_MAXIMO_DO_CORPO - len(json.dumps(base))),
+        }
+        corpo = json.dumps(envelope).encode()
+        assert len(corpo) == TAMANHO_MAXIMO_DO_CORPO
+
+        with caplog.at_level(logging.ERROR):
+            consumidor.tratar(CanalDeTeste(), 1, propriedades(envelope), corpo)
+
+        detalhes = [
+            str(r.__dict__.get("detalhe", ""))
+            for r in caplog.records
+            if r.getMessage() == "command_dead_lettered"
+        ]
+        assert not any(d.startswith("corpo de ") for d in detalhes)
 
     def test_json_aninhado_alem_da_pilha_do_parser_vai_para_a_dlq(
         self, consumidor: ConsumidorDeComandos, caplog: pytest.LogCaptureFixture
