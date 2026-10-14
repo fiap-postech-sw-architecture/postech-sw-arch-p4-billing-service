@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
+	diff-cover check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -45,7 +45,23 @@ test:
 test-unit:
 	$(PY) pytest tests/unitarios -q
 
-check: lock-check lint lint-arch typecheck security test
+# Cobertura do codigo novo (ADR-041): as linhas e os ramos que a branch muda
+# em relacao a origin/main, medidos no coverage.xml do `make test`, nao podem
+# ficar abaixo de 90%. O gate de 95% do .coveragerc mede o total; este impede
+# que uma mudanca sem teste passe so porque o total absorveu o codigo novo.
+# Roda depois do `make test` e deixa o relatorio em reports/diff-cover.md (o
+# CI o copia para o summary do job test). COMPARAR_COM troca a base.
+DIFF_COVER_VERSION := 10.6.0
+DIFF_COVER_MINIMO ?= 90
+COMPARAR_COM ?= origin/main
+
+diff-cover:
+	@mkdir -p reports
+	uvx diff-cover==$(DIFF_COVER_VERSION) coverage.xml --branch-coverage \
+		--compare-branch=$(COMPARAR_COM) --fail-under=$(DIFF_COVER_MINIMO) \
+		--format markdown:reports/diff-cover.md
+
+check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"
 
 # CVE nas dependencias de runtime: o mesmo conjunto do job pip-audit. O export
