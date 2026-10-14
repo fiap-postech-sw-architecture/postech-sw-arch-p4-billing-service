@@ -89,6 +89,12 @@ def criar_app(
         # /docs e /redoc em todo ambiente: a borda publica o Swagger (ADR-038).
         # Sem redirect de barra final: 404 direto, sem 307 para outra URL.
         redirect_slashes=False,
+        # Sem o export automatico do FastAPI: com o endpoint OTLP no ambiente
+        # ele soma exportadores http/protobuf na partida, que pedem o extra
+        # fastapi[opentelemetry] (o endpoint do cluster e gRPC) e deixavam um
+        # aviso no log de boot. A telemetria de cada processo e a de
+        # mensageria/telemetria.py.
+        telemetry={"auto_configure": False},
     )
     _montar_estado(app, config, gateway, relogio)
     _incluir_rotas(app, config)
