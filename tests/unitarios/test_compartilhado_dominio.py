@@ -80,6 +80,27 @@ class TestDinheiro:
         assert Dinheiro(Decimal("45.00")) * 4 == Dinheiro(Decimal("180.00"))
         assert 4 * Dinheiro(Decimal("45.00")) == Dinheiro(Decimal("180.00"))
 
+    @pytest.mark.parametrize(
+        ("valor", "centavos"),
+        [
+            ("335.00", 33500),
+            ("0.05", 5),
+            # Em float, estes dariam um centavo a menos (19.99 * 100 =
+            # 1998.9999999999998): o valor nunca passa por float.
+            ("19.99", 1999),
+            ("0.29", 29),
+            ("0", 0),
+            ("1234567.89", 123456789),
+            ("9999999999.99", 999999999999),
+            # O arredondamento do VO vale antes: nenhum centavo fracionado.
+            ("10.005", 1001),
+        ],
+    )
+    def test_centavos_e_um_inteiro_exato(self, valor: str, centavos: int) -> None:
+        resultado = Dinheiro(Decimal(valor)).centavos
+        assert resultado == centavos
+        assert type(resultado) is int
+
     def test_soma_de_moedas_diferentes_e_rejeitada(self) -> None:
         with pytest.raises(ValorInvalidoError, match="Moedas diferentes"):
             _ = Dinheiro(Decimal("1")) + Dinheiro(Decimal("1"), moeda="USD")

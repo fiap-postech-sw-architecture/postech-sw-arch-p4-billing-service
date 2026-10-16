@@ -424,6 +424,10 @@ def preparar_outbox(banco: Database[Documento]) -> None:
     outbox = banco[COLECAO_OUTBOX]
     # Claim do relay: pendentes (e leases vencidos) na ordem da proxima tentativa.
     outbox.create_index([("status", 1), ("proxima_tentativa_em", 1), ("_id", 1)])
+    # Idade da linha pendente mais antiga (``pytstop_outbox_mais_antiga_segundos``,
+    # a cada raspagem da API e do relay): le a primeira chave do indice, em vez de
+    # ordenar em memoria todo o backlog, que cresce justo quando o relay para.
+    outbox.create_index([("status", 1), ("criado_em", 1)])
     outbox.create_index(
         "entregue_em",
         expireAfterSeconds=int(RETENCAO_OUTBOX.total_seconds()),

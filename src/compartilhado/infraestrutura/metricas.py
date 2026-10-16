@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 # Requests sem rota casada (404 de path desconhecido) agregam num unico valor
 # em vez de explodir a cardinalidade com paths arbitrarios.
-_ROTA_NAO_ROTEADA: Final = "nao_roteada"
+ROTA_NAO_ROTEADA: Final = "nao_roteada"
 
 HTTP_DURACAO = Histogram(
     "http_request_duration_seconds",
@@ -56,7 +56,7 @@ def _rota_template(request: Request) -> str:
     """Path template da rota casada (nunca o path bruto, que carrega ids)."""
     rota = request.scope.get("route")
     template = getattr(rota, "path_format", None) or getattr(rota, "path", None)
-    return template if isinstance(template, str) else _ROTA_NAO_ROTEADA
+    return template if isinstance(template, str) else ROTA_NAO_ROTEADA
 
 
 def configurar_metricas(app: FastAPI) -> None:

@@ -22,6 +22,7 @@ from src.pagamento.dominio.cobranca import SituacaoNoProvedor
 from src.pagamento.dominio.estados import StatusNoProvedor
 from src.pagamento.infraestrutura.orcamentos import OrcamentosMongoAdapter
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
+from tests.conftest import valor_da_metrica
 from tests.factories import dinheiro, orcamento, pagamento
 from tests.integracao.apoio import (
     SEGREDO_WEBHOOK,
@@ -29,6 +30,7 @@ from tests.integracao.apoio import (
     RelogioFixo,
     configuracao,
     eventos_do_outbox,
+    provedor_descartavel,
     token_do_checkout,
 )
 
@@ -45,6 +47,12 @@ if TYPE_CHECKING:
     Banco = Database[dict[str, Any]]
 
 WEBHOOK = "/api/v1/webhooks/mercadopago"
+
+
+def centavos_confirmados() -> float:
+    return valor_da_metrica(
+        "pytstop_pagamentos_valor_centavos_total", estado="confirmado"
+    )
 
 
 def assinatura(data_id: str, request_id: str = "req-mp-1") -> dict[str, str]:
@@ -143,6 +151,7 @@ class TestWebhook:
         referencia = app.state.gateway_pagamento.registrar_resultado(
             pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=True
         )
+        antes = centavos_confirmados()
 
         resposta = api.post(
             WEBHOOK,
@@ -155,6 +164,8 @@ class TestWebhook:
         assert resposta.json() == {"processado": True}
         [envelope] = eventos_do_outbox(app.state.banco, "PagamentoConfirmado")
         assert envelope["dados"]["pagamento_id"] == str(dto.id)
+        # R$ 335,00 em centavos inteiros, somado depois do commit.
+        assert centavos_confirmados() == antes + 33500
 
     @pytest.mark.parametrize(
         "com_data_no_corpo", [True, False], ids=["data", "sem-data"]
@@ -322,7 +333,11 @@ class TestWebhook:
     def test_sem_segredo_configurado_o_webhook_fica_desligado(
         self, banco: Banco, jwks_publicado: dict[str, Any]
     ) -> None:
-        app = criar_app(configuracao(MP_WEBHOOK_SECRET=""), banco=banco)
+        app = criar_app(
+            configuracao(MP_WEBHOOK_SECRET=""),
+            banco=banco,
+            provedor=provedor_descartavel(),
+        )
         with TestClient(app) as cliente:
             resposta = cliente.post(
                 WEBHOOK, json=notificacao("1"), headers=assinatura("1")
@@ -421,7 +436,12 @@ class TestSimulador:
         self, banco: Banco, jwks_publicado: dict[str, Any]
     ) -> None:
         relogio = RelogioFixo()
-        app = criar_app(configuracao(), banco=banco, relogio=relogio)
+        app = criar_app(
+            configuracao(),
+            banco=banco,
+            relogio=relogio,
+            provedor=provedor_descartavel(),
+        )
         with TestClient(app) as cliente:
             dto = solicitado(app, relogio)
             relogio.avancar(minutes=61)
@@ -449,6 +469,7 @@ class TestModoMercadoPago:
                 MP_ACCESS_TOKEN="TEST-token-de-teste",  # gitleaks:allow
             ),
             banco=banco,
+            provedor=provedor_descartavel(),
         )
         with TestClient(app) as cliente:
             yield cliente

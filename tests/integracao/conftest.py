@@ -31,6 +31,7 @@ from tests.integracao.apoio import (
     RelogioFixo,
     configuracao,
     definicoes_de_teste,
+    provedor_descartavel,
     sem_indices_ttl,
 )
 
@@ -184,7 +185,7 @@ def relogio() -> RelogioFixo:
 
 @pytest.fixture
 def app(banco: Database[dict[str, Any]], jwks_publicado: dict[str, Any]) -> FastAPI:
-    return criar_app(configuracao(), banco=banco)
+    return criar_app(configuracao(), banco=banco, provedor=provedor_descartavel())
 
 
 @pytest.fixture

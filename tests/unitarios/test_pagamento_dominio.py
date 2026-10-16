@@ -226,6 +226,14 @@ class TestLapide:
     def test_pagamento_solicitado_nao_e_lapide(self) -> None:
         assert not pagamento().e_lapide
 
+    def test_valor_em_centavos_e_o_da_cobranca_e_zero_na_lapide(self) -> None:
+        tumulo = Pagamento.lapide(
+            id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="x"
+        )
+        assert pagamento(valor="335.00").valor_em_centavos == 33500
+        assert pagamento(valor="19.99").valor_em_centavos == 1999
+        assert tumulo.valor_em_centavos == 0
+
     def test_lapide_nao_tem_pagamento_solicitado(self) -> None:
         tumulo = Pagamento.lapide(
             id=uuid4(), ordem_id=uuid4(), cancelado_em=AGORA, motivo="x"

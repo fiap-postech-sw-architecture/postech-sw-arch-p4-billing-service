@@ -22,6 +22,7 @@ from src.compartilhado.infraestrutura.mensageria.consumidor import (
     ConsumidorDeComandos,
 )
 from src.compartilhado.infraestrutura.mensageria.relay import RelayDaOutbox
+from src.compartilhado.infraestrutura.mongo import dinheiro_de_bson
 from src.compartilhado.infraestrutura.unit_of_work import MongoUnitOfWork
 from src.consumidor import FILA, criar_handlers
 from src.orcamento.aplicacao.use_cases import DecidirOrcamento
@@ -42,6 +43,7 @@ from tests.integracao.apoio import (
     LINK,
     CanalDeTeste,
     GatewayRoteirizado,
+    MetricasDeOrcamentoEspia,
     MetricasEspia,
     PublicadorFalso,
     RelogioFixo,
@@ -51,6 +53,7 @@ from tests.integracao.apoio import (
     eventos_do_outbox,
     token_do_checkout,
 )
+from tests.spans import tudo_que_os_spans_levam
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
@@ -136,7 +139,9 @@ def _pagamento(banco: Banco, ordem_id: UUID) -> dict[str, Any]:
 def aprovar_pelo_atendente(banco: Banco, relogio: RelogioFixo, ordem_id: UUID) -> None:
     # Decisao na API: sem comando e sem span.
     uow = MongoUnitOfWork(banco, relogio=relogio)
-    DecidirOrcamento(uow, MongoOrcamentoRepository(uow), LINK, relogio).por_atendente(
+    DecidirOrcamento(
+        uow, MongoOrcamentoRepository(uow), LINK, MetricasDeOrcamentoEspia(), relogio
+    ).por_atendente(
         _orcamento_id(banco, ordem_id), aprovar=True, decidido_por=ATENDENTE_SUB
     )
 
@@ -408,10 +413,7 @@ class TestTraducaoDosComandos:
         logs = "\n".join(
             str(r.__dict__) for r in caplog.records if r.name.startswith("src.")
         )
-        atributos = "\n".join(
-            f"{dict(s.attributes or {})} {s.status.description}"
-            for s in spans.get_finished_spans()
-        )
+        atributos = "\n".join(tudo_que_os_spans_levam(spans.get_finished_spans()))
         assert "command_consumed" in logs  # o log existe; o dados e que nao
         for codigo in ("SRV-TROCA-OLEO", "PEC-OLEO-5W30"):
             assert codigo not in logs
@@ -953,6 +955,9 @@ class TestEstornarPagamento:
         ordem_id, _ = self._pagamento_solicitado(banco, consumidor, canal, relogio)
         pagar_no_checkout(banco, gateway, relogio, ordem_id)
         primeira, reenvio = estornar(ordem_id), estornar(ordem_id)
+        antes = REGISTRY.get_sample_value(
+            "pytstop_pagamentos_valor_centavos_total", {"estado": "estornado"}
+        )
 
         entregar(consumidor, canal, primeira)
         entregar(consumidor, canal, reenvio)
@@ -963,6 +968,12 @@ class TestEstornarPagamento:
             (reenvio["id"], "compensacao"),
         ]
         assert len(gateway.estornos) == 1
+        # O valor devolvido entra uma vez: o reenvio so republica a resposta.
+        depois = REGISTRY.get_sample_value(
+            "pytstop_pagamentos_valor_centavos_total", {"estado": "estornado"}
+        )
+        valor = dinheiro_de_bson(_pagamento(banco, ordem_id)["valor"])
+        assert (depois or 0) - (antes or 0) == valor.centavos > 0
 
     def test_estorno_automatico_e_resposta_ao_comando_tem_causas_diferentes(
         self,

@@ -54,6 +54,7 @@ from tests.integracao.apoio import (
     eventos_do_outbox,
     propriedades,
 )
+from tests.spans import tudo_que_o_span_leva
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -499,6 +500,7 @@ class TestRetry:
         tentativa: int,
         fila: str,
         spans: InMemorySpanExporter,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         handler.erro = AutoReconnect("banco fora")
         canal = CanalDeTeste()
@@ -506,9 +508,10 @@ class TestRetry:
         cabecalhos = {"x-tentativa": tentativa} if tentativa else {}
         usuario = "billing" if tentativa else "os"
 
-        resultado = entregar(
-            consumidor, canal, envelope, user_id=usuario, cabecalhos=cabecalhos
-        )
+        with caplog.at_level(logging.WARNING):
+            resultado = entregar(
+                consumidor, canal, envelope, user_id=usuario, cabecalhos=cabecalhos
+            )
 
         assert (resultado, canal.confirmadas, canal.rejeitadas) == ("retry", [1], [])
         [(exchange, routing_key, corpo, copia)] = canal.publicadas
@@ -532,6 +535,16 @@ class TestRetry:
             copia.headers["traceparent"].split("-")[2]
             == f"{consumo.context.span_id:016x}"
         )
+        # O log do retry traz o nome da classe do erro, nunca o texto dele.
+        [aviso] = [
+            r for r in caplog.records if r.getMessage() == "command_retry_scheduled"
+        ]
+        assert (aviso.__dict__["tipo"], aviso.__dict__["tentativa"]) == (
+            "CancelarOrcamento",
+            tentativa + 1,
+        )
+        assert aviso.__dict__["erro"] == "AutoReconnect"
+        assert "banco fora" not in str(aviso.__dict__)
 
     def test_sexta_falha_vai_para_a_dlq(
         self, consumidor: ConsumidorDeComandos, handler: HandlerDeTeste
@@ -784,9 +797,34 @@ class TestRastreamento:
             s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
         ]
         assert consumo.status.status_code is StatusCode.ERROR
-        assert consumo.status.description == "ConnectionResetError"
+        assert consumo.status.description in (None, "")
         assert consumo.attributes is not None
+        assert consumo.attributes["pytstop.falha"] == "ConnectionResetError"
         assert consumo.attributes["messaging.destination.name"] == "billing.comandos"
+        assert [t for t in tudo_que_o_span_leva(consumo) if "ABC1D23" in t] == []
+
+    def test_erro_do_broker_no_handler_nao_leva_o_texto_ao_span(
+        self,
+        consumidor: ConsumidorDeComandos,
+        handler: HandlerDeTeste,
+        spans: InMemorySpanExporter,
+    ) -> None:
+        """A conexao cai com o handler rodando: o consumidor devolve o erro ao laco
+        que reconecta, e o span fica com o tipo, nao com o texto do pika."""
+        handler.erro = AMQPConnectionError("conexao recusada: SEGREDO-DO-BROKER")
+
+        with pytest.raises(AMQPConnectionError):
+            entregar(consumidor, CanalDeTeste(), _cancelar())
+
+        [consumo] = [
+            s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER
+        ]
+        assert consumo.status.status_code is StatusCode.ERROR
+        assert consumo.status.description in (None, "")
+        assert consumo.attributes is not None
+        assert consumo.attributes["pytstop.falha"] == "AMQPConnectionError"
+        assert [e.name for e in consumo.events] == ["exception"]
+        assert [t for t in tudo_que_o_span_leva(consumo) if "SEGREDO" in t] == []
 
     def test_mensagem_processada_guarda_tipo_e_correlation_id(
         self, banco: Banco, consumidor: ConsumidorDeComandos

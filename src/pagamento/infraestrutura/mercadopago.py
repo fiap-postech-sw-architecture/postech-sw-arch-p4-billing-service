@@ -20,6 +20,14 @@ breaker compartilhado por todas as operacoes. A leitura do corpo acontece
 dentro da chamada protegida: resposta fora do contrato (3xx, corpo que nao e
 JSON, campo faltando ou invalido) e falha transitoria como um 5xx, conta no
 disjuntor e aparece como ``resultado="resposta_invalida"`` na metrica.
+
+Recusa (4xx, menos 429): ``_enviar`` registra o WARNING
+``mercadopago_request_rejected`` com ``operacao``, ``status_http``, ``erro`` (o
+``error`` do corpo) e ``causas`` (os ``cause[].code``), so quando casam com o
+vocabulario curto e fixo do provedor. O texto livre (``message``,
+``description``) pode repetir dado do cliente: fica so na mensagem da excecao e
+nao entra nesse log. O 404 da consulta de pagamento (referencia que nao e
+nossa) e resposta esperada e nao gera o log.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC
 from decimal import Decimal
+from itertools import product
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -66,6 +75,26 @@ MERCADOPAGO_REQUISICOES = Counter(
     "Chamadas ao Mercado Pago por operacao e resultado.",
     ["operacao", "resultado"],
 )
+# Os rotulos sao fechados (RFC-004, secao 9): as 35 combinacoes nascem com zero,
+# e o painel de falhas nao perde a primeira de cada uma.
+OPERACOES: Final = (
+    "criar_cobranca",
+    "cancelar_cobranca",
+    "consultar_pagamento",
+    "buscar_pagamentos",
+    "estornar",
+)
+RESULTADOS: Final = (
+    "sucesso",
+    "recusado",
+    "nao_encontrado",
+    "falha_transitoria",
+    "resposta_invalida",
+    "circuito_aberto",
+    "status_desconhecido",
+)
+for _operacao, _resultado in product(OPERACOES, RESULTADOS):
+    MERCADOPAGO_REQUISICOES.labels(_operacao, _resultado)
 
 # Status de uma TENTATIVA de pagamento no Mercado Pago. `rejected` e uma recusa
 # (o agregado conta ate PAGAMENTO_MAX_RECUSAS); `refunded` e estorno. Os demais
@@ -88,6 +117,13 @@ _ESTORNO_RECUSADO = frozenset({"rejected", "cancelled"})
 # Id de pagamento do Mercado Pago (numerico); a regex so impede que um valor
 # vindo do webhook mude o caminho da URL (``../``, ``?``).
 _REFERENCIA_VALIDA = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Vocabulario do provedor que pode ir para o log: ``error`` do corpo de erro (ex.:
+# ``bad_request``), ``status`` de pagamento que o mapa nao conhece e
+# ``cause[].code`` (ex.: ``4001``). Sempre ``fullmatch``: o ``$`` do ``re``
+# aceitaria uma quebra de linha no fim.
+_TERMO_DO_PROVEDOR = re.compile(r"[a-z_]{1,40}")
+_CODIGO_DE_CAUSA = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+_MAXIMO_DE_CAUSAS = 10
 _NAO_ENCONTRADO = 404
 _MUITAS_REQUISICOES = 429
 _ERRO_DE_SERVIDOR = 500
@@ -142,10 +178,17 @@ class _PagamentoNaoEncontradoError(GatewayPagamentoRecusouError):
 
 @dataclass(frozen=True, slots=True)
 class _Recusa:
-    """4xx (menos 429): o provedor respondeu e recusou; nao conta no disjuntor."""
+    """4xx (menos 429): o provedor respondeu e recusou; nao conta no disjuntor.
+
+    ``mensagem`` leva o texto livre do provedor e so serve a excecao, por isso fica
+    fora do ``repr`` (como o ``access_token`` da configuracao); ``erro`` e
+    ``causas`` sao o que pode ir para o log (``_registrar_recusa``).
+    """
 
     status: int
-    mensagem: str
+    mensagem: str = field(repr=False)
+    erro: str | None
+    causas: tuple[str, ...]
 
 
 class MercadoPagoGateway:
@@ -254,6 +297,7 @@ class MercadoPagoGateway:
                 f"/v1/payments/{referencia}",
                 ler=_ler_situacao,
                 repetir=True,
+                nao_encontrado_esperado=True,
             )
         except _PagamentoNaoEncontradoError:
             return None
@@ -306,6 +350,7 @@ class MercadoPagoGateway:
         *,
         ler: Callable[[httpx.Response], T],
         repetir: bool,
+        nao_encontrado_esperado: bool = False,
         **opcoes: Any,  # noqa: ANN401 - repassadas ao httpx (json, headers)
     ) -> T:
         tentativas = self._config.tentativas if repetir else 1
@@ -331,8 +376,12 @@ class MercadoPagoGateway:
             if isinstance(resultado, _Recusa):
                 if resultado.status == _NAO_ENCONTRADO:
                     MERCADOPAGO_REQUISICOES.labels(operacao, "nao_encontrado").inc()
+                    # Na consulta o 404 e a resposta "nao e nosso": nao e recusa.
+                    if not nao_encontrado_esperado:
+                        _registrar_recusa(operacao, resultado)
                     raise _PagamentoNaoEncontradoError(resultado.mensagem)
                 MERCADOPAGO_REQUISICOES.labels(operacao, "recusado").inc()
+                _registrar_recusa(operacao, resultado)
                 raise GatewayPagamentoRecusouError(resultado.mensagem)
             MERCADOPAGO_REQUISICOES.labels(operacao, "sucesso").inc()
             return resultado
@@ -352,7 +401,7 @@ class MercadoPagoGateway:
         if status == _MUITAS_REQUISICOES or status >= _ERRO_DE_SERVIDOR:
             raise FalhaTransitoriaError(f"HTTP {status}")
         if status >= _ERRO_DE_CLIENTE:
-            return _Recusa(status, _mensagem_de_erro(resposta))
+            return _ler_recusa(resposta)
         if status >= _REDIRECIONAMENTO:
             raise _RespostaInvalidaError(f"HTTP {status}")
         try:
@@ -422,9 +471,11 @@ def _situacao(dados: dict[str, Any], operacao: str) -> SituacaoNoProvedor:
 def _status_no_provedor(status: str, operacao: str) -> StatusNoProvedor:
     conhecido = _STATUS.get(status)
     if conhecido is None:
-        # Status novo no provedor: nao muda a cobranca, mas fica visivel.
+        # Status novo no provedor: nao muda a cobranca, mas fica visivel. O valor
+        # vem de fora: so entra no log se tiver o formato do vocabulario dele.
         MERCADOPAGO_REQUISICOES.labels(operacao, "status_desconhecido").inc()
-        _log.warning("mercadopago_unknown_status", status=status)
+        campos = {"status": status} if _TERMO_DO_PROVEDOR.fullmatch(status) else {}
+        _log.warning("mercadopago_unknown_status", **campos)
         return StatusNoProvedor.EM_ANDAMENTO
     return conhecido
 
@@ -456,10 +507,52 @@ def _valor(dados: dict[str, Any]) -> Dinheiro | None:
     )
 
 
-def _mensagem_de_erro(resposta: httpx.Response) -> str:
+def _ler_recusa(resposta: httpx.Response) -> _Recusa:
+    """Corpo do 4xx. O texto livre (``message``) so vai na mensagem da excecao;
+    ``error`` e ``cause[].code`` so valem se casarem com o vocabulario do
+    provedor. Corpo que nao e um objeto JSON nao tem nenhum dos dois."""
     try:
         corpo = resposta.json()
     except ValueError:
         corpo = None
-    mensagem = corpo.get("message") if isinstance(corpo, dict) else None
-    return f"Mercado Pago respondeu {resposta.status_code}: {mensagem or 'sem detalhe'}"
+    if not isinstance(corpo, dict):
+        corpo = {}
+    mensagem = corpo.get("message")
+    return _Recusa(
+        resposta.status_code,
+        f"Mercado Pago respondeu {resposta.status_code}: {mensagem or 'sem detalhe'}",
+        _texto_no_formato(corpo, "error", _TERMO_DO_PROVEDOR),
+        _codigos_das_causas(corpo.get("cause")),
+    )
+
+
+def _codigos_das_causas(causas: object) -> tuple[str, ...]:
+    """Os 10 primeiros ``code`` validos de ``cause``, na ordem; o que nao e lista,
+    item que nao e objeto e ``code`` ausente ou fora do formato ficam de fora."""
+    if not isinstance(causas, list):
+        return ()
+    codigos = (_texto_no_formato(causa, "code", _CODIGO_DE_CAUSA) for causa in causas)
+    return tuple(codigo for codigo in codigos if codigo is not None)[:_MAXIMO_DE_CAUSAS]
+
+
+def _texto_no_formato(
+    dados: Any,  # noqa: ANN401 - item do JSON do provedor, de qualquer tipo
+    campo: str,
+    formato: re.Pattern[str],
+) -> str | None:
+    """``dados[campo]`` como texto, so se casar inteiro com ``formato``."""
+    try:
+        texto = _texto(dados, campo)
+    except _CORPO_FORA_DO_CONTRATO:
+        # Item que nao e objeto, sem o campo ou com tipo errado: fica de fora.
+        return None
+    return texto if formato.fullmatch(texto) else None
+
+
+def _registrar_recusa(operacao: str, recusa: _Recusa) -> None:
+    """Um WARNING por recusa. Nenhum outro campo (URL, corpo, cabecalho,
+    referencia da preferencia, id do pagamento), e a mensagem fica de fora."""
+    campos: dict[str, Any] = {"operacao": operacao, "status_http": recusa.status}
+    if recusa.erro is not None:
+        campos["erro"] = recusa.erro
+    _log.warning("mercadopago_request_rejected", **campos, causas=list(recusa.causas))

@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
-from collections.abc import Iterator
+import logging
+from collections.abc import Callable, Iterator
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
@@ -24,16 +26,20 @@ from uuid import uuid4
 import httpx
 import pytest
 import respx
+import structlog
 from prometheus_client import REGISTRY
 
 from src.compartilhado.infraestrutura.circuit_breaker import CircuitBreaker
+from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.pagamento.aplicacao.ports import (
     EstornoEmProcessamentoError,
     GatewayPagamentoIndisponivelError,
     GatewayPagamentoRecusouError,
     ItemCobranca,
 )
+from src.pagamento.dominio.cobranca import SituacaoNoProvedor
 from src.pagamento.dominio.estados import StatusNoProvedor
+from src.pagamento.infraestrutura import mercadopago
 from src.pagamento.infraestrutura.mercadopago import (
     FALHAS_PARA_ABRIR,
     SEGUNDOS_ABERTO,
@@ -733,6 +739,573 @@ class TestRespostaForaDoContrato:
             with pytest.raises(GatewayPagamentoRecusouError, match="not found"):
                 gateway.cancelar_cobranca("pref-1")
         assert contador("cancelar_cobranca", "nao_encontrado") == antes + 1
+
+
+EVENTO_DE_RECUSA = "mercadopago_request_rejected"
+# O que o pipeline de log poe em toda linha; o resto e do evento.
+CAMPOS_DO_PIPELINE = frozenset(
+    {
+        "event",
+        "level",
+        "logger",
+        "timestamp",
+        "git_sha",
+        "git_date",
+        "trace_id",
+        "span_id",
+    }
+)
+NIVEIS_DE_AVISO = frozenset({"warning", "error", "critical"})
+
+
+class LogDoAdaptador:
+    """O log como o operador o le: as linhas JSON do pipeline de producao."""
+
+    def __init__(self, saida: io.StringIO) -> None:
+        self._saida = saida
+
+    @property
+    def texto(self) -> str:
+        return self._saida.getvalue()
+
+    def linhas(self) -> list[dict[str, Any]]:
+        return [json.loads(linha) for linha in self.texto.splitlines() if linha]
+
+    def eventos(self, nome: str) -> list[dict[str, Any]]:
+        return [linha for linha in self.linhas() if linha["event"] == nome]
+
+    def recusas(self) -> list[dict[str, Any]]:
+        return self.eventos(EVENTO_DE_RECUSA)
+
+    def avisos(self) -> list[dict[str, Any]]:
+        """De WARNING para cima: o httpx escreve cada chamada em INFO."""
+        return [linha for linha in self.linhas() if linha["level"] in NIVEIS_DE_AVISO]
+
+
+def campos_do_evento(linha: dict[str, Any]) -> dict[str, Any]:
+    return {
+        campo: valor
+        for campo, valor in linha.items()
+        if campo not in CAMPOS_DO_PIPELINE
+    }
+
+
+@pytest.fixture
+def log(monkeypatch: pytest.MonkeyPatch) -> Iterator[LogDoAdaptador]:
+    """``configurar_logging`` de producao (com o scrub de PII) numa saida de teste.
+
+    O structlog guarda a configuracao de quando o logger foi usado pela primeira
+    vez: o do modulo e trocado por um novo, que nasce com a de agora. No fim volta
+    tudo como estava, inclusive os loggers que o ``configurar_logging`` mexe.
+    """
+    outros = ("pika", "uvicorn", "uvicorn.error", "uvicorn.access")
+    antes = {
+        nome: (
+            logging.getLogger(nome).handlers[:],
+            logging.getLogger(nome).propagate,
+            logging.getLogger(nome).level,
+        )
+        for nome in outros
+    }
+    raiz = logging.getLogger()
+    handlers, nivel_da_raiz = raiz.handlers[:], raiz.level
+    configuracao = structlog.get_config()
+    saida = io.StringIO()
+    configurar_logging(saida)
+    # O pipeline fica na frente e os handlers que o pytest usa para capturar
+    # seguem no lugar: ele mesmo os tira ao fim de cada fase do teste.
+    json_do_pipeline = raiz.handlers[0]
+    raiz.handlers = [json_do_pipeline, *handlers]
+    monkeypatch.setattr(mercadopago, "_log", structlog.get_logger(mercadopago.__name__))
+    yield LogDoAdaptador(saida)
+    structlog.configure(**configuracao)
+    raiz.handlers = [h for h in raiz.handlers if h is not json_do_pipeline]
+    raiz.setLevel(nivel_da_raiz)
+    for nome, (handlers_do_logger, propagate, nivel) in antes.items():
+        logger = logging.getLogger(nome)
+        logger.handlers, logger.propagate = handlers_do_logger, propagate
+        logger.setLevel(nivel)
+
+
+def _criar_cobranca(gateway: MercadoPagoGateway) -> object:
+    return gateway.criar_cobranca(
+        pagamento_id=uuid4(),
+        itens=[ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))],
+        expira_em=AGORA,
+    )
+
+
+# operacao -> (metodo, caminho, chamada ao gateway): as cinco do adapter.
+OPERACOES: dict[str, tuple[str, str, Callable[[MercadoPagoGateway], object]]] = {
+    "criar_cobranca": ("POST", "/checkout/preferences", _criar_cobranca),
+    "cancelar_cobranca": (
+        "PUT",
+        "/checkout/preferences/pref-1",
+        lambda gateway: gateway.cancelar_cobranca("pref-1"),
+    ),
+    "consultar_pagamento": (
+        "GET",
+        "/v1/payments/1",
+        lambda gateway: gateway.consultar_pagamento("1"),
+    ),
+    "buscar_pagamentos": (
+        "GET",
+        "/v1/payments/search",
+        lambda gateway: gateway.buscar_por_referencia_externa("x"),
+    ),
+    "estornar": (
+        "POST",
+        "/v1/payments/1/refunds",
+        lambda gateway: gateway.estornar("1", chave_idempotencia="k"),
+    ),
+}
+
+
+def recusar(
+    gateway: MercadoPagoGateway, operacao: str, resposta: httpx.Response
+) -> GatewayPagamentoRecusouError:
+    """Faz a ``operacao`` receber ``resposta`` do provedor e devolve a recusa."""
+    metodo, caminho, chamar = OPERACOES[operacao]
+    with respx.mock(base_url=API) as mp:
+        mp.route(method=metodo, path=caminho).mock(return_value=resposta)
+        with pytest.raises(GatewayPagamentoRecusouError) as recusa:
+            chamar(gateway)
+    return recusa.value
+
+
+def uma_recusa(log: LogDoAdaptador) -> dict[str, Any]:
+    [linha] = log.recusas()
+    return campos_do_evento(linha)
+
+
+class TestLogDaRecusa:
+    """4xx do provedor: um WARNING com o status HTTP, o ``error`` e os
+    ``cause[].code`` (vocabulario curto e fixo), nunca o texto livre."""
+
+    def test_400_loga_operacao_status_erro_e_codigos_e_mais_nada(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        antes = contador("criar_cobranca", "recusado")
+        corpo = {
+            "message": "invalid items",
+            "error": "bad_request",
+            "status": 400,
+            "cause": [
+                {"code": "4001", "description": "unit_price invalid", "data": None},
+                {"code": "x_y"},
+            ],
+        }
+
+        recusa = recusar(gateway, "criar_cobranca", httpx.Response(400, json=corpo))
+
+        [linha] = log.recusas()
+        assert linha["level"] == "warning"
+        assert campos_do_evento(linha) == {
+            "operacao": "criar_cobranca",
+            "status_http": 400,
+            "erro": "bad_request",
+            "causas": ["4001", "x_y"],
+        }
+        # Um WARNING so, a metrica conta como antes e a excecao leva a mesma frase.
+        assert log.avisos() == [linha]
+        assert contador("criar_cobranca", "recusado") == antes + 1
+        assert str(recusa) == "Mercado Pago respondeu 400: invalid items"
+
+    def test_texto_livre_do_provedor_nunca_aparece_no_log(
+        self,
+        gateway: MercadoPagoGateway,
+        log: LogDoAdaptador,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        email = "cliente.sigiloso@example.com"
+        segredo = (
+            "APP_USR-0000000000000000-000000-00000000000000000000000000000000-0000000"
+        )
+        corpo = {
+            "message": f"SENTINELA-MESSAGE {email} {segredo}",
+            "error": "Texto Livre SENTINELA-ERROR",
+            "status": 400,
+            "cause": [
+                {
+                    "code": "texto livre SENTINELA-CODE",
+                    "description": f"SENTINELA-DESCRIPTION {email} {segredo}",
+                    "message": "SENTINELA-CAUSE-MESSAGE",
+                    "data": "SENTINELA-DATA",
+                },
+                {"code": "4001", "description": f"SENTINELA-OUTRA {email}"},
+            ],
+            "detail": "SENTINELA-DETAIL",
+        }
+
+        recusa = recusar(gateway, "criar_cobranca", httpx.Response(400, json=corpo))
+
+        saida = capsys.readouterr()
+        visivel = log.texto + saida.out + saida.err
+        for texto in ("SENTINELA", "cliente.sigiloso", segredo, TOKEN):
+            assert texto not in visivel
+        assert uma_recusa(log) == {
+            "operacao": "criar_cobranca",
+            "status_http": 400,
+            "causas": ["4001"],
+        }
+        # O texto livre segue so na mensagem da excecao, como antes.
+        assert "SENTINELA-MESSAGE" in str(recusa)
+
+    def test_so_o_evento_vai_para_o_log_sem_url_cabecalho_nem_referencia(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        recusar(gateway, "cancelar_cobranca", erro_mp(400, "x"))
+
+        [linha] = log.recusas()
+        assert "pref-1" not in json.dumps(linha)
+        assert set(campos_do_evento(linha)) == {
+            "operacao",
+            "status_http",
+            "erro",
+            "causas",
+        }
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param(400, id="400-requisicao-invalida"),
+            pytest.param(401, id="401-sem-credencial"),
+            pytest.param(403, id="403-sem-permissao"),
+            pytest.param(409, id="409-conflito"),
+            pytest.param(422, id="422-nao-processavel"),
+        ],
+    )
+    def test_cada_status_4xx_sai_no_log(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, status: int
+    ) -> None:
+        recusar(gateway, "criar_cobranca", erro_mp(status, "x"))
+
+        assert uma_recusa(log) == {
+            "operacao": "criar_cobranca",
+            "status_http": status,
+            "erro": "bad_request",
+            "causas": ["2000"],
+        }
+
+    @pytest.mark.parametrize("operacao", list(OPERACOES))
+    def test_cada_operacao_sai_com_o_proprio_nome_e_uma_linha_so(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, operacao: str
+    ) -> None:
+        recusar(gateway, operacao, erro_mp(400, "x"))
+
+        assert [linha["operacao"] for linha in log.recusas()] == [operacao]
+        assert len(log.avisos()) == 1
+
+    def test_404_da_consulta_de_pagamento_e_esperado_e_nao_gera_log(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        antes = contador("consultar_pagamento", "nao_encontrado")
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/9").mock(
+                return_value=erro_mp(404, "Payment not found")
+            )
+            assert gateway.consultar_pagamento("9") is None
+
+        assert log.recusas() == []
+        assert log.avisos() == []
+        assert contador("consultar_pagamento", "nao_encontrado") == antes + 1
+
+    @pytest.mark.parametrize(
+        "operacao",
+        [operacao for operacao in OPERACOES if operacao != "consultar_pagamento"],
+    )
+    def test_404_das_outras_operacoes_e_recusa_de_verdade_e_sai_no_log(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, operacao: str
+    ) -> None:
+        recusar(gateway, operacao, erro_mp(404, "not found"))
+
+        linha = uma_recusa(log)
+        assert (linha["operacao"], linha["status_http"]) == (operacao, 404)
+
+    @pytest.mark.parametrize(
+        "operacao",
+        [
+            pytest.param("criar_cobranca", id="criar-sem-repeticao"),
+            pytest.param("consultar_pagamento", id="consultar-com-repeticao"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param(429, id="429-muitas-requisicoes"),
+            pytest.param(500, id="500-erro-interno"),
+            pytest.param(502, id="502-gateway-ruim"),
+            pytest.param(503, id="503-indisponivel"),
+        ],
+    )
+    def test_5xx_e_429_seguem_o_caminho_transitorio_sem_o_log(
+        self,
+        gateway: MercadoPagoGateway,
+        log: LogDoAdaptador,
+        operacao: str,
+        status: int,
+    ) -> None:
+        metodo, caminho, chamar = OPERACOES[operacao]
+        with respx.mock(base_url=API) as mp:
+            mp.route(method=metodo, path=caminho).mock(
+                return_value=erro_mp(status, "x")
+            )
+            with pytest.raises(GatewayPagamentoIndisponivelError):
+                chamar(gateway)
+
+        assert log.recusas() == []
+        assert log.avisos() == []
+
+    @pytest.mark.parametrize(
+        ("cause", "esperado"),
+        [
+            pytest.param(
+                [{"code": "4001"}, {"code": "x_y"}], ["4001", "x_y"], id="dois-textos"
+            ),
+            pytest.param([{"code": 2000}], ["2000"], id="inteiro-vira-texto"),
+            pytest.param([{"code": "a.b-c_D9"}], ["a.b-c_D9"], id="alfabeto-inteiro"),
+            pytest.param([{"code": "x" * 40}], ["x" * 40], id="quarenta"),
+            pytest.param([{"code": "x" * 41}], [], id="quarenta-e-um"),
+            pytest.param([{"code": "4001\n"}], [], id="quebra-de-linha-no-fim"),
+            pytest.param([{"code": "\n4001"}], [], id="quebra-de-linha-no-comeco"),
+            pytest.param(
+                [{"code": "4001 ok"}, {"code": "a/b"}, {"code": "ação"}, {"code": ""}],
+                [],
+                id="fora-do-alfabeto",
+            ),
+            pytest.param(
+                [{"code": True}, {"code": 2.5}, {"code": None}, {"code": ["a"]}],
+                [],
+                id="tipos-que-nao-sao-codigo",
+            ),
+            pytest.param([{"description": "sem code"}, {}], [], id="sem-code"),
+            pytest.param(
+                ["4001", 4001, None, [{"code": "4001"}], True],
+                [],
+                id="itens-que-nao-sao-objeto",
+            ),
+            pytest.param(
+                [{"code": "ok1"}, {"code": "ruim!"}, {"code": "ok2"}],
+                ["ok1", "ok2"],
+                id="o-invalido-sai-e-o-resto-fica",
+            ),
+            pytest.param(
+                [{"code": "a"}, {"code": "a"}, {"code": 4001}, {"code": "4001"}],
+                ["a", "a", "4001", "4001"],
+                id="codigo-repetido-fica-na-ordem",
+            ),
+            pytest.param({"code": "4001"}, [], id="cause-objeto"),
+            pytest.param("4001", [], id="cause-texto"),
+            pytest.param(None, [], id="cause-nula"),
+            pytest.param(5, [], id="cause-numero"),
+        ],
+    )
+    def test_causas_so_com_os_codigos_no_formato_e_nunca_levanta(
+        self,
+        gateway: MercadoPagoGateway,
+        log: LogDoAdaptador,
+        cause: object,
+        esperado: list[str],
+    ) -> None:
+        corpo = {"error": "bad_request", "cause": cause}
+
+        recusar(gateway, "criar_cobranca", httpx.Response(400, json=corpo))
+
+        assert uma_recusa(log)["causas"] == esperado
+
+    def test_no_maximo_dez_causas_as_primeiras_na_ordem(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        causas = [{"code": f"c{n}"} for n in range(11)]
+
+        recusar(gateway, "criar_cobranca", httpx.Response(400, json={"cause": causas}))
+
+        assert uma_recusa(log)["causas"] == [f"c{n}" for n in range(10)]
+
+    def test_dez_causas_cabem_todas(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        causas = [{"code": f"c{n}"} for n in range(10)]
+
+        recusar(gateway, "criar_cobranca", httpx.Response(400, json={"cause": causas}))
+
+        assert uma_recusa(log)["causas"] == [f"c{n}" for n in range(10)]
+
+    def test_o_teto_conta_so_os_codigos_validos(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        invalidas = [{"code": "ruim!"}, {"descricao": "sem code"}, "lixo"]
+        validas = [{"code": f"c{n}"} for n in range(12)]
+
+        recusar(
+            gateway,
+            "criar_cobranca",
+            httpx.Response(400, json={"cause": invalidas + validas}),
+        )
+
+        assert uma_recusa(log)["causas"] == [f"c{n}" for n in range(10)]
+
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            pytest.param("bad_request", id="bad-request"),
+            pytest.param("not_found", id="not-found"),
+            pytest.param("a", id="uma-letra"),
+            pytest.param("_", id="sublinhado"),
+            pytest.param("a" * 40, id="quarenta"),
+        ],
+    )
+    def test_erro_no_formato_sai_como_veio(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, erro: str
+    ) -> None:
+        recusar(gateway, "criar_cobranca", httpx.Response(400, json={"error": erro}))
+
+        assert uma_recusa(log)["erro"] == erro
+
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            pytest.param("Bad_Request", id="maiuscula"),
+            pytest.param("bad-request", id="hifen"),
+            pytest.param("bad request", id="espaco"),
+            pytest.param("bad_request1", id="digito"),
+            pytest.param("bad_request\n", id="quebra-de-linha-no-fim"),
+            pytest.param("ação", id="acento"),
+            pytest.param("", id="vazio"),
+            pytest.param("a" * 41, id="quarenta-e-um"),
+            pytest.param(400, id="inteiro"),
+            pytest.param(True, id="booleano"),
+            pytest.param(None, id="nulo"),
+            pytest.param(["bad_request"], id="lista"),
+        ],
+    )
+    def test_erro_fora_do_formato_fica_de_fora(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, erro: object
+    ) -> None:
+        recusar(gateway, "criar_cobranca", httpx.Response(400, json={"error": erro}))
+
+        assert "erro" not in uma_recusa(log)
+
+    def test_corpo_sem_error_nem_cause_loga_so_operacao_e_status(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        recusa = recusar(
+            gateway, "criar_cobranca", httpx.Response(400, json={"message": "x"})
+        )
+
+        assert uma_recusa(log) == {
+            "operacao": "criar_cobranca",
+            "status_http": 400,
+            "causas": [],
+        }
+        assert str(recusa) == "Mercado Pago respondeu 400: x"
+
+    @pytest.mark.parametrize(
+        "corpo",
+        [
+            pytest.param({"text": "<html>Bad Request</html>"}, id="html"),
+            pytest.param({"content": b""}, id="vazio"),
+            pytest.param({"content": b"\xff\xfe\xfa"}, id="bytes-que-nao-sao-texto"),
+            pytest.param({"content": b"null"}, id="nulo"),
+            pytest.param({"json": 400}, id="numero"),
+            pytest.param({"json": "bad_request"}, id="texto"),
+            pytest.param(
+                {"json": [{"error": "bad_request", "cause": [{"code": "4001"}]}]},
+                id="lista",
+            ),
+        ],
+    )
+    def test_corpo_que_nao_e_um_objeto_json_nao_tem_erro_nem_causas(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, corpo: dict[str, Any]
+    ) -> None:
+        recusa = recusar(gateway, "criar_cobranca", httpx.Response(400, **corpo))
+
+        assert uma_recusa(log) == {
+            "operacao": "criar_cobranca",
+            "status_http": 400,
+            "causas": [],
+        }
+        assert str(recusa) == "Mercado Pago respondeu 400: sem detalhe"
+
+    def test_repr_da_recusa_nao_traz_o_texto_do_provedor(self) -> None:
+        # Qualquer repr, `%r` ou traceback com locals imprimiria a mensagem.
+        recusa = mercadopago._ler_recusa(erro_mp(400, "SENTINELA-MSG payer x@y.com"))
+
+        assert (
+            recusa.mensagem == "Mercado Pago respondeu 400: SENTINELA-MSG payer x@y.com"
+        )
+        assert (
+            repr(recusa) == "_Recusa(status=400, erro='bad_request', causas=('2000',))"
+        )
+
+    def test_codigo_com_cara_de_cpf_ou_telefone_sai_mascarado_pelo_scrub(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador
+    ) -> None:
+        causas = [{"code": c} for c in ("123.456.789-09", "11-99999-0000", "ok_1")]
+
+        recusar(gateway, "criar_cobranca", httpx.Response(400, json={"cause": causas}))
+
+        assert uma_recusa(log)["causas"] == ["***.***.789-**", "***", "ok_1"]
+        assert "123.456" not in log.texto
+
+
+class TestLogDoStatusDesconhecido:
+    """Status de pagamento que o mapa nao conhece: a cobranca nao muda, e o log traz o
+    status so se ele tiver o formato do vocabulario do provedor."""
+
+    def consultar(
+        self, gateway: MercadoPagoGateway, status: str
+    ) -> SituacaoNoProvedor | None:
+        with respx.mock(base_url=API) as mp:
+            mp.get("/v1/payments/1").respond(
+                200, json=pagamento_no_provedor(status=status)
+            )
+            return gateway.consultar_pagamento("1")
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param("novo_status", id="novo-status"),
+            pytest.param("a", id="uma-letra"),
+            pytest.param("_", id="sublinhado"),
+            pytest.param("a" * 40, id="quarenta"),
+        ],
+    )
+    def test_status_no_formato_sai_no_log(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, status: str
+    ) -> None:
+        situacao = self.consultar(gateway, status)
+
+        assert situacao is not None
+        assert situacao.status is StatusNoProvedor.EM_ANDAMENTO
+        [linha] = log.eventos("mercadopago_unknown_status")
+        assert linha["level"] == "warning"
+        assert campos_do_evento(linha) == {"status": status}
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            pytest.param("Novo Status", id="maiuscula-e-espaco"),
+            pytest.param("novo-status", id="hifen"),
+            pytest.param("novo_status2", id="digito"),
+            pytest.param("novo_status\n", id="quebra-de-linha-no-fim"),
+            pytest.param("a" * 41, id="quarenta-e-um"),
+            pytest.param("ação", id="acento"),
+            pytest.param("SENTINELA payer x@y.com", id="texto-livre"),
+        ],
+    )
+    def test_status_fora_do_formato_sai_sem_o_campo_e_e_contado(
+        self, gateway: MercadoPagoGateway, log: LogDoAdaptador, status: str
+    ) -> None:
+        antes = contador("consultar_pagamento", "status_desconhecido")
+
+        situacao = self.consultar(gateway, status)
+
+        assert situacao is not None
+        assert situacao.status is StatusNoProvedor.EM_ANDAMENTO
+        [linha] = log.eventos("mercadopago_unknown_status")
+        assert campos_do_evento(linha) == {}
+        assert contador("consultar_pagamento", "status_desconhecido") == antes + 1
 
 
 class TestCircuitBreaker:

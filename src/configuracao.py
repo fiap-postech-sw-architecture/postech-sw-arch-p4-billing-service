@@ -152,7 +152,14 @@ class _Ambiente:
         return modo
 
     def mp_access_token(self, modo: ModoMercadoPago) -> str | None:
-        token = self.env.get("MP_ACCESS_TOKEN") or None
+        # Sem as pontas em branco: o Secret criado de um arquivo com quebra de
+        # linha no fim faria o h11 recusar o cabecalho Authorization, e o erro
+        # citaria o token inteiro. Caractere de controle no meio recusa o boot,
+        # sem repetir o valor na mensagem.
+        token = (self.env.get("MP_ACCESS_TOKEN") or "").strip() or None
+        if token is not None and not token.isprintable():
+            msg = "MP_ACCESS_TOKEN tem caractere de controle"
+            raise ValueError(msg)
         if modo is ModoMercadoPago.MERCADOPAGO and not token:
             msg = "MP_MODE=mercadopago exige MP_ACCESS_TOKEN"
             raise ValueError(msg)

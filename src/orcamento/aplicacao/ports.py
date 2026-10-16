@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
     from src.compartilhado.dominio.dinheiro import Dinheiro
+    from src.orcamento.dominio.orcamento import StatusOrcamento
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,4 +34,13 @@ class Cotacao:
 class TabelaDePrecosPort(Protocol):
     def cotar(self, *, servicos: Collection[str], pecas: Collection[str]) -> Cotacao:
         """Cota na mesma transacao do orcamento; inativo conta como invalido."""
+        ...
+
+
+class MetricasDeOrcamento(Protocol):
+    """Histograma do tempo ate a decisao, implementado na infraestrutura."""
+
+    def decisao_registrada(self, decisao: StatusOrcamento, segundos: float) -> None:
+        """Conta uma decisao (``APROVADO`` ou ``RECUSADO``) tomada ``segundos``
+        depois da geracao do orcamento. Chamado depois do commit dela."""
         ...
