@@ -136,7 +136,7 @@ def test_rodar_um_conta_o_tempo_esgotado_como_morto(
     (copia / "tests" / "test_lento.py").write_text(
         "import time\n\n\ndef test_lento():\n    time.sleep(30)\n", encoding="utf-8"
     )
-    monkeypatch.setattr(mutacao_manual, "LIMITE_DE_UM_MUTANTE_SEGUNDOS", 2)
+    monkeypatch.setattr(mutacao_manual, "LIMITE_DE_UM_MUTANTE_SEGUNDOS", 1)
 
     resultado = mutacao_manual._rodar_um(
         _mutante("return x * 3", testes=("tests/test_lento.py",))
@@ -144,3 +144,59 @@ def test_rodar_um_conta_o_tempo_esgotado_como_morto(
 
     assert resultado == ("morto", "(tempo esgotado)")
     assert (copia / "calculadora.py").read_text(encoding="utf-8") == _CALCULADORA
+
+
+def test_grupo_que_ja_falha_na_copia_limpa_nao_mata_ninguem(
+    copia: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (copia / "tests" / "test_ja_falha.py").write_text(
+        "def test_ja_falha():\n    assert False\n", encoding="utf-8"
+    )
+    ja_falha = ("tests/test_ja_falha.py",)
+    chamadas: list[tuple[str, ...]] = []
+    de_verdade = mutacao_manual._pytest
+
+    def espiar(testes: tuple[str, ...]) -> object:
+        chamadas.append(testes)
+        return de_verdade(testes)
+
+    monkeypatch.setattr(mutacao_manual, "_pytest", espiar)
+
+    linhas = mutacao_manual.executar(
+        (
+            _mutante("return x * 3"),
+            _mutante("return x + x"),
+            _mutante("return x * 3", testes=ja_falha),
+            _mutante("return x + x", "equivalente", testes=ja_falha),
+        ),
+        600,
+    )
+
+    motivo = "teste do grupo reprova na copia limpa: test_ja_falha.py::test_ja_falha"
+    assert [(x["resultado"], x["teste"]) for x in linhas] == [
+        ("morto", "test_calculadora.py::test_dobro"),
+        ("sobreviveu", "-"),
+        ("erro", motivo),
+        ("erro", motivo),
+    ]
+    # Cada grupo roda limpo uma vez; o que reprova limpo nao roda mais nenhum.
+    assert chamadas.count(_GRUPO) == 3
+    assert chamadas.count(ja_falha) == 1
+
+
+def test_grupo_que_estoura_o_tempo_na_copia_limpa_sai_como_erro(
+    copia: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (copia / "tests" / "test_lento.py").write_text(
+        "import time\n\n\ndef test_lento():\n    time.sleep(30)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(mutacao_manual, "LIMITE_DE_UM_MUTANTE_SEGUNDOS", 1)
+
+    (linha,) = mutacao_manual.executar(
+        (_mutante("return x * 3", testes=("tests/test_lento.py",)),), 600
+    )
+
+    assert (linha["resultado"], linha["teste"]) == (
+        "erro",
+        "teste do grupo reprova na copia limpa: (tempo esgotado)",
+    )

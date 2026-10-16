@@ -11,8 +11,10 @@ critico.
 
 O script copia para ``mutants/`` (fora do git) o que ``[config]`` lista em
 ``copiar``, aplica um mutante por vez nessa copia, roda so os testes do grupo
-dele e diz qual falhou primeiro. Nao e gate de CI nem tem pontuacao minima: o
-resultado vai para o README (Mutacao). ``--prazo`` (segundos) para de iniciar
+dele e diz qual falhou primeiro. Antes do primeiro mutante de cada grupo, roda
+o grupo na copia sem mutante: teste que ja falha mataria qualquer um, entao os
+mutantes desse grupo saem ``erro``. Nao e gate de CI nem tem pontuacao minima:
+o resultado vai para o README (Mutacao). ``--prazo`` (segundos) para de iniciar
 mutantes quando estoura; os que sobram saem como ``nao rodado``.
 """
 
@@ -152,9 +154,28 @@ def _rodar_um(m: Mutante) -> tuple[str, str]:
     return "erro", f"pytest saiu com {codigo}, sem teste que falhou"
 
 
+def _motivo_de_o_grupo_reprovar(testes: tuple[str, ...]) -> str:
+    """Vazio se o grupo passa na copia sem mutante; senao, o que o reprova."""
+    codigo, saida, estourou = _pytest(testes)
+    if codigo == 0:
+        return ""
+    if estourou:
+        return "(tempo esgotado)"
+    return _primeiro_que_falhou(saida) or f"pytest saiu com {codigo}"
+
+
+def _resultado(m: Mutante, limpos: dict[tuple[str, ...], str]) -> tuple[str, str]:
+    if m.testes not in limpos:
+        limpos[m.testes] = _motivo_de_o_grupo_reprovar(m.testes)
+    if motivo := limpos[m.testes]:
+        return "erro", f"teste do grupo reprova na copia limpa: {motivo}"
+    return _rodar_um(m)
+
+
 def executar(mutantes: tuple[Mutante, ...], prazo: float) -> list[dict[str, str]]:
     inicio = time.monotonic()
     linhas = []
+    limpos: dict[tuple[str, ...], str] = {}  # grupo -> motivo de reprovar limpo
     for m in mutantes:
         linha = {
             "id": m.id,
@@ -165,7 +186,7 @@ def executar(mutantes: tuple[Mutante, ...], prazo: float) -> list[dict[str, str]
         if time.monotonic() - inicio > prazo:
             resultado, teste = "nao rodado", ""
         else:
-            resultado, teste = _rodar_um(m)
+            resultado, teste = _resultado(m, limpos)
             print(f"{m.id} {resultado:<11} {teste}", flush=True)
         linhas.append({**linha, "resultado": resultado, "teste": teste})
     return linhas

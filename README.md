@@ -361,7 +361,7 @@ make mutacao
 make mutacao MUTANTES="D06 R03"
 ```
 
-O alvo para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900) e escreve a tabela em `reports/mutacao.md`. Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container. Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo) e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
+O alvo para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900) e escreve a tabela em `reports/mutacao.md`. Antes do primeiro mutante de cada grupo de testes, o script roda o grupo na cópia sem mutante: se ele já reprova (ou estoura o tempo), os mutantes do grupo saem `erro`, porque um teste que já falha mataria qualquer um. Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container. Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo) e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
 
 **Para outro serviço:** copie `scripts/mutacao_manual.py` e o alvo `mutacao` do Makefile para o repositório dele (o script é o mesmo nos três serviços). Troque a tabela `[config]` do `scripts/mutantes.toml` (o que vai para a cópia `mutants/`), os grupos de `[testes]` e os `[[mutante]]`. Antes de começar, o script recusa trecho ausente ou repetido.
 
