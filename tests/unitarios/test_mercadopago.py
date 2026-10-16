@@ -29,6 +29,7 @@ import respx
 import structlog
 from prometheus_client import REGISTRY
 
+from src.compartilhado.dominio.dinheiro import Dinheiro
 from src.compartilhado.infraestrutura.circuit_breaker import CircuitBreaker
 from src.compartilhado.infraestrutura.logging import configurar_logging
 from src.pagamento.aplicacao.ports import (
@@ -210,6 +211,31 @@ class TestCriarCobranca:
             "expiration_date_to": "2026-10-06T13:00:00.000+00:00",
             "date_of_expiration": "2026-10-06T13:00:00.000+00:00",
         }
+
+    def test_envia_a_moeda_de_cada_item_e_nao_so_brl(
+        self, gateway: MercadoPagoGateway
+    ) -> None:
+        with respx.mock(base_url=API) as mp:
+            rota = mp.post("/checkout/preferences").respond(
+                201, json=PREFERENCIA_CRIADA
+            )
+
+            gateway.criar_cobranca(
+                pagamento_id=uuid4(),
+                itens=[
+                    ItemCobranca(
+                        "SRV-USD",
+                        "Servico em dolar",
+                        1,
+                        Dinheiro(Decimal("10.00"), "USD"),
+                    ),
+                    ItemCobranca("PEC-BRL", "Peca em real", 1, dinheiro("5.00")),
+                ],
+                expira_em=AGORA,
+            )
+
+        corpo = json.loads(rota.calls.last.request.content)
+        assert [item["currency_id"] for item in corpo["items"]] == ["USD", "BRL"]
 
     def test_nao_repete_porque_criar_preferencia_nao_e_idempotente(
         self, gateway: MercadoPagoGateway, esperas: Esperas
