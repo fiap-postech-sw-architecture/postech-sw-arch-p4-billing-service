@@ -50,14 +50,19 @@ test-unit:
 # ficar abaixo de 90%. O gate de 95% do .coveragerc mede o total; este impede
 # que uma mudanca sem teste passe so porque o total absorveu o codigo novo.
 # Roda depois do `make test` e deixa o relatorio em reports/diff-cover.md (o
-# CI o copia para o summary do job test). COMPARAR_COM troca a base.
+# CI o copia para o summary do job test). COMPARAR_COM troca a base. Com o
+# coverage.xml mais velho que o codigo o diff-cover so veria "No lines with
+# coverage information" e passaria em branco, entao o alvo recusa esse caso.
+# --include-untracked mede tambem o modulo novo que ainda nao foi para o git.
 DIFF_COVER_VERSION := 10.6.0
 DIFF_COVER_MINIMO ?= 90
 COMPARAR_COM ?= origin/main
 
 diff-cover:
 	@mkdir -p reports
-	uvx diff-cover==$(DIFF_COVER_VERSION) coverage.xml --branch-coverage \
+	@test -z "$$(find src -name '*.py' -newer coverage.xml 2>/dev/null)" \
+		|| { echo "diff-cover: coverage.xml is older than src/, run make test first" >&2; exit 1; }
+	uvx diff-cover==$(DIFF_COVER_VERSION) coverage.xml --branch-coverage --include-untracked \
 		--compare-branch=$(COMPARAR_COM) --fail-under=$(DIFF_COVER_MINIMO) \
 		--format markdown:reports/diff-cover.md
 

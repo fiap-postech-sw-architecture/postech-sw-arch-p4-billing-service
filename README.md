@@ -324,6 +324,8 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 
 Por camada: `dominio` 889 linhas, `aplicacao` 759, `infraestrutura` 1.491 e `interfaces` 604, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
 
+O `make diff-cover` lê o `coverage.xml` do `make test` e exige que ele seja mais novo que o código de `src/`: com o XML velho recusa e manda rodar o `make test` antes, em vez de passar sem medir nada. O `make check` já roda os dois na ordem certa.
+
 ## Mutação
 
 Cobertura diz que a linha rodou; mutação diz se a suíte percebe quando ela está errada (ADR-041). Não é gate de CI e não tem pontuação mínima.
