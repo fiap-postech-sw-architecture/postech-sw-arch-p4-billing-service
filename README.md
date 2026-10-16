@@ -105,7 +105,7 @@ Variáveis (lista completa com valores de demonstração em [`.env.example`](.en
 | `RABBITMQ_URL` | sem padrão | broker com o usuário do serviço (`amqp://billing:<senha>@<host>:5672/%2F`), exigido pelo relay e pelo consumidor; o usuário vai no `user_id` de toda publicação |
 | `RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT` | `/tmp/relay-heartbeat`, `/tmp/consumidor-heartbeat` | arquivo de vida do relay e do consumidor |
 | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | `false`, `http://jaeger:4317`, `billing-service` | exportação dos traces da API, do relay, do consumidor e do `prazos` pelo protocolo do OpenTelemetry (OTLP) sobre gRPC; desligada, o contexto de trace segue nas mensagens do mesmo jeito, nos headers `traceparent`/`tracestate` do padrão W3C Trace Context |
-| `OTEL_BSP_EXPORT_TIMEOUT`, `OTEL_EXPORTER_OTLP_TIMEOUT` | `2000` (ms), `2` (s) | prazo de cada lote de spans na saída; o SDK usa 30000 e 10. Com o Jaeger fora e a fila cheia, a API leva 3,9 s para sair (30,4 s com os padrões do SDK, todo o `terminationGracePeriodSeconds`). Vêm do ConfigMap e do compose |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_BSP_EXPORT_TIMEOUT` | `2` (s), `2000` (ms) | `OTEL_EXPORTER_OTLP_TIMEOUT` é o prazo de cada envio de spans (o SDK usa 10) e é só ele que encurta a saída: com o Jaeger fora e a fila cheia, a API leva 3,9 s para sair (30,4 s com os padrões do SDK, todo o `terminationGracePeriodSeconds`). `OTEL_BSP_EXPORT_TIMEOUT` (padrão 30000) o SDK 1.45.1 guarda e não lê, então não muda nada. Vêm do ConfigMap e do compose |
 | `CONTRATOS_DIR` | `contratos/` do repositório (`/app/contratos` na imagem) | schemas das mensagens |
 | `RUN_SEED_ON_STARTUP` | `false` (o compose liga) | seed idempotente da tabela de preços no boot da API |
 | `ROOT_PATH` | vazio | prefixo da borda (`/billing` no Kubernetes), passado ao `--root-path` do uvicorn: o Swagger de `/billing/docs` busca o `/billing/openapi.json`, e o OpenAPI leva o prefixo em `servers` (ADR-038) |
@@ -229,7 +229,7 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 - A decisão do cliente, o webhook e o checkout do simulador gravam o contexto da requisição na outbox, e o evento que a saga publica depois aponta para ela por *span link*.
 - A API nasce no trace de quem a chamou (`traceparent`). Cada passo retomado por pessoa, por sistema externo ou por prazo fica num trace próprio, ligado ao da saga por esse link.
 - No SIGTERM cada processo descarrega os spans que esperam no lote: relay, consumidor e `prazos` chamam o `shutdown` do provider ao sair, e a API o chama no fim do `lifespan`. No container, com o uvicorn como PID 1, os spans já chegavam (o `atexit` do SDK roda); fora dele, no host, o uvicorn re-levanta o sinal e o processo morre sem rodá-lo.
-- O que pesa é o prazo de saída com o Jaeger fora e a fila cheia (2.048 spans): a API levava 30,4 s para sair em container, todo o `terminationGracePeriodSeconds`. Com `OTEL_BSP_EXPORT_TIMEOUT=2000` e `OTEL_EXPORTER_OTLP_TIMEOUT=2` leva 3,9 s.
+- O que pesa é o prazo de saída com o Jaeger fora e a fila cheia (2.048 spans): a API levava 30,4 s para sair em container, todo o `terminationGracePeriodSeconds`. Com `OTEL_EXPORTER_OTLP_TIMEOUT=2` leva 3,9 s (medido junto de `OTEL_BSP_EXPORT_TIMEOUT=2000`, que o SDK 1.45.1 não usa).
 
 ### Amostragem e o que não vira trace
 
@@ -249,7 +249,7 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 | `User-Agent` e endereço e porta do par da conexão | Texto livre sem limite e dado de rede de quem chamou, sem uso operacional; o Jaeger guarda 5.000 traces em memória, sem como apagar um titular | O hook grava `REDACTED` nos textos e `0` nas portas |
 | `baggage` do chamador | O ADR-043 prevê só `traceparent` e `tracestate`; o padrão do SDK somaria o `baggage`, que a API aceitaria e o httpx repassaria ao Mercado Pago | O propagador global é só o `TraceContext` (`instalar_propagador`). O `tracestate` acima de 512 caracteres não vai para a outbox nem para o AMQP |
 
-Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). E o `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada.
+Três ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). O `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada. E o `Host` que o chamador manda sai como veio, em `http.server_name` e dentro do `http.url` do `SERVER` (`http://<Host><template da rota>`): o hook tira o token da URL, não o `Host`, que é texto do chamador sem limite (`http.host` é o endereço do próprio servidor, não o dele). Trocá-lo por um valor fixo muda `src/` e fica para o pull request seguinte.
 
 ### Métricas
 
@@ -272,7 +272,7 @@ Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao
 - **Nasce com zero:** toda série de rótulo fechado existe no `/metrics` desde o boot do processo que a emite, exceto o disjuntor do Mercado Pago, que só existe com o gateway real. O `increase()` do Prometheus perde o primeiro evento de uma série que só aparece com ele, e no volume de uma demonstração o painel mostraria zero. O relay pré-inicializa os eventos que publica, o consumidor os comandos que consome e os dois o próprio `componente`.
 - **Dinheiro em centavos inteiros:** o Prometheus guarda `float64`, então a métrica soma `int(valor * 100)` do `Decimal` e o painel divide por 100.
 - **A raspagem da API e a do relay consultam o MongoDB:** duas contagens e a linha pendente mais antiga, que lê o índice `(status, criado_em)`. Com o relay parado a API segue exportando a idade, que mantém o alerta de outbox parada de pé. As três consultas dividem um prazo de 2 s (`PRAZO_DA_RASPAGEM_S`).
-- **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` do Prometheus, e o alvo da API ficava `up=0`. A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
+- **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` de 10 s do Prometheus, o que deixaria o alvo da API em `up=0` (inferência a partir do tempo da resposta, não de uma raspagem observada). A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
 - O rótulo das reconexões é `componente` (`relay` ou `consumidor`). O Prometheus já põe `processo` em todo alvo, e um rótulo da métrica com o mesmo nome viraria `exported_processo`.
 
 ### Como ver
@@ -298,7 +298,7 @@ make check
 make audit
 ```
 
-O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit e o pytest com o gate de 90%; o `make audit` roda o pip-audit nas dependências de runtime.
+O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit, o pytest com o gate de 95% e o `diff-cover` (90% no código que a branch muda em relação à `origin/main`); o `make audit` roda o pip-audit nas dependências de runtime.
 
 - **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração, OpenTelemetry (amostrador, hook da URL) e as séries que nascem com zero (cada caso sobe um interpretador novo e lê o `REGISTRY` antes de qualquer evento).
 - **Contrato** (`tests/contratos`): a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam.
@@ -306,8 +306,72 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
   - API e casos de uso: matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência e corridas reais entre decisão, webhook e expiração.
   - Rastreamento (`tests/integracao/test_rastreamento.py`): o provider de produção, com o amostrador real, exporta para a memória. A requisição gera um `SERVER` com filhos de banco no mesmo trace; o ciclo ocioso do relay e do `prazos` e a raspagem do `/metrics` não exportam nenhum span; o link de decisão e o checkout do simulador (GET e POST) não deixam token nem id em atributo algum.
   - Mensageria: relays concorrentes e lease retomado; consumidor com origem, contrato, entrada hostil, retry por nível e DLQ; os quatro comandos com a causa de cada resposta; e o fluxo de ponta a ponta do comando publicado ao evento em `pytstop.eventos`, com o trace encadeado, a mensagem venenosa, a mensagem sem rota, o alarme de memória e o broker parado.
-- **Gate:** 90% de linhas e ramos (`.coveragerc`); o SonarQube aplica o quality gate (ADR-041). O resumo da cobertura (o número do gate, que soma linhas e ramos, e o detalhe por pacote) sai de `make test` seguido de `uv run python scripts/cobertura_resumo.py coverage.xml`, e o CI publica o mesmo resumo no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)).
+- **Gate:** 95% de linhas e ramos no total (`.coveragerc`) e 90% no código novo (`make diff-cover`, que o job `test` roda em todo pull request); o SonarQube aplica o quality gate, com o mínimo de 80% do enunciado (ADR-041). O resumo da cobertura (o número do gate, que soma linhas e ramos, e o detalhe por pacote) sai de `make test` seguido de `uv run python scripts/cobertura_resumo.py coverage.xml`, e o CI publica o mesmo resumo no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)).
 - **Resumos no CI:** além do log do passo, o resultado do `pip-audit` e do `trivy` sobre a imagem do serviço vai para o summary dos jobs `pip-audit` e `trivy` do `security.yml` (`scripts/ci/registra-no-summary.sh`, que mantém o código de saída da ferramenta), ao lado do relatório das imagens de terceiros.
+
+## Cobertura
+
+**100,00% no gate** (linhas e ramos somados): 4.506 linhas e 618 ramos, nenhuma perdida, com 1.537 testes (unitários e de integração com MongoDB e RabbitMQ reais). O gate é de 95% (`fail_under` no `.coveragerc`) e o código novo precisa de 90% (`make diff-cover`). Medido em 15/10/2026 na árvore do commit `8aa5633` do PR #7: [run do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/38842233567), job `test`, com a tabela no summary. Ficam fora da medição só o `if __name__ == "__main__"` de cada um dos cinco processos (`# pragma: no cover`) e os `Protocol` puros dos repositórios e da unidade de trabalho (`omit` do `.coveragerc`).
+
+| Pacote | Linhas | Cobertas | Cobertura |
+|---|---:|---:|---:|
+| `src` (processos) | 568 | 568 | 100,0% |
+| `src/compartilhado` | 1.547 | 1.547 | 100,0% |
+| `src/orcamento` | 672 | 672 | 100,0% |
+| `src/pagamento` | 1.282 | 1.282 | 100,0% |
+| `src/precos` | 437 | 437 | 100,0% |
+| **total** | 4.506 | 4.506 | 100,0% |
+
+Por camada: `dominio` 895 linhas, `aplicacao` 770, `infraestrutura` 1.632 e `interfaces` 641, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
+
+O `make diff-cover` lê o `coverage.xml` do `make test` e exige que ele seja mais novo que o código de `src/`: com o XML velho recusa e manda rodar o `make test` antes, em vez de passar sem medir nada. O `make check` já roda os dois na ordem certa.
+
+## Mutação
+
+Cobertura diz que a linha rodou; mutação diz se a suíte percebe quando ela está errada (ADR-041). Não é gate de CI e não tem pontuação mínima.
+
+O `mutmut` não roda neste repositório. A versão 3.8.0 espera o pacote em `src/<pacote>` e tira o prefixo `src.` do nome do módulo, e o pacote do serviço se chama `src`: a primeira função mutada que os testes chamam reprova com
+
+```text
+AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
+```
+
+(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 65 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
+
+**Resultado** em 15/10/2026: 63 mortos de 63 medidos (100%) em 3,7 min, com 2 equivalentes de fora da conta. A primeira execução matou 58 de 62 (93,5%); os 4 sobreviventes eram lacunas reais (três de limite exato) e hoje têm teste.
+
+| Área | Mutantes | Mortos | Equivalentes |
+|---|---:|---:|---:|
+| `Dinheiro` | 8 | 7 | 1 |
+| Status do orçamento | 9 | 9 | 0 |
+| Status do pagamento | 10 | 10 | 0 |
+| Validação do JWT | 12 | 11 | 1 |
+| Idempotência | 7 | 7 | 0 |
+| Consumidor | 5 | 5 | 0 |
+| Relay | 9 | 9 | 0 |
+| Compensação da saga | 5 | 5 | 0 |
+| **total** | **65** | **63** | **2** |
+
+- **Sobreviventes que viraram teste:** moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`); cópia do JWKS ainda valendo na hora exata do limite de 1 h (`test_copia_velha_vale_ate_1_hora_quando_a_renovacao_falha`); corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`); expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`); leeway de 10 s do `exp` do JWT (J12: `test_leeway_de_10_segundos_no_exp` cerca o valor entre 9 e 12 s e `test_leeway_e_o_do_contrato_com_o_os_service` o fixa).
+- **Equivalentes:** o teto exato do `Dinheiro` (a checagem seguinte, depois do arredondamento, recusa do mesmo jeito) e `HS256` na lista de algoritmos do JWKS (o PyJWT recusa HS256 com uma chave RS256 do JWKS mesmo assim). Cada um traz o motivo no campo `equivalente` do `mutantes.toml`.
+- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 65 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
+
+Para refazer:
+
+```bash
+make mutacao
+make mutacao MUTANTES="D06 R03"
+```
+
+O alvo para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900) e escreve a tabela em `reports/mutacao.md`. Antes do primeiro mutante de cada grupo de testes, o script roda o grupo na cópia sem mutante: se ele já reprova (ou estoura o tempo), os mutantes do grupo saem `erro`, porque um teste que já falha mataria qualquer um. O comando sai com 2 se um id de `MUTANTES` não existir (a mensagem lista os válidos) ou se o `.toml` não bater com o código, e com 1 se algum mutante sair `erro` (medida inválida, como o Docker fora); sobrevivente não reprova, porque não há gate (ADR-041). Com `erro` ou `nao rodado` o percentual vira `n/d`. Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container. Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo) e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
+
+**Para outro serviço:** copie `scripts/mutacao_manual.py` e o alvo `mutacao` do Makefile para o repositório dele (o script é o mesmo nos três serviços). Troque a tabela `[config]` do `scripts/mutantes.toml` (o que vai para a cópia `mutants/`), os grupos de `[testes]` e os `[[mutante]]`. Antes de começar, o script recusa trecho ausente ou repetido.
+
+## Dependências automatizadas
+
+O Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) abre pull requests uma vez por semana, às segundas às 06:00 (São Paulo), para três ecossistemas: `pyproject.toml` e `uv.lock` (uv), as actions dos workflows e as imagens base do `Dockerfile`. Patch e minor de cada ecossistema chegam agrupados num PR só, major abre PR próprio para ser lido com o changelog, e há no máximo 3 abertos por ecossistema. O commit usa o prefixo `chore(deps)` (`ci` nas actions, como no OS) e os rótulos `dependencies` e o do ecossistema (`python`, `github_actions`, `docker`). As bibliotecas `opentelemetry-*` formam um grupo próprio, com a major incluída: o SDK fixa `opentelemetry-api` e `opentelemetry-semantic-conventions` na mesma versão e cada instrumentação fixa a sua, então subir só uma parte não resolve e a família inteira vai num PR só. O SDK e o exportador têm teto `<1.46` no `pyproject.toml` (como o OS), porque `mensageria/telemetria.py` troca `_status` e `_events` de um span, atributos privados do SDK que um minor novo pode mudar. Cada PR passa pelos mesmos 9 checks do CI, inclusive o `pip-audit`, o trivy e o gate de cobertura. O Python é a exceção no bloco do Docker: major e minor ficam de fora (o patch segue), porque a versão sobe à mão de uma vez em `.python-version`, `UV_PYTHON` e `python-version` dos workflows, `requires-python` e nas duas imagens do `Dockerfile`; sem isso o 3.14 → 3.15 chegaria como "minor" e trocaria só a imagem do runtime.
+
+Depois do congelamento do código em 06/11/2026, o `open-pull-requests-limit` de cada bloco passa de 3 para 0. O 0 desliga só as atualizações de versão: os PRs de segurança do Dependabot, habilitados no repositório, não entram no limite e seguem abrindo. Sobem à mão, porque o Dependabot não os enxerga ou a versão está fixada de propósito: `mongo` e `percona/mongodb_exporter` (a cada release do serviço, junto da tabela do `platform`, seção [Implantação](#implantação)), o trivy, o gitleaks, o pip-audit, o diff-cover e o RabbitMQ do compose.
 
 ## Implantação
 

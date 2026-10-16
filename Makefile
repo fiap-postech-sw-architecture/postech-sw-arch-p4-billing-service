@@ -8,7 +8,7 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
+	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
 
 install:
 	uv sync --frozen
@@ -45,7 +45,42 @@ test:
 test-unit:
 	$(PY) pytest tests/unitarios -q
 
-check: lock-check lint lint-arch typecheck security test
+# Cobertura do codigo novo (ADR-041): as linhas e os ramos que a branch muda
+# em relacao a origin/main, medidos no coverage.xml do `make test`, nao podem
+# ficar abaixo de 90%. O gate de 95% do .coveragerc mede o total; este impede
+# que uma mudanca sem teste passe so porque o total absorveu o codigo novo.
+# Roda depois do `make test` e deixa o relatorio em reports/diff-cover.md (o
+# CI o copia para o summary do job test). COMPARAR_COM troca a base. Com o
+# coverage.xml mais velho que o codigo o diff-cover so veria "No lines with
+# coverage information" e passaria em branco, entao o alvo recusa esse caso.
+# --include-untracked mede tambem o modulo novo que ainda nao foi para o git.
+DIFF_COVER_VERSION := 10.6.0
+DIFF_COVER_MINIMO ?= 90
+COMPARAR_COM ?= origin/main
+
+diff-cover:
+	@mkdir -p reports
+	@test -z "$$(find src -name '*.py' -newer coverage.xml 2>/dev/null)" \
+		|| { echo "diff-cover: coverage.xml is older than src/, run make test first" >&2; exit 1; }
+	uvx diff-cover==$(DIFF_COVER_VERSION) coverage.xml --branch-coverage --include-untracked \
+		--compare-branch=$(COMPARAR_COM) --fail-under=$(DIFF_COVER_MINIMO) \
+		--format markdown:reports/diff-cover.md
+
+# Mutacao nos modulos criticos (consumidor, relay, saga, status do orcamento e do
+# pagamento, idempotencia, Dinheiro e JWT), sem gate e sem pontuacao minima. O
+# mutmut nao roda aqui (o pacote se chama `src`, e ele exige o pacote fora de
+# `src.`), entao sao mutantes escritos a mao em scripts/mutantes.toml, aplicados
+# um por vez numa copia do codigo (mutants/); o relatorio sai em
+# reports/mutacao.md. Para quando passa de MUTACAO_PRAZO segundos (15 min); os
+# testes de integracao sobem um MongoDB cada, a menos que TEST_MONGODB_URI aponte
+# para um replica set no ar. MUTANTES="D01 R03" roda so esses.
+MUTACAO_PRAZO ?= 900
+MUTANTES ?=
+
+mutacao:
+	$(PY) python scripts/mutacao_manual.py --prazo $(MUTACAO_PRAZO) $(if $(MUTANTES),--so $(MUTANTES))
+
+check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"
 
 # CVE nas dependencias de runtime: o mesmo conjunto do job pip-audit. O export

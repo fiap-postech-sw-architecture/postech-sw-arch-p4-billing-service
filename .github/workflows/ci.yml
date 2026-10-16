@@ -77,9 +77,11 @@ jobs:
         run: make security
 
   # Unitarios + integracao (testcontainers sobe o MongoDB no Docker do runner),
-  # com gate de cobertura do .coveragerc. Os relatorios viram artefato e o resumo
-  # por pacote vai para o summary do job: evidencia de cobertura sem precisar
-  # rodar nada localmente.
+  # com gate de cobertura do .coveragerc. Em PR, o diff-cover exige 90% de
+  # cobertura no codigo que o PR muda (ADR-041), medido no mesmo coverage.xml;
+  # o historico inteiro vem no checkout porque ele compara com origin/main. Os
+  # relatorios viram artefato e os resumos (por pacote e do diff-cover) vao para
+  # o summary do job: evidencia de cobertura sem precisar rodar nada localmente.
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -87,6 +89,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           python-version: "3.14"
@@ -95,9 +98,18 @@ jobs:
       - run: uv sync --all-extras --frozen
       - name: Testes com cobertura (make test)
         run: make test
+      - name: Cobertura do codigo novo >= 90% (make diff-cover)
+        if: github.event_name == 'pull_request'
+        run: make diff-cover
       - name: Resumo da cobertura no summary
         if: always()
         run: uv run python scripts/cobertura_resumo.py coverage.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Resumo do diff-cover no summary
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          if [ -f reports/diff-cover.md ]; then
+            { echo; cat reports/diff-cover.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Publica relatorios
         if: always()
         uses: actions/upload-artifact@v7

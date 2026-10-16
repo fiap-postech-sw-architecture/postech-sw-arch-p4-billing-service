@@ -72,7 +72,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+      # Onde baixar o banco de vulnerabilidades, em ordem de preferencia. O
+      # trivy passa ao registro seguinte quando um responde erro temporario
+      # (429 TOOMANYREQUESTS, 5xx); com um so (o public.ecr.aws), o limite de
+      # pull anonimo derrubava o job de vez em quando. Erro de rede (DNS,
+      # conexao) nao passa ao seguinte. Vale tambem para o relatorio das imagens
+      # de terceiros. Sem espaco depois das virgulas.
+      TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2
     steps:
       - uses: actions/checkout@v7
         with:

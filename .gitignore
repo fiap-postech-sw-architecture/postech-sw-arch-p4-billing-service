@@ -18,6 +18,7 @@ junit*.xml
 .import_linter_cache/
 .scannerwork/
 reports/
+mutants/
 
 # Ambiente local
 .env

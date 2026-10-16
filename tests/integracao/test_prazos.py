@@ -44,6 +44,9 @@ from tests.integracao.apoio import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
     from pymongo import MongoClient
     from pymongo.database import Database
 
@@ -108,6 +111,24 @@ class TestCiclo:
 
         tipos = {e["tipo"] for e in eventos_do_outbox(banco)}
         assert {"OrcamentoExpirado", "PagamentoExpirado"} <= tipos
+
+    def test_cada_vencido_do_ciclo_tem_o_span_da_propria_transacao(
+        self, banco: Banco, spans: InMemorySpanExporter
+    ) -> None:
+        """Tres vencidos no mesmo ciclo sao tres transacoes na mesma unidade de
+        trabalho: cada uma abre o seu span ``prazos`` e o evento que ela grava
+        leva o contexto desse span, nao o da transacao anterior."""
+        salvar(banco, *(pagamento(validade=timedelta(minutes=10)) for _ in range(3)))
+        spans.clear()
+
+        resultado = ciclo(banco, None, AGORA + timedelta(hours=2))
+
+        assert resultado == ResultadoDoCiclo(0, 0, 3)
+        do_ciclo = [s for s in spans.get_finished_spans() if s.name == "prazos"]
+        assert len({s.context.span_id for s in do_ciclo}) == 3
+        eventos = banco["outbox"].find({"tipo": "PagamentoExpirado"})
+        ligados = sorted(doc["traceparent"].split("-")[2] for doc in eventos)
+        assert ligados == sorted(format(s.context.span_id, "016x") for s in do_ciclo)
 
     def test_concilia_antes_de_expirar(self, banco: Banco) -> None:
         """Webhook perdido: o pagamento aprovado no prazo nao vence."""

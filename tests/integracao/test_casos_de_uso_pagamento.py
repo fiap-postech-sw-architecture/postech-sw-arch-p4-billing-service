@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -715,6 +715,30 @@ class TestExpirarPagamentos:
             "pagamento_id": str(pendente.id),
             "motivo": "Prazo de pagamento esgotado",
         }
+
+    def test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro(
+        self,
+        banco: Banco,
+        gateway: GatewayRoteirizado,
+        relogio: RelogioFixo,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Confirmado depois da listagem: a outra escrita venceu, sem log de erro.
+        pago = confirmado(banco, gateway, relogio)
+        relogio.avancar(minutes=60, seconds=1)
+
+        class ListaTudo(MongoPagamentoRepository):
+            def listar_vencidos(self, agora: datetime, limite: int) -> list[UUID]:
+                return [pago.id]
+
+        uow = MongoUnitOfWork(banco)
+        expirar = ExpirarPagamentosVencidos(uow, ListaTudo(uow), relogio)
+
+        with caplog.at_level(logging.ERROR):
+            assert expirar.executar() == 0
+
+        assert consultar(banco, pago.id).status == "CONFIRMADO"
+        assert "payment_expiration_failed" not in caplog.messages
 
 
 class TestFilaDeExpiracao:

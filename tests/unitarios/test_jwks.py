@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import secrets
 import threading
 import time
@@ -16,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from prometheus_client import REGISTRY
 
 from src.compartilhado.infraestrutura.jwks import (
+    LEEWAY_SEGUNDOS,
     JwksIndisponivelError,
     TokenExpiradoError,
     TokenInvalidoError,
@@ -90,6 +92,8 @@ class TestClaims:
         ("deslocamento", "aceito"),
         [
             pytest.param(-5, True, id="expirado-dentro-do-leeway"),
+            pytest.param(-9, True, id="expirado-a-1-s-do-limite"),
+            pytest.param(-12, False, id="expirado-2-s-alem-do-limite"),
             pytest.param(-15, False, id="expirado-alem-do-leeway"),
         ],
     )
@@ -100,12 +104,19 @@ class TestClaims:
         deslocamento: int,
         aceito: bool,
     ) -> None:
-        token = emitir_token("admin", exp=int(time.time()) + deslocamento)
+        # ceil: o exp e inteiro e o relogio nao. Com int() o -9 chegaria a 10 s de
+        # atraso quando o segundo vira entre a emissao e a validacao.
+        token = emitir_token("admin", exp=math.ceil(time.time()) + deslocamento)
         if aceito:
             assert validador.validar(token)["papel"] == "admin"
         else:
             with pytest.raises(TokenExpiradoError):
                 validador.validar(token)
+
+    def test_leeway_e_o_do_contrato_com_o_os_service(self) -> None:
+        # ADR-039: 10 s cobrem a diferenca de relogio entre os pods. Os tokens
+        # acima so cercam o valor (entre 9 e 12 s); a constante e quem o fixa.
+        assert LEEWAY_SEGUNDOS == 10
 
     def test_iat_adiantado_alem_do_leeway_e_invalido(
         self, validador: ValidadorDeTokenJWKS, emitir_token: Callable[..., str]
@@ -297,7 +308,7 @@ class TestCacheDoJwks:
         jwks_falso.erro = fora_do_ar()
         relogio.agora += 3599
         assert validador.validar(token)["papel"] == "admin"  # stale-if-error
-        relogio.agora += 10
+        relogio.agora += 1  # 1 h exata: a copia ja nao vale
         with pytest.raises(JwksIndisponivelError):
             validador.validar(token)
 
