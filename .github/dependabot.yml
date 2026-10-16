@@ -26,6 +26,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
+      # Antes do generico (o primeiro grupo que casa leva a dependencia). O SDK
+      # fixa opentelemetry-api e semantic-conventions na mesma versao, e cada
+      # instrumentacao fixa a sua: subir so uma parte nao resolve, entao a
+      # familia inteira (e as majors dela) vai num PR so.
+      opentelemetry:
+        patterns: ["opentelemetry-*"]
       python-patch-e-minor:
         update-types: ["minor", "patch"]
 
@@ -40,7 +46,7 @@ updates:
     open-pull-requests-limit: 3
     labels: ["dependencies", "github_actions"]
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "ci"
     groups:
       actions-patch-e-minor:
         update-types: ["minor", "patch"]

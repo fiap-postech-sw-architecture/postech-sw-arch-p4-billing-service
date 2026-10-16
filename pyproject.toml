@@ -24,9 +24,11 @@ dependencies = [
     "jsonschema>=4.26.0,<5",
     "rfc3339-validator>=0.1.4,<1",
     # Contexto W3C pela outbox e pelo AMQP; exportacao OTLP/gRPC para o Jaeger
-    # (ADR-043), ligada por OTEL_ENABLED.
-    "opentelemetry-sdk>=1.45.1,<2",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<2",
+    # (ADR-043), ligada por OTEL_ENABLED. Teto no minor, como no OS: o
+    # mensageria/telemetria.py troca _status e _events de um span, atributos
+    # privados do SDK, e um minor novo pode mudar isso.
+    "opentelemetry-sdk>=1.45.1,<1.46",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.1,<1.46",
     # Instrumentacao da API, do MongoDB e do cliente HTTP do Mercado Pago. Par
     # casado com o SDK 1.45.x: o SDK exige opentelemetry-semantic-conventions
     # ==0.66bN, entao atualizar o SDK e estes tres juntos.
