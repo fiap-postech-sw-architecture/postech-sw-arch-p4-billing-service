@@ -141,7 +141,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: relatorios-de-teste
       - name: Sobe, configura e analisa
