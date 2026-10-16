@@ -333,6 +333,14 @@ de = "permitidos = frozenset({Papel.ADMIN, *papeis})"
 para = "permitidos = frozenset({*papeis})"
 
 [[mutante]]
+id = "J12"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "LEEWAY_SEGUNDOS: Final = 10"
+para = "LEEWAY_SEGUNDOS: Final = 11"
+
+[[mutante]]
 id = "I01"
 area = "Idempotencia"
 arquivo = "src/compartilhado/infraestrutura/unit_of_work.py"

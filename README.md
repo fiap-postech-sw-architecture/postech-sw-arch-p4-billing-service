@@ -334,7 +334,7 @@ O `mutmut` não roda neste repositório. A versão 3.8.0 espera o pacote em `src
 AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
 ```
 
-(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 64 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
+(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 65 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
 
 **Resultado** em 14/10/2026: 62 mortos de 62 medidos (100%) em 3,6 min, com 2 equivalentes de fora da conta. A primeira execução, antes de quatro testes novos, matou 58 de 62 (93,5%); os quatro sobreviventes eram lacunas reais (três de limite exato) e viraram teste neste mesmo pull request.
 
@@ -343,16 +343,16 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
 | `Dinheiro` | 8 | 7 | 1 |
 | Status do orçamento | 9 | 9 | 0 |
 | Status do pagamento | 10 | 10 | 0 |
-| Validação do JWT | 11 | 10 | 1 |
+| Validação do JWT | 12 | 11 | 1 |
 | Idempotência | 7 | 7 | 0 |
 | Consumidor | 5 | 5 | 0 |
 | Relay | 9 | 9 | 0 |
 | Compensação da saga | 5 | 5 | 0 |
-| **total** | **64** | **62** | **2** |
+| **total** | **65** | **63** | **2** |
 
-- **Sobreviventes que viraram teste:** moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`); cópia do JWKS ainda valendo na hora exata do limite de 1 h (`test_copia_velha_vale_ate_1_hora_quando_a_renovacao_falha`); corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`); expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`).
+- **Sobreviventes que viraram teste:** moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`); cópia do JWKS ainda valendo na hora exata do limite de 1 h (`test_copia_velha_vale_ate_1_hora_quando_a_renovacao_falha`); corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`); expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`); leeway de 10 s do `exp` do JWT (J12: `test_leeway_de_10_segundos_no_exp` cerca o valor entre 9 e 12 s e `test_leeway_e_o_do_contrato_com_o_os_service` o fixa).
 - **Equivalentes:** o teto exato do `Dinheiro` (a checagem seguinte, depois do arredondamento, recusa do mesmo jeito) e `HS256` na lista de algoritmos do JWKS (o PyJWT recusa HS256 com uma chave RS256 do JWKS mesmo assim). Cada um traz o motivo no campo `equivalente` do `mutantes.toml`.
-- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 64 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
+- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 65 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
 
 Para refazer:
 
