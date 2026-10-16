@@ -9,8 +9,7 @@
 #
 # O que o Dependabot nao cobre e a versao ficou fixada de proposito, a ser
 # subida a mao: mongo e percona/mongodb_exporter em k8s/ e no compose (README,
-# Implantacao), trivy, gitleaks, pip-audit, diff-cover e mutmut (Makefile e
-# workflows).
+# Implantacao), trivy, gitleaks, pip-audit e diff-cover (Makefile e workflows).
 version: 2
 
 updates:
