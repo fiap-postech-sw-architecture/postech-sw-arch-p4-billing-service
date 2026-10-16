@@ -7,6 +7,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).parents[2] / "scripts" / "mutacao_manual.py"
 _spec = importlib.util.spec_from_file_location("mutacao_manual", _SCRIPT)
 assert _spec is not None
@@ -62,3 +64,83 @@ def test_relatorio_deixa_o_equivalente_fora_da_conta() -> None:
         "Mutantes manuais: 1 mortos de 2 (50.0%); 1 sobreviveram, "
         "1 equivalentes ficaram de fora da conta, 0 com erro e 0 nao rodados."
     )
+
+
+_CALCULADORA = "def dobro(x):\n    return x * 2\n"
+_TESTE = (
+    "from calculadora import dobro\n\n\ndef test_dobro():\n    assert dobro(2) == 4\n"
+)
+_GRUPO = ("tests/test_calculadora.py",)
+
+
+def _mutante(
+    para: str, equivalente: str = "", testes: tuple[str, ...] = _GRUPO
+) -> object:
+    return mutacao_manual.Mutante(
+        "T1", "calc", "calculadora.py", testes, "return x * 2", para, equivalente
+    )
+
+
+@pytest.fixture
+def copia(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Um repositorio minusculo (um modulo e um teste) e a copia dele."""
+    raiz = tmp_path / "raiz"
+    (raiz / "tests").mkdir(parents=True)
+    (raiz / "calculadora.py").write_text(_CALCULADORA, encoding="utf-8")
+    (raiz / "tests" / "test_calculadora.py").write_text(_TESTE, encoding="utf-8")
+    (raiz / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(mutacao_manual, "RAIZ", raiz)
+    monkeypatch.setattr(mutacao_manual, "COPIA", tmp_path / "copia")
+    mutacao_manual.preparar_copia(("calculadora.py", "tests", "pyproject.toml"))
+    return tmp_path / "copia"
+
+
+@pytest.mark.parametrize(
+    ("mutante", "esperado"),
+    [
+        pytest.param(
+            _mutante("return x * 3"),
+            ("morto", "test_calculadora.py::test_dobro"),
+            id="morto",
+        ),
+        pytest.param(
+            _mutante("return x * 3", "dizia ser equivalente"),
+            ("morto", "test_calculadora.py::test_dobro"),
+            id="equivalente-que-morre-conta-como-morto",
+        ),
+        pytest.param(_mutante("return x + x"), ("sobreviveu", "-"), id="sobrevivente"),
+        pytest.param(
+            _mutante("return x + x", "x + x e x * 2 dao o mesmo"),
+            ("equivalente", "-"),
+            id="equivalente-que-sobrevive",
+        ),
+        pytest.param(
+            _mutante("return x *"),
+            ("erro", "pytest saiu com 2, sem teste que falhou"),
+            id="pytest-quebrado",
+        ),
+    ],
+)
+def test_rodar_um_traduz_a_saida_do_pytest_em_resultado(
+    copia: Path, mutante: object, esperado: tuple[str, str]
+) -> None:
+    assert mutacao_manual._rodar_um(mutante) == esperado
+    assert (copia / "calculadora.py").read_text(encoding="utf-8") == _CALCULADORA
+
+
+def test_rodar_um_conta_o_tempo_esgotado_como_morto(
+    copia: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (copia / "tests" / "test_lento.py").write_text(
+        "import time\n\n\ndef test_lento():\n    time.sleep(30)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(mutacao_manual, "LIMITE_DE_UM_MUTANTE_SEGUNDOS", 2)
+
+    resultado = mutacao_manual._rodar_um(
+        _mutante("return x * 3", testes=("tests/test_lento.py",))
+    )
+
+    assert resultado == ("morto", "(tempo esgotado)")
+    assert (copia / "calculadora.py").read_text(encoding="utf-8") == _CALCULADORA
