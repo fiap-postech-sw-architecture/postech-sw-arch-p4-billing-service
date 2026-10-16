@@ -17,14 +17,21 @@ _spec.loader.exec_module(mutacao_manual)
 
 
 def test_todo_mutante_se_aplica_uma_so_vez_ao_codigo_atual() -> None:
-    mutantes = mutacao_manual.carregar()
+    mutantes = mutacao_manual.carregar().mutantes
 
     assert len(mutantes) > 0
     assert mutacao_manual.conferir(mutantes) == []
 
 
+def test_config_copia_o_codigo_e_os_testes_e_tudo_existe() -> None:
+    copiar = mutacao_manual.carregar().copiar
+
+    assert {"src", "tests"} <= set(copiar)
+    assert [n for n in copiar if not (mutacao_manual.RAIZ / n).exists()] == []
+
+
 def test_conferir_aponta_trecho_ausente_repetido_e_mutante_nulo() -> None:
-    base = mutacao_manual.carregar()[0]
+    base = mutacao_manual.carregar().mutantes[0]
     ausente = mutacao_manual.Mutante(
         "X1", "a", base.arquivo, base.testes, "nao existe no arquivo", "y"
     )

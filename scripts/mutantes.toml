@@ -5,6 +5,14 @@
 # pegar o defeito. `equivalente` marca o mutante que nao muda o comportamento:
 # se sobreviver, nao conta contra a suite.
 
+[config]
+# O que o script copia do repositorio para mutants/ (arquivos e pastas): tudo
+# que os testes dos grupos abaixo importam ou leem. Os testes de integracao do
+# Billing sobem o MongoDB e o RabbitMQ por testcontainers (precisam de Docker);
+# com TEST_MONGODB_URI apontando para um replica set no ar, poupam o container
+# de cada mutante.
+copiar = ["src", "tests", "contratos", "k8s", "pyproject.toml", ".coveragerc"]
+
 [testes]
 dinheiro = ["tests/unitarios/test_compartilhado_dominio.py"]
 orcamento = ["tests/unitarios/test_orcamento_dominio.py"]

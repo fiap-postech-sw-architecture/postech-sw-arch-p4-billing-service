@@ -1,22 +1,19 @@
 """Mutantes manuais dos modulos criticos (``make mutacao``).
 
-O mutmut nao roda neste repositorio. Ele exige que o pacote do codigo seja
-importado sem o prefixo ``src.`` (layout ``src/<pacote>``), e aqui o pacote se
-chama ``src``: a primeira chamada de uma funcao mutada reprova com
+O mutmut nao roda aqui. Ele exige que o pacote do codigo seja importado sem o
+prefixo ``src.`` (layout ``src/<pacote>``), e o pacote do servico se chama
+``src``: a primeira chamada de uma funcao mutada reprova com
 ``AssertionError: Failed trampoline hit. Module name starts with `src.`, which
 is invalid`` (mutmut 3.8.0, ``mutmut/stats.py``, ``record_trampoline_hit``).
 Renomear o pacote ou remendar a ferramenta mudaria o que se mede, entao cada
 mutante de ``mutantes.toml`` e um defeito plausivel, escrito a mao, num modulo
-critico: as maquinas de status do orcamento e do pagamento, o ``Dinheiro``, a
-validacao do JWT, a idempotencia, o consumidor, o relay e a compensacao da saga.
+critico.
 
-O script aplica um mutante por vez numa copia do codigo (``mutants/``, fora do
-git), roda so os testes que deveriam pega-lo e diz qual falhou primeiro. Nao e
-gate de CI nem tem pontuacao minima: o resultado vai para o README (Mutacao).
-Os testes de integracao sobem o MongoDB por testcontainers; com
-``TEST_MONGODB_URI`` apontando para um replica set ja no ar, o script poupa o
-container de cada mutante. ``--prazo`` (segundos) para de iniciar mutantes
-quando estoura; os que sobram saem como ``nao rodado``.
+O script copia para ``mutants/`` (fora do git) o que ``[config]`` lista em
+``copiar``, aplica um mutante por vez nessa copia, roda so os testes do grupo
+dele e diz qual falhou primeiro. Nao e gate de CI nem tem pontuacao minima: o
+resultado vai para o README (Mutacao). ``--prazo`` (segundos) para de iniciar
+mutantes quando estoura; os que sobram saem como ``nao rodado``.
 """
 
 from __future__ import annotations
@@ -36,7 +33,6 @@ RAIZ = Path(__file__).resolve().parent.parent
 MUTANTES_TOML = RAIZ / "scripts" / "mutantes.toml"
 COPIA = RAIZ / "mutants"
 RELATORIO = RAIZ / "reports" / "mutacao.md"
-COPIAR = ("src", "tests", "contratos", "k8s", "pyproject.toml", ".coveragerc")
 PRAZO_PADRAO_SEGUNDOS = 900
 LIMITE_DE_UM_MUTANTE_SEGUNDOS = 240
 
@@ -54,9 +50,17 @@ class Mutante:
     equivalente: str = ""
 
 
-def carregar() -> tuple[Mutante, ...]:
+@dataclass(frozen=True, slots=True)
+class Plano:
+    """O que o ``mutantes.toml`` diz: o que copiar e os defeitos a aplicar."""
+
+    copiar: tuple[str, ...]
+    mutantes: tuple[Mutante, ...]
+
+
+def carregar() -> Plano:
     dados = tomllib.loads(MUTANTES_TOML.read_text(encoding="utf-8"))
-    return tuple(
+    mutantes = tuple(
         Mutante(
             id=m["id"],
             area=m["area"],
@@ -68,6 +72,7 @@ def carregar() -> tuple[Mutante, ...]:
         )
         for m in dados["mutante"]
     )
+    return Plano(copiar=tuple(dados["config"]["copiar"]), mutantes=mutantes)
 
 
 def conferir(mutantes: tuple[Mutante, ...]) -> list[str]:
@@ -115,10 +120,10 @@ def _primeiro_que_falhou(saida: str) -> str:
     return achado.group(1).removeprefix("tests/") if achado else ""
 
 
-def preparar_copia() -> None:
+def preparar_copia(copiar: tuple[str, ...]) -> None:
     shutil.rmtree(COPIA, ignore_errors=True)
     COPIA.mkdir()
-    for nome in COPIAR:
+    for nome in copiar:
         origem = RAIZ / nome
         if origem.is_dir():
             shutil.copytree(
@@ -195,14 +200,15 @@ def main(argv: list[str]) -> int:
     analisador.add_argument("--prazo", type=float, default=PRAZO_PADRAO_SEGUNDOS)
     analisador.add_argument("--so", nargs="*", default=[], help="ids, ex.: D01 R03")
     argumentos = analisador.parse_args(argv)
-    todos = carregar()
+    plano = carregar()
+    todos = plano.mutantes
     problemas = conferir(todos)
     if problemas:
         print("\n".join(problemas), file=sys.stderr)
         return 2
     escolhidos = tuple(m for m in todos if not argumentos.so or m.id in argumentos.so)
     inicio = time.monotonic()
-    preparar_copia()
+    preparar_copia(plano.copiar)
     texto = relatorio(executar(escolhidos, argumentos.prazo), time.monotonic() - inicio)
     RELATORIO.parent.mkdir(exist_ok=True)
     RELATORIO.write_text(texto, encoding="utf-8")
