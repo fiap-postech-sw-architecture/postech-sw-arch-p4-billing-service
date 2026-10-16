@@ -61,3 +61,13 @@ updates:
     groups:
       docker-patch-e-minor:
         update-types: ["minor", "patch"]
+    # O Python sobe a mao, de uma vez em .python-version, UV_PYTHON e
+    # python-version dos workflows, requires-python do pyproject e nas duas
+    # imagens do Dockerfile: o venv do builder tem de rodar no Python do runtime.
+    # Sem isto o 3.14 -> 3.15 chegaria como "minor", dentro do grupo acima, e
+    # trocaria so a imagem do runtime. O patch do Python segue automatico.
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
