@@ -1,11 +1,13 @@
 """Scripts do CI (``scripts/ci/``): a conferencia que estreita a excecao do
 trivy (KSV-0109) ao ConfigMap do ``replica-set.js`` e o relatorio das imagens
 de terceiros, que nunca reprova o job, o registro da saida do pip-audit e do
-trivy no summary e os nomes das variaveis do ``make kind-deploy``."""
+trivy no summary, o formato das entradas do ``.gitleaksignore`` e os nomes das
+variaveis do ``make kind-deploy``."""
 
 from __future__ import annotations
 
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -412,3 +414,50 @@ def test_diff_cover_com_xml_fresco_mede_tambem_o_arquivo_novo(
         "--format",
         "markdown:reports/diff-cover.md",
     ]
+
+
+# Fingerprint do gitleaks no modo git: commit:arquivo:regra:linha. Linha fora
+# desse formato nao esconde achado nenhum, e o job volta a reprovar.
+FINGERPRINT = re.compile(r"^[0-9a-f]{40}:[^:]+:[A-Za-z0-9._-]+:[0-9]+$")
+
+
+@pytest.mark.parametrize(
+    ("linha", "valida"),
+    [
+        (
+            "e382e8f28ef61b90a6606107835139a2239adaed:tests/a.py:generic-api-key:17",
+            True,
+        ),
+        ("6c00a8045c13b37af3a1f7caff3d480b60fc9f58:k8s/b.yaml:pytstop-url-x:606", True),
+        ("e382e8f:tests/a.py:generic-api-key:17", False),
+        ("e382e8f28ef61b90a6606107835139a2239adaed:tests/a.py:generic-api-key", False),
+        (
+            "e382e8f28ef61b90a6606107835139a2239adaed:tests/a.py:generic-api-key:x",
+            False,
+        ),
+        (
+            "E382E8F28EF61B90A6606107835139A2239ADAED:tests/a.py:generic-api-key:17",
+            False,
+        ),
+    ],
+    ids=[
+        "valida",
+        "valida-com-hifen",
+        "sha-curto",
+        "sem-linha",
+        "linha-nao-numero",
+        "sha-em-maiuscula",
+    ],
+)
+def test_formato_do_fingerprint_do_gitleaks(linha: str, valida: bool) -> None:
+    assert bool(FINGERPRINT.match(linha)) is valida
+
+
+def test_toda_entrada_do_gitleaksignore_tem_o_formato_do_fingerprint() -> None:
+    arquivo = RAIZ / ".gitleaksignore"
+    linhas = (
+        arquivo.read_text(encoding="utf-8").splitlines() if arquivo.exists() else []
+    )
+    entradas = [x for x in linhas if x.strip() and not x.lstrip().startswith("#")]
+
+    assert [x for x in entradas if not FINGERPRINT.match(x)] == []
