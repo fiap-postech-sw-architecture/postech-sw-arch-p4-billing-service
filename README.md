@@ -105,7 +105,7 @@ Variáveis (lista completa com valores de demonstração em [`.env.example`](.en
 | `RABBITMQ_URL` | sem padrão | broker com o usuário do serviço (`amqp://billing:<senha>@<host>:5672/%2F`), exigido pelo relay e pelo consumidor; o usuário vai no `user_id` de toda publicação |
 | `RELAY_HEARTBEAT`, `CONSUMIDOR_HEARTBEAT` | `/tmp/relay-heartbeat`, `/tmp/consumidor-heartbeat` | arquivo de vida do relay e do consumidor |
 | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | `false`, `http://jaeger:4317`, `billing-service` | exportação dos traces da API, do relay, do consumidor e do `prazos` pelo protocolo do OpenTelemetry (OTLP) sobre gRPC; desligada, o contexto de trace segue nas mensagens do mesmo jeito, nos headers `traceparent`/`tracestate` do padrão W3C Trace Context |
-| `OTEL_BSP_EXPORT_TIMEOUT`, `OTEL_EXPORTER_OTLP_TIMEOUT` | `2000` (ms), `2` (s) | prazo de cada lote de spans na saída; o SDK usa 30000 e 10. Com o Jaeger fora e a fila cheia, a API leva 3,9 s para sair (30,4 s com os padrões do SDK, todo o `terminationGracePeriodSeconds`). Vêm do ConfigMap e do compose |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_BSP_EXPORT_TIMEOUT` | `2` (s), `2000` (ms) | `OTEL_EXPORTER_OTLP_TIMEOUT` é o prazo de cada envio de spans (o SDK usa 10) e é só ele que encurta a saída: com o Jaeger fora e a fila cheia, a API leva 3,9 s para sair (30,4 s com os padrões do SDK, todo o `terminationGracePeriodSeconds`). `OTEL_BSP_EXPORT_TIMEOUT` (padrão 30000) o SDK 1.45.1 guarda e não lê, então não muda nada. Vêm do ConfigMap e do compose |
 | `CONTRATOS_DIR` | `contratos/` do repositório (`/app/contratos` na imagem) | schemas das mensagens |
 | `RUN_SEED_ON_STARTUP` | `false` (o compose liga) | seed idempotente da tabela de preços no boot da API |
 | `ROOT_PATH` | vazio | prefixo da borda (`/billing` no Kubernetes), passado ao `--root-path` do uvicorn: o Swagger de `/billing/docs` busca o `/billing/openapi.json`, e o OpenAPI leva o prefixo em `servers` (ADR-038) |
@@ -229,7 +229,7 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 - A decisão do cliente, o webhook e o checkout do simulador gravam o contexto da requisição na outbox, e o evento que a saga publica depois aponta para ela por *span link*.
 - A API nasce no trace de quem a chamou (`traceparent`). Cada passo retomado por pessoa, por sistema externo ou por prazo fica num trace próprio, ligado ao da saga por esse link.
 - No SIGTERM cada processo descarrega os spans que esperam no lote: relay, consumidor e `prazos` chamam o `shutdown` do provider ao sair, e a API o chama no fim do `lifespan`. No container, com o uvicorn como PID 1, os spans já chegavam (o `atexit` do SDK roda); fora dele, no host, o uvicorn re-levanta o sinal e o processo morre sem rodá-lo.
-- O que pesa é o prazo de saída com o Jaeger fora e a fila cheia (2.048 spans): a API levava 30,4 s para sair em container, todo o `terminationGracePeriodSeconds`. Com `OTEL_BSP_EXPORT_TIMEOUT=2000` e `OTEL_EXPORTER_OTLP_TIMEOUT=2` leva 3,9 s.
+- O que pesa é o prazo de saída com o Jaeger fora e a fila cheia (2.048 spans): a API levava 30,4 s para sair em container, todo o `terminationGracePeriodSeconds`. Com `OTEL_EXPORTER_OTLP_TIMEOUT=2` leva 3,9 s (medido junto de `OTEL_BSP_EXPORT_TIMEOUT=2000`, que o SDK 1.45.1 não usa).
 
 ### Amostragem e o que não vira trace
 
@@ -249,7 +249,7 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 | `User-Agent` e endereço e porta do par da conexão | Texto livre sem limite e dado de rede de quem chamou, sem uso operacional; o Jaeger guarda 5.000 traces em memória, sem como apagar um titular | O hook grava `REDACTED` nos textos e `0` nas portas |
 | `baggage` do chamador | O ADR-043 prevê só `traceparent` e `tracestate`; o padrão do SDK somaria o `baggage`, que a API aceitaria e o httpx repassaria ao Mercado Pago | O propagador global é só o `TraceContext` (`instalar_propagador`). O `tracestate` acima de 512 caracteres não vai para a outbox nem para o AMQP |
 
-Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). E o `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada.
+Três ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). O `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada. E o `Host` que o chamador manda sai como veio, em `http.server_name` e dentro do `http.url` do `SERVER` (`http://<Host><template da rota>`): o hook tira o token da URL, não o `Host`, que é texto do chamador sem limite (`http.host` é o endereço do próprio servidor, não o dele). Trocá-lo por um valor fixo muda `src/` e fica para o pull request seguinte.
 
 ### Métricas
 
@@ -272,7 +272,7 @@ Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao
 - **Nasce com zero:** toda série de rótulo fechado existe no `/metrics` desde o boot do processo que a emite, exceto o disjuntor do Mercado Pago, que só existe com o gateway real. O `increase()` do Prometheus perde o primeiro evento de uma série que só aparece com ele, e no volume de uma demonstração o painel mostraria zero. O relay pré-inicializa os eventos que publica, o consumidor os comandos que consome e os dois o próprio `componente`.
 - **Dinheiro em centavos inteiros:** o Prometheus guarda `float64`, então a métrica soma `int(valor * 100)` do `Decimal` e o painel divide por 100.
 - **A raspagem da API e a do relay consultam o MongoDB:** duas contagens e a linha pendente mais antiga, que lê o índice `(status, criado_em)`. Com o relay parado a API segue exportando a idade, que mantém o alerta de outbox parada de pé. As três consultas dividem um prazo de 2 s (`PRAZO_DA_RASPAGEM_S`).
-- **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` do Prometheus, e o alvo da API ficava `up=0`. A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
+- **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` de 10 s do Prometheus, o que deixaria o alvo da API em `up=0` (inferência a partir do tempo da resposta, não de uma raspagem observada). A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
 - O rótulo das reconexões é `componente` (`relay` ou `consumidor`). O Prometheus já põe `processo` em todo alvo, e um rótulo da métrica com o mesmo nome viraria `exported_processo`.
 
 ### Como ver
