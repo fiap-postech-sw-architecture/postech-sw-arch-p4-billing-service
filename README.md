@@ -311,18 +311,18 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 
 ## Cobertura
 
-**100,00% no gate** (linhas e ramos somados): 4.277 linhas e 566 ramos, nenhuma perdida, com 1.228 testes (unitários e de integração com MongoDB e RabbitMQ reais). O gate é de 95% (`fail_under` no `.coveragerc`) e o código novo precisa de 90% (`make diff-cover`). Medido em 14/10/2026 na árvore do commit `264da4e` da `main`: [run do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/38529740787), job `test`, com a tabela no summary. Ficam fora da medição só o `if __name__ == "__main__"` de cada um dos cinco processos (`# pragma: no cover`) e os `Protocol` puros dos repositórios e da unidade de trabalho (`omit` do `.coveragerc`).
+**100,00% no gate** (linhas e ramos somados): 4.506 linhas e 618 ramos, nenhuma perdida, com 1.537 testes (unitários e de integração com MongoDB e RabbitMQ reais). O gate é de 95% (`fail_under` no `.coveragerc`) e o código novo precisa de 90% (`make diff-cover`). Medido em 15/10/2026 na árvore do commit `8aa5633` do PR #7: [run do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/38842233567), job `test`, com a tabela no summary. Ficam fora da medição só o `if __name__ == "__main__"` de cada um dos cinco processos (`# pragma: no cover`) e os `Protocol` puros dos repositórios e da unidade de trabalho (`omit` do `.coveragerc`).
 
 | Pacote | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
-| `src` (processos) | 534 | 534 | 100,0% |
-| `src/compartilhado` | 1.428 | 1.428 | 100,0% |
-| `src/orcamento` | 651 | 651 | 100,0% |
-| `src/pagamento` | 1.227 | 1.227 | 100,0% |
+| `src` (processos) | 568 | 568 | 100,0% |
+| `src/compartilhado` | 1.547 | 1.547 | 100,0% |
+| `src/orcamento` | 672 | 672 | 100,0% |
+| `src/pagamento` | 1.282 | 1.282 | 100,0% |
 | `src/precos` | 437 | 437 | 100,0% |
-| **total** | 4.277 | 4.277 | 100,0% |
+| **total** | 4.506 | 4.506 | 100,0% |
 
-Por camada: `dominio` 889 linhas, `aplicacao` 759, `infraestrutura` 1.491 e `interfaces` 604, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
+Por camada: `dominio` 895 linhas, `aplicacao` 770, `infraestrutura` 1.632 e `interfaces` 641, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
 
 O `make diff-cover` lê o `coverage.xml` do `make test` e exige que ele seja mais novo que o código de `src/`: com o XML velho recusa e manda rodar o `make test` antes, em vez de passar sem medir nada. O `make check` já roda os dois na ordem certa.
 
@@ -338,7 +338,7 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
 
 (`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 65 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
 
-**Resultado** em 14/10/2026: 62 mortos de 62 medidos (100%) em 3,6 min, com 2 equivalentes de fora da conta. A primeira execução, antes de quatro testes novos, matou 58 de 62 (93,5%); os quatro sobreviventes eram lacunas reais (três de limite exato) e viraram teste neste mesmo pull request.
+**Resultado** em 15/10/2026: 63 mortos de 63 medidos (100%) em 3,8 min, com 2 equivalentes de fora da conta. A primeira execução matou 58 de 62 (93,5%); os 4 sobreviventes eram lacunas reais (três de limite exato) e hoje têm teste.
 
 | Área | Mutantes | Mortos | Equivalentes |
 |---|---:|---:|---:|
