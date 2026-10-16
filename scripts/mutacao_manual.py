@@ -78,12 +78,14 @@ def carregar() -> Plano:
 
 
 def conferir(mutantes: tuple[Mutante, ...]) -> list[str]:
-    """Problemas da lista: id repetido, trecho ausente ou repetido, mutante nulo."""
+    """Problemas: id repetido, arquivo ou trecho ausente, trecho repetido, nulo."""
     ids = [m.id for m in mutantes]
     problemas = [f"{i}: id repetido" for i in sorted(set(ids)) if ids.count(i) > 1]
     for m in mutantes:
-        ocorrencias = (RAIZ / m.arquivo).read_text(encoding="utf-8").count(m.de)
-        if ocorrencias != 1:
+        alvo = RAIZ / m.arquivo
+        if not alvo.is_file():
+            problemas.append(f"{m.id}: arquivo inexistente: {m.arquivo}")
+        elif (ocorrencias := alvo.read_text(encoding="utf-8").count(m.de)) != 1:
             problemas.append(f"{m.id}: o trecho aparece {ocorrencias}x em {m.arquivo}")
         if m.de == m.para:
             problemas.append(f"{m.id}: o mutante nao muda nada")
@@ -198,7 +200,9 @@ def relatorio(linhas: list[dict[str, str]], segundos: float) -> str:
 
     mortos, vivos = contar("morto"), contar("sobreviveu")
     medidos = mortos + vivos
-    nota = f"{100 * mortos / medidos:.1f}%" if medidos else "n/d"
+    # Com erro ou mutante nao rodado a medida esta incompleta: sem percentual.
+    completo = medidos and not contar("erro") and not contar("nao rodado")
+    nota = f"{100 * mortos / medidos:.1f}%" if completo else "n/d"
     saida = [
         f"Mutantes manuais: {mortos} mortos de {medidos} ({nota}); "
         f"{vivos} sobreviveram, {contar('equivalente')} equivalentes ficaram de "
@@ -224,17 +228,23 @@ def main(argv: list[str]) -> int:
     plano = carregar()
     todos = plano.mutantes
     problemas = conferir(todos)
+    validos = [m.id for m in todos]
+    if desconhecidos := [i for i in argumentos.so if i not in validos]:
+        problemas.append(f"ids desconhecidos: {' '.join(desconhecidos)}")
+        problemas.append(f"ids validos: {' '.join(validos)}")
     if problemas:
         print("\n".join(problemas), file=sys.stderr)
         return 2
     escolhidos = tuple(m for m in todos if not argumentos.so or m.id in argumentos.so)
     inicio = time.monotonic()
     preparar_copia(plano.copiar)
-    texto = relatorio(executar(escolhidos, argumentos.prazo), time.monotonic() - inicio)
+    linhas = executar(escolhidos, argumentos.prazo)
+    texto = relatorio(linhas, time.monotonic() - inicio)
     RELATORIO.parent.mkdir(exist_ok=True)
     RELATORIO.write_text(texto, encoding="utf-8")
     print("\n" + texto)
-    return 0
+    # Sobrevivente nao reprova (sem gate, ADR-041); erro e medida invalida.
+    return 1 if any(x["resultado"] == "erro" for x in linhas) else 0
 
 
 if __name__ == "__main__":

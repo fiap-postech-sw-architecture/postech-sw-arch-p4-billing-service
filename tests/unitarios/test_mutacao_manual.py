@@ -200,3 +200,75 @@ def test_grupo_que_estoura_o_tempo_na_copia_limpa_sai_como_erro(
         "erro",
         "teste do grupo reprova na copia limpa: (tempo esgotado)",
     )
+
+
+def _linhas(*resultados: str) -> list[dict[str, str]]:
+    return [
+        {"id": str(i), "area": "x", "arquivo": "a.py", "mudanca": "m", "teste": ""}
+        | {"resultado": resultado}
+        for i, resultado in enumerate(resultados)
+    ]
+
+
+def test_relatorio_sem_percentual_quando_ha_erro_ou_mutante_nao_rodado() -> None:
+    inteiro = mutacao_manual.relatorio(_linhas("morto", "morto"), 60.0)
+    com_erro = mutacao_manual.relatorio(_linhas("morto", "morto", "erro"), 60.0)
+    cortado = mutacao_manual.relatorio(_linhas("morto", "morto", "nao rodado"), 60.0)
+
+    assert inteiro.startswith("Mutantes manuais: 2 mortos de 2 (100.0%);")
+    assert com_erro.startswith("Mutantes manuais: 2 mortos de 2 (n/d);")
+    assert cortado.startswith("Mutantes manuais: 2 mortos de 2 (n/d);")
+
+
+def test_conferir_aponta_arquivo_inexistente_sem_levantar() -> None:
+    sumido = mutacao_manual.Mutante("X1", "a", "src/nao_existe.py", (), "a", "b")
+
+    assert mutacao_manual.conferir((sumido,)) == [
+        "X1: arquivo inexistente: src/nao_existe.py"
+    ]
+
+
+def test_main_recusa_arquivo_inexistente_com_mensagem(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sumido = mutacao_manual.Mutante("X1", "a", "src/nao_existe.py", (), "a", "b")
+    plano = mutacao_manual.Plano((), (sumido,))
+    monkeypatch.setattr(mutacao_manual, "carregar", lambda: plano)
+
+    assert mutacao_manual.main([]) == 2
+    assert "X1: arquivo inexistente: src/nao_existe.py" in capsys.readouterr().err
+
+
+def test_main_recusa_id_desconhecido_e_lista_os_validos(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert mutacao_manual.main(["--so", "D01", "d06", "X99"]) == 2
+
+    erro = capsys.readouterr().err
+    assert "ids desconhecidos: d06 X99" in erro
+    assert "ids validos: D01 D02 D03" in erro
+
+
+@pytest.mark.parametrize(
+    ("resultados", "saida"),
+    [
+        pytest.param(("morto", "equivalente"), 0, id="so-mortos-e-equivalentes"),
+        pytest.param(("morto", "sobreviveu"), 0, id="sobrevivente-nao-reprova"),
+        pytest.param(("morto", "nao rodado"), 0, id="prazo-curto-nao-reprova"),
+        pytest.param(("morto", "erro"), 1, id="erro-reprova"),
+    ],
+)
+def test_main_so_sai_com_erro_quando_a_medida_e_invalida(
+    resultados: tuple[str, ...],
+    saida: int,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    linhas = _linhas(*resultados)
+    monkeypatch.setattr(mutacao_manual, "RELATORIO", tmp_path / "reports" / "r.md")
+    monkeypatch.setattr(mutacao_manual, "preparar_copia", lambda copiar: None)
+    monkeypatch.setattr(mutacao_manual, "executar", lambda mutantes, prazo: linhas)
+
+    assert mutacao_manual.main(["--so", "D01"]) == saida
+    texto = (tmp_path / "reports" / "r.md").read_text(encoding="utf-8")
+    assert texto.startswith("Mutantes manuais:")
