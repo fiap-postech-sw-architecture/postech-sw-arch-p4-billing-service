@@ -169,7 +169,7 @@ erDiagram
         string status "pendente, em_entrega, entregue, dead"
         int tentativas
         date criado_em
-        date proxima_tentativa_em "também o fim da reivindicação (lease)"
+        date proxima_tentativa_em "também o fim da reivindicação"
         string exchange
         string routing_key
         string traceparent
@@ -338,7 +338,7 @@ A **outbox** é a coleção das mensagens a publicar: o caso de uso grava o esta
 
 #### `versao_do_banco`
 
-Um único documento, `{_id: "billing", versao}`. A versão sobe com `$max` quando o `python -m src.banco` termina. O relay, o consumidor, o `prazos` e o seed recusam o boot com o banco numa versão menor que a do código, e a API sobe e responde 503 na readiness até a versão chegar. Banco à frente da imagem é aceito, e é isso que deixa o `rollout undo` passar.
+Um único documento, `{_id: "billing", versao}`. A versão sobe com `$max` quando o `python -m src.banco` termina. O relay, o consumidor, o `prazos` e o seed recusam o boot com o banco numa versão menor que a do código, e a API sobe e responde 503 na readiness (a sonda que diz ao Kubernetes se o pod pode receber tráfego) até a versão chegar. Banco à frente da imagem é aceito, e é isso que deixa o `rollout undo` passar.
 
 | Campo | Tipo | Validador | Regra |
 |---|---|---|---|
@@ -622,7 +622,7 @@ sequenceDiagram
     loop cada pagamento
         PZ->>DB: transação: relê, EXPIRADO, outbox PagamentoExpirado
     end
-    PZ->>PZ: toca o arquivo de vida, atualiza o gauge e espera o intervalo
+    PZ->>PZ: toca o arquivo de vida, atualiza a gauge (métrica que guarda um valor, aqui o último ciclo concluído) e espera o intervalo
 ```
 
 1. A conciliação vem antes da expiração, para um pagamento aprovado dentro do prazo não vencer por falta do webhook.
@@ -642,10 +642,10 @@ sequenceDiagram
     participant C as Consumidor
     UC->>DB: estado e linha da outbox, com o envelope validado, na mesma transação
     R->>DB: reivindica uma linha pendente, com token novo e lease
-    R->>MQ: publica com mandatory e confirm, no trace gravado na linha
+    R->>MQ: publica com mandatory (o broker devolve o que não tem rota) e confirm (o broker confirma o recebimento), no trace gravado na linha
     MQ-->>R: confirmação
     R->>DB: entregue, só se o token ainda for o dele
-    MQ->>C: comando de billing.comandos (prefetch 1)
+    MQ->>C: comando de billing.comandos (prefetch 1: uma mensagem por vez, até o ack)
     C->>C: confere envelope, dados e origem contra o contrato
     C->>DB: transação da mensagem: handler, respostas na outbox e mensagens_processadas
     C->>MQ: ack
@@ -720,7 +720,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 
 | Rota | O que devolve | Identificador ou credencial na resposta |
 |---|---|---|
-| Sondas | `status` e, na liveness, o `modo` do pagamento | nenhum |
+| Sondas | `status` e, na liveness (a sonda cuja falha reinicia o pod), o `modo` do pagamento | nenhum |
 | Preços, leitura e escrita | o preço, a moeda e o `ativo` | nenhum; a escrita deixa um log de auditoria com o `sub` do admin |
 | Validação de itens | os códigos que o chamador mandou e não existem ou estão inativos | nenhum |
 | Orçamento, consulta e decisão do atendente | o orçamento inteiro: `ordem_id`, linhas, total, prazo, decisão e `motivo_cancelamento` | `decisao.decidido_por` é o `sub` do atendente (UUID, não o nome) |
