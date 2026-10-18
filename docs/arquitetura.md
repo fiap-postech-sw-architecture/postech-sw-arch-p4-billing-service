@@ -750,7 +750,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 
 **Retenção.** Linha entregue da outbox por 7 dias, linha `dead` por 30 e `mensagens_processadas` por 30, por índice TTL (seção 3.5). Orçamentos, pagamentos e preços não expiram por tempo.
 
-**Infraestrutura** ([README, Implantação](../README.md#implantação)): pods sem root, raiz somente leitura, sem token de ServiceAccount e com seccomp `RuntimeDefault`; NetworkPolicy que nega toda entrada e libera só o necessário; usuários do MongoDB separados para os processos, o exporter e o Job; nenhum segredo nos manifestos.
+**Infraestrutura** ([README, Implantação](../README.md#implantação)): pods sem root, raiz somente leitura, sem token de ServiceAccount e com seccomp `RuntimeDefault`; NetworkPolicy que nega toda entrada e libera só o necessário; no MongoDB, o usuário `billing` serve aos processos e ao Job, o `exporter` (só `clusterMonitor`) serve ao exporter, e o `root` só ao primeiro boot do volume e ao initContainer `replica-set` do Job; nenhum segredo nos manifestos.
 
 ## 7. Observabilidade
 
