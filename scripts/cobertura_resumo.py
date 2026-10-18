@@ -203,7 +203,11 @@ def _reescrever_readme(xml: Path, readme: Path, url_do_run: str) -> int:
         )
         return 1
     try:
-        secao = secao_do_readme(medir(xml), url_do_run)
+        medida = medir(xml)
+        if not medida.contextos:
+            msg = f"{xml} nao traz nenhuma linha de cobertura: baixe o artefato certo"
+            raise ValueError(msg)
+        secao = secao_do_readme(medida, url_do_run)
         texto = atualizar_readme(readme.read_text(encoding="utf-8"), secao)
         readme.write_text(texto, encoding="utf-8")
     except (OSError, ValueError, ElementTree.ParseError) as erro:

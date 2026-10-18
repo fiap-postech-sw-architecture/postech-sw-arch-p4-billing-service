@@ -373,6 +373,29 @@ def test_coverage_que_e_um_diretorio_reprova_a_reescrita_sem_traceback(
     assert readme.read_text(encoding="utf-8") == antes
 
 
+@pytest.mark.parametrize(
+    "conteudo", ["<html/>", "<coverage/>"], ids=["outro-xml", "coverage-vazio"]
+)
+def test_coverage_sem_nenhuma_linha_reprova_a_reescrita_em_vez_de_zerar_a_tabela(
+    script: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    conteudo: str,
+) -> None:
+    readme = _readme(
+        tmp_path, f"{script.MARCADOR_INICIO}\nvelha\n{script.MARCADOR_FIM}"
+    )
+    antes = readme.read_text(encoding="utf-8")
+    vazio = tmp_path / "coverage.xml"
+    vazio.write_text(conteudo, encoding="utf-8")
+
+    assert script.main(_argv(vazio, readme)) == 1
+    erro = capsys.readouterr().err
+    assert erro.count("\n") == 1
+    assert "nao traz nenhuma linha de cobertura" in erro
+    assert readme.read_text(encoding="utf-8") == antes
+
+
 def test_coverage_que_nao_e_xml_reprova_a_reescrita_sem_traceback(
     script: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
