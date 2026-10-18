@@ -202,6 +202,21 @@ def test_grupo_que_estoura_o_tempo_na_copia_limpa_sai_como_erro(
     )
 
 
+def test_mutante_depois_do_prazo_sai_nao_rodado_sem_rodar_o_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mutacao_manual, "_pytest", lambda testes: pytest.fail(f"rodou {testes}")
+    )
+
+    # Prazo negativo: o tempo decorrido ja passou dele antes do primeiro mutante.
+    linhas = mutacao_manual.executar(
+        (_mutante("return x * 3"), _mutante("return x + x")), -1
+    )
+
+    assert [(x["resultado"], x["teste"]) for x in linhas] == [("nao rodado", "")] * 2
+
+
 def _linhas(*resultados: str) -> list[dict[str, str]]:
     return [
         {"id": str(i), "area": "x", "arquivo": "a.py", "mudanca": "m", "teste": ""}
