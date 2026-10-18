@@ -720,7 +720,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 
 | Rota | O que devolve | Identificador ou credencial na resposta |
 |---|---|---|
-| Sondas | `status` e, na liveness (a sonda cuja falha reinicia o pod), o `modo` do pagamento | nenhum |
+| Sondas | `status` e, na liveness (a sonda cuja falha reinicia o contêiner), o `modo` do pagamento | nenhum |
 | Preços, leitura e escrita | o preço, a moeda e o `ativo` | nenhum; a escrita deixa um log de auditoria com o `sub` do admin |
 | Validação de itens | os códigos que o chamador mandou e não existem ou estão inativos | nenhum |
 | Orçamento, consulta e decisão do atendente | o orçamento inteiro: `ordem_id`, linhas, total, prazo, decisão e `motivo_cancelamento` | `decisao.decidido_por` é o `sub` do atendente (UUID, não o nome) |
