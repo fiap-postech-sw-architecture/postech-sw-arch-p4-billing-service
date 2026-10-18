@@ -94,16 +94,19 @@ docs-api:
 # A secao Cobertura do README sai do coverage.xml de um run do CI (o artefato
 # relatorios-de-teste do job test), com o link dele, e nunca e digitada: o make
 # test reprova a tabela editada a mao. RUN=<id do run> (gh run list --workflow
-# ci.yml); o gh baixa o artefato em reports/ci-<id>.
+# ci.yml); o gh baixa o artefato em reports/ci-<id>. O RUN vai ao shell pelo
+# ambiente ("$RUN" na receita), e nao colado no texto do comando: aspas ou crase
+# nele rodariam antes de o case recusar o valor (que tambem recusa a quebra de linha).
 CI_RUNS := https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs
+export RUN
 
 cobertura-readme:
-	@printf '%s' "$(RUN)" | grep -Eq '^[0-9]+$$' \
-		|| { echo "cobertura-readme: RUN=<CI run id, digits only> is required" >&2; exit 2; }
-	rm -rf reports/ci-$(RUN)
-	gh run download $(RUN) -n relatorios-de-teste -D reports/ci-$(RUN)
-	$(PY) python scripts/cobertura_resumo.py reports/ci-$(RUN)/coverage.xml \
-		--readme README.md --run $(CI_RUNS)/$(RUN)
+	@case "$$RUN" in ''|*[!0-9]*) \
+		echo "cobertura-readme: RUN=<CI run id, digits only> is required" >&2; exit 2;; esac
+	rm -rf "reports/ci-$$RUN"
+	gh run download "$$RUN" -n relatorios-de-teste -D "reports/ci-$$RUN"
+	$(PY) python scripts/cobertura_resumo.py "reports/ci-$$RUN/coverage.xml" \
+		--readme README.md --run "$(CI_RUNS)/$$RUN"
 
 check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"

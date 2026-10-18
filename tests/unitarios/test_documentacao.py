@@ -1403,6 +1403,42 @@ def test_make_cobertura_readme_so_aceita_o_id_numerico_do_run(run: str) -> None:
     assert not (RAIZ / "reports" / f"ci-{run}").exists()
 
 
+@pytest.mark.parametrize(
+    "molde",
+    [
+        '1"; touch {marca}; echo "',
+        "1'; touch {marca}; echo '",
+        "`touch {marca}`",
+        "$$(touch {marca})",
+        "1\ntouch {marca}",
+    ],
+    ids=["aspas", "aspa-simples", "crase", "substituicao", "quebra-de-linha"],
+)
+def test_make_cobertura_readme_recusa_o_run_sem_executar_o_que_vem_nele(
+    molde: str, tmp_path: Path
+) -> None:
+    # O valor chega ao shell como texto do ambiente: o que vem dentro das aspas
+    # ou da crase nao roda nem antes de o alvo recusar o RUN.
+    marca = tmp_path / "executou"
+    resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
+        [  # noqa: S607
+            "make",
+            "--no-print-directory",
+            "cobertura-readme",
+            f"RUN={molde.format(marca=marca)}",
+        ],
+        cwd=RAIZ,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert resultado.returncode == 2
+    assert "RUN=<CI run id, digits only> is required" in resultado.stderr
+    assert not marca.exists()
+
+
 def test_make_cobertura_readme_baixa_o_artefato_do_run_e_reescreve_a_secao(
     tmp_path: Path,
 ) -> None:
