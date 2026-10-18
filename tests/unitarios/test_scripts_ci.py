@@ -401,7 +401,7 @@ def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
 
 
 def _diff_cover(
-    tmp_path: Path, xml_mais_novo: bool
+    tmp_path: Path, xml_mais_novo: bool, *, sem_xml: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """``make diff-cover`` numa arvore minuscula, com um ``uvx`` falso no PATH que
     so registra os argumentos."""
@@ -413,6 +413,8 @@ def _diff_cover(
     os.utime(codigo, (2_000_000_000, 2_000_000_000))
     do_xml = 2_000_000_100 if xml_mais_novo else 1_999_999_900
     os.utime(xml, (do_xml, do_xml))
+    if sem_xml:
+        xml.unlink()
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     argumentos = tmp_path / "argumentos-do-uvx"
@@ -443,6 +445,15 @@ def test_diff_cover_recusa_coverage_xml_mais_velho_que_o_codigo(
 
     assert resultado.returncode != 0
     assert "coverage.xml is older than src/, run make test first" in resultado.stderr
+    assert not argumentos.exists()
+
+
+def test_diff_cover_sem_coverage_xml_manda_rodar_o_make_test(tmp_path: Path) -> None:
+    # Sem o XML o `find -newer` nao imprime nada e so a primeira guarda o pega.
+    resultado, argumentos = _diff_cover(tmp_path, xml_mais_novo=True, sem_xml=True)
+
+    assert resultado.returncode != 0
+    assert "coverage.xml missing, run make test first" in resultado.stderr
     assert not argumentos.exists()
 
 
