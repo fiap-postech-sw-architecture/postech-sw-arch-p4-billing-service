@@ -6,9 +6,11 @@
 - Toda rota do OpenAPI tem um ``curl`` na secao Exemplos da API do README, e cada
   ``curl`` do Billing casa com uma rota e traz a query, o corpo no schema e os
   cabecalhos que a operacao pede (``Authorization: Bearer``, ``Content-Type``).
-- ``docs/arquitetura.md`` segue o codigo: os campos e os indices das colecoes, os
-  estados dos agregados e as tabelas de comandos e eventos (a coluna "Etapa
-  esperada" e do OS Service e fica de fora).
+- ``docs/arquitetura.md`` segue o codigo: os nomes dos campos e a coluna
+  Validador, os indices, os estados dos agregados e, nas tabelas de comandos e
+  eventos, quais existem, a routing key, quem publica, quem consome e a fila. Ficam
+  de fora o tipo dos campos, as marcas PK e UK do ER e as colunas Resposta (so se
+  confere que o evento existe), Etapa esperada (do OS Service) e Quando sai.
 - Os links relativos do README e da arquitetura caem em arquivo e secao reais.
 - A secao Cobertura do README sai de ``scripts/cobertura_resumo.py``.
 """
@@ -1290,6 +1292,19 @@ def test_tabelas_da_arquitetura_tem_os_campos_de_cada_colecao() -> None:
     no_documento = {c: set(campos) for c, campos in _tabelas_de_campos(texto).items()}
 
     assert no_documento == no_codigo, "campo novo: a tabela dele em docs/arquitetura.md"
+
+
+def test_toda_colecao_que_o_init_cria_tem_tabela_na_arquitetura() -> None:
+    # Colecao nova com validador e sem indice nao aparece em nenhuma outra
+    # comparacao: _campos_do_codigo e a lista escrita a mao.
+    banco = _banco_preparado()
+    criadas = set(banco.validadores) | {colecao for colecao, *_ in banco.indices}
+
+    no_documento = set(_tabelas_de_campos(ARQUITETURA.read_text(encoding="utf-8")))
+
+    assert len(criadas) == 6
+    assert criadas <= no_documento, "colecao nova: a tabela dela em docs/arquitetura.md"
+    assert criadas <= set(_campos_do_codigo()), "colecao nova: _campos_do_codigo"
 
 
 def test_coluna_validador_da_arquitetura_e_a_do_json_schema_do_banco() -> None:
