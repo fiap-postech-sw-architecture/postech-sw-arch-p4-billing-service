@@ -552,11 +552,13 @@ Como o alvo se comporta:
 - O script lê o arquivo original de `src/` a cada mutante: não edite `src/` com a bateria rodando.
 - Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo), e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
 
-Códigos de saída:
+Códigos de saída do script (`scripts/mutacao_manual.py`):
 
 - `0`: nenhum mutante saiu `erro`. Sobrevivente e `nao rodado` não reprovam, porque não há gate (ADR-041).
 - `1`: algum mutante saiu `erro`, uma medida inválida, como o Docker fora.
 - `2`: um id de `MUTANTES` não existe (a mensagem lista os válidos) ou o `.toml` não bate com o código.
+
+Esses são os códigos do script, e o `make mutacao` não os repassa: com falha, ele mostra `Error 1` ou `Error 2` e sai sempre com 2 (medido com um id desconhecido, com `PY=false` e com um mutante em `erro`); sem falha, sai com 0.
 
 **Para outro serviço:** copie `scripts/mutacao_manual.py` e o alvo `mutacao` do Makefile para o repositório dele (o script é o mesmo nos três serviços). Troque a tabela `[config]` do `scripts/mutantes.toml` (o que vai para a cópia `mutants/`), os grupos de `[testes]` e os `[[mutante]]`. Antes de começar, o script recusa trecho ausente ou repetido.
 
