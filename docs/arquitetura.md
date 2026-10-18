@@ -716,7 +716,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 | `POST /api/v1/webhooks/mercadopago` | o Mercado Pago, pela `x-signature` |
 | `GET /simulador/checkout/{id}` e `POST /api/v1/simulador/pagamentos/{id}/aprovar` e `/recusar` | quem tem o token do `checkout_url`; só com `MP_MODE=simulado` |
 
-**O que cada rota devolve, e a quem.** O Billing não guarda nome, documento, contato nem endereço de cliente, então nenhuma resposta traz dado pessoal do cliente. O que cada uma traz de identificador ou de credencial:
+**O que cada rota devolve, e a quem.** O Billing não guarda nome, documento, contato nem endereço de cliente, então nenhuma resposta tem campo desses dados. A exceção possível é o texto livre do provedor de pagamento, que o Billing não filtra (nas linhas do pagamento abaixo). O que cada rota traz de identificador ou de credencial:
 
 | Rota | O que devolve | Identificador ou credencial na resposta |
 |---|---|---|

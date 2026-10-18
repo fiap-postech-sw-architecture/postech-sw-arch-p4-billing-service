@@ -231,7 +231,7 @@ senha=$(kubectl --context kind-pytstop-p4 -n pytstop-os get secret os-admin -o j
 export TOKEN=$(printf '{"email": "%s", "senha": "%s"}' "$email" "$senha" | curl -sk https://localhost/os/api/v1/autenticacao/login -H 'Content-Type: application/json' --data @- | jq -r .access_token)
 ```
 
-O token vale 15 minutos. O `ORDEM_ID` é o `id` da OS que o OS Service abriu (`POST /os/api/v1/ordens-de-servico`, no [README dele](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-os-service#readme)); o orçamento só existe depois que o mecânico conclui o diagnóstico e a saga manda o `GerarOrcamento`:
+O token vale 15 minutos. O `ORDEM_ID` é o `id` da OS que o OS Service abriu (`POST /os/api/v1/ordens-de-servico`, no [README dele](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-os-service#readme)); o valor do bloco é só um exemplo, e deve ser trocado pelo da sua OS. O orçamento só existe depois que o mecânico conclui o diagnóstico e a saga manda o `GerarOrcamento`:
 
 ```bash
 export ORDEM_ID=3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55
