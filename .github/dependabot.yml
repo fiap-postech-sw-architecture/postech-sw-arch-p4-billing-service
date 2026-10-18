@@ -33,12 +33,16 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      # Leva tambem os opentelemetry-*, e os patches e minors da familia sobem
-      # juntos aqui: o SDK fixa opentelemetry-api e semantic-conventions na
-      # mesma versao, e subir so uma parte nao resolve. Um grupo so deles
-      # ficaria vazio, mesmo antes deste no arquivo: o Dependabot o trata como
-      # menos especifico que este. A major fica fora do grupo e atras do teto
-      # do pyproject.toml (<1.46 e <0.67).
+      # Leva tambem os opentelemetry-*: o SDK fixa opentelemetry-api e
+      # semantic-conventions na mesma versao, e subir so uma parte nao
+      # resolve, entao a familia sobe junta aqui. Um grupo so deles ficaria
+      # vazio, mesmo antes deste no arquivo: o Dependabot o trata como menos
+      # especifico que este. O teto do pyproject.toml (<1.46 e <0.67) barra
+      # tambem a proxima minor, e nao so a major, entao pelo grupo so sobe
+      # patch: telemetria.py troca _status e _events de um span, atributos
+      # privados do SDK que uma minor nova pode mudar. Minor nova so entra com
+      # os dois tetos subidos a mao, juntos, depois de ler o changelog. O que o
+      # Dependabot faz diante do teto ainda nao foi observado neste repositorio.
       python-patch-e-minor:
         update-types: ["minor", "patch"]
 
