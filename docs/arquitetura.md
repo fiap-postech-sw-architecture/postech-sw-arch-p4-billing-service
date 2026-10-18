@@ -1,6 +1,6 @@
 # Arquitetura do Billing Service
 
-O Billing Service é um dos três serviços do PytStop na fase 4 do Tech Challenge (FIAP Pós Tech, Software Architecture): o sistema de gestão de oficina das fases anteriores, refatorado em microsserviços com saga orquestrada e mensageria assíncrona.
+O Billing Service é um dos três serviços do PytStop na fase 4 do Tech Challenge (FIAP Pós Tech, Software Architecture): o sistema de gestão de oficina das fases anteriores, refatorado em microsserviços com saga orquestrada e mensageria assíncrona. A *saga* é a sequência de passos locais, um em cada serviço, coordenada pelo OS Service: se um passo falha, os já feitos são desfeitos por comandos de compensação.
 
 - **Arquitetura global.** A divisão dos serviços, o catálogo de mensagens, a borda, a observabilidade e a implantação estão na [RFC-004](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md) e nos [ADR-034 a ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/tree/main/docs/arquitetura) do `platform`.
 - **Este documento.** O que é deste serviço: responsabilidades, camadas e módulos, o modelo completo do banco (a [seção 7.4 da RFC-004](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md#74-billing-service-mongodb-7) o delega para cá), os fluxos passo a passo, os comandos consumidos e os eventos publicados. É a documentação da arquitetura do serviço que a [gap analysis](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/requisitos/fase4/gap-analysis-fase-4.md) da fase pede no RNF-051.
@@ -25,10 +25,10 @@ O Billing Service cuida do dinheiro da oficina. Ele é dono de:
 
 - **Tabela de preços.** Os preços comerciais de serviços (por código) e de peças (por SKU, o código que a Execução usa no estoque). Só o admin escreve.
 - **Orçamento.** Um por ordem de serviço. Nasce do comando `GerarOrcamento` com os preços congelados nas linhas, espera a decisão do cliente (pelo link público ou pelo atendente) e expira se ninguém decide. É o passo T3 da saga, e a decisão é o T4 ([RFC-004, seção 4.3](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md#43-passos-compensações-e-tipos)).
-- **Pagamento.** Uma cobrança por ordem, aberta no Checkout Pro do Mercado Pago. O status só muda pelo que o provedor confirma numa consulta, nunca pelo corpo do webhook, e a compensação da saga o cancela ou o estorna. É o passo T6.
+- **Pagamento.** Uma cobrança por ordem, aberta no Checkout Pro do Mercado Pago (a página de pagamento que o próprio provedor hospeda). O status só muda pelo que o provedor confirma numa consulta, nunca pelo corpo do webhook, e a compensação da saga o cancela ou o estorna. É o passo T6.
 - **Mensageria do serviço.** A outbox (as mensagens a publicar, gravadas na mesma transação do efeito), o relay que as publica e o consumidor dos comandos.
 
-Não são dele a ordem de serviço, o cadastro de clientes e a orquestração da saga (OS Service), nem o diagnóstico, o estoque e a execução (Execução). O Billing não guarda nome, documento nem contato de cliente: sabe só o `ordem_id`, as linhas do orçamento e o que o provedor de pagamento informou. A única chamada síncrona que ele recebe de outro serviço é a validação de códigos feita pela Execução (`POST /api/v1/precos/validacao`). O único acesso dele ao OS Service é a leitura das chaves públicas (JWKS) para validar o JWT, e tudo o mais passa pelo RabbitMQ.
+Não são dele a ordem de serviço, o cadastro de clientes e a orquestração da saga (OS Service), nem o diagnóstico, o estoque e a execução (Execução). O Billing não guarda nome, documento nem contato de cliente: sabe só o `ordem_id`, as linhas do orçamento e o que o provedor de pagamento informou. A única chamada síncrona que ele recebe de outro serviço é a validação de códigos feita pela Execução (`POST /api/v1/precos/validacao`). O único acesso dele ao OS Service é a leitura das chaves públicas (o JWKS, *JSON Web Key Set*, que o OS publica) para validar o JWT, e tudo o mais passa pelo RabbitMQ.
 
 | É dono de | Não é dono de |
 |---|---|
@@ -68,7 +68,7 @@ Todos saem da mesma imagem e do mesmo código; muda o comando (`entrypoint.sh`).
 | consumidor | `python -m src.consumidor` | Consome `billing.comandos`, uma mensagem por vez, e executa o caso de uso do comando na transação da própria mensagem | MongoDB, RabbitMQ, Mercado Pago |
 | relay | `python -m src.relay` | Publica as linhas pendentes da outbox no exchange `pytstop.eventos`, com confirmação do broker | MongoDB, RabbitMQ |
 | prazos | `python -m src.prazos` | A cada ciclo, concilia os pagamentos solicitados com o Mercado Pago (só com o provedor real) e expira orçamentos e pagamentos vencidos | MongoDB, Mercado Pago |
-| banco | `python -m src.banco` | Cria as coleções com validador, os índices e marca a versão do banco; idempotente. É o Job de inicialização no Kubernetes e o serviço `init` do compose | MongoDB |
+| banco | `python -m src.banco` | Cria as coleções com validador, os índices e marca a versão do banco; idempotente (rodar de novo não muda o resultado). É o Job de inicialização no Kubernetes e o serviço `init` do compose | MongoDB |
 | aguarda-banco | `python -m src.banco aguardar` | initContainer dos Deployments: espera a versão do banco que o código conhece | MongoDB |
 
 O `python -m src.seed` cadastra os preços de demonstração que faltam. As portas, as sondas, o arquivo de vida de cada processo e os manifests estão no [README](../README.md#implantação).
@@ -84,7 +84,7 @@ DDD com arquitetura em camadas (onion): `dominio` ← `aplicacao` ← `infraestr
 
 | Módulo | O que tem |
 |---|---|
-| `src/compartilhado` | Base de entidades, agregados e objetos de valor (`Entity`, `AggregateRoot`, `ValueObject`, `Dinheiro`), exceções de domínio, relógio, eventos; porta e envelope da outbox, token assinado (HMAC); cliente e unidade de trabalho do MongoDB, JWKS, circuit breaker, logging com mascaramento, métricas, telemetria e a mensageria (AMQP, consumidor, relay, contratos); autenticação, envelope de erro, middleware de segurança e as sondas |
+| `src/compartilhado` | Base de entidades, agregados e objetos de valor (`Entity`, `AggregateRoot`, `ValueObject`, `Dinheiro`), exceções de domínio, relógio, eventos; porta e envelope da outbox, token assinado (HMAC, código de autenticação de mensagem com hash); cliente e unidade de trabalho do MongoDB, JWKS, circuit breaker, logging com mascaramento, métricas, telemetria e a mensageria (AMQP, consumidor, relay, contratos); autenticação, envelope de erro, middleware de segurança e as sondas |
 | `src/precos` | `PrecoServico` (código) e `PrecoPeca` (SKU); casos de uso do CRUD e da validação de itens; rotas `/api/v1/precos` |
 | `src/orcamento` | `Orcamento` e as linhas com preço congelado; `GerarOrcamento`, `CancelarOrcamento`, a decisão, a consulta e a expiração; link de decisão; rotas do atendente e rota pública |
 | `src/pagamento` | `Pagamento`, a cobrança e o histórico do provedor; `SolicitarPagamento`, `EstornarPagamento`, o processamento da notificação, a conciliação e a expiração; adapters do Mercado Pago e do simulador; webhook e rotas do simulador |
@@ -101,7 +101,7 @@ Cada contexto segue o mesmo corte: `dominio` (agregados, objetos de valor, regra
 
 ## 3. Modelo de dados
 
-MongoDB 7 em replica set (as transações multidocumento exigem), banco `billing`, só deste serviço ([ADR-037](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/037-banco-por-servico.md)).
+MongoDB 7 em replica set (o grupo de nós com réplica que o MongoDB exige para transações multidocumento), banco `billing`, só deste serviço ([ADR-037](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/037-banco-por-servico.md)).
 
 - **Quem cria.** O `python -m src.banco` cria as coleções, os validadores e os índices a partir do que cada repositório declara: [`precos`](../src/precos/infraestrutura/repository.py), [`orcamentos`](../src/orcamento/infraestrutura/repository.py), [`pagamentos`](../src/pagamento/infraestrutura/repository.py), [`outbox` e `mensagens_processadas`](../src/compartilhado/infraestrutura/unit_of_work.py) e [`versao_do_banco`](../src/compartilhado/infraestrutura/mongo.py). Os outros processos só conferem a versão.
 - **Validador.** O `$jsonSchema` é de nível `moderate`: vale para inserção e para atualização de documento válido. A leitura tolera campo novo (expandir e contrair).
@@ -109,6 +109,7 @@ MongoDB 7 em replica set (as transações multidocumento exigem), banco `billing
 - **Dinheiro** é `Decimal128` com a `moeda`, num subdocumento `{valor, moeda}`; nunca `double`. Nas mensagens e nas respostas da API vai como texto decimal (`"570.00"`).
 - **Identificadores** são UUID nativo (binário subtipo 4). O `_id` do orçamento e do pagamento é o id do recurso; o da mensagem da outbox é um UUIDv7, ordenado pelo tempo.
 - **Datas** são `date` do BSON, em UTC e em milissegundos; `valido_ate` é em segundo cheio, porque o token do link assina a expiração em segundos.
+- **Lápide** é o registro que a compensação grava quando chega antes do comando original (o passo em voo): já cancelado, sem cobrança nem linhas. O comando original, quando chegar, acha a lápide pelo índice único de `ordem_id` e é descartado.
 - **Relações** entre coleções são lógicas, sem chave estrangeira (o MongoDB não tem): `orcamentos.ordem_id` e `pagamentos.ordem_id` são a ordem de serviço do OS Service, e `pagamentos.orcamento_id` aponta o orçamento aprovado que gerou a cobrança.
 
 ```mermaid
@@ -168,7 +169,7 @@ erDiagram
         string status "pendente, em_entrega, entregue, dead"
         int tentativas
         date criado_em
-        date proxima_tentativa_em "também o fim do lease"
+        date proxima_tentativa_em "também o fim da reivindicação (lease)"
         string exchange
         string routing_key
         string traceparent
@@ -303,7 +304,7 @@ Um documento por pagamento. A cobrança (`orcamento_id`, `valor`, `provedor`, `r
 
 ### 3.4 Mensageria
 
-A **outbox** é a coleção das mensagens a publicar: o caso de uso grava o estado e a linha da outbox na mesma transação, e o relay as publica depois. O envelope é validado contra o JSON Schema do contrato antes de gravar. Uma linha passa por `pendente`, `em_entrega` (reivindicada por um relay, por um prazo de lease) e `entregue`, ou chega a `dead` na quinta falha de publicação.
+A **outbox** é a coleção das mensagens a publicar: o caso de uso grava o estado e a linha da outbox na mesma transação, e o relay as publica depois. O envelope é validado contra o JSON Schema do contrato antes de gravar. Uma linha passa por `pendente`, `em_entrega` (reivindicada por um relay por um prazo, o *lease*) e `entregue`, ou chega a `dead` na quinta falha de publicação.
 
 #### `outbox`
 
@@ -319,10 +320,10 @@ A **outbox** é a coleção das mensagens a publicar: o caso de uso grava o esta
 | `routing_key` | texto | obrigatório | `evento.billing.<tipo em snake_case>` |
 | `traceparent` | texto | opcional | contexto de trace de quem gravou: a publicação sai como filha dele |
 | `tracestate` | texto | opcional | idem |
-| `retomado_por` | objeto | opcional | contexto de quem retomou o passo (requisição, webhook, ciclo do `prazos`): vira span link na publicação |
+| `retomado_por` | objeto | opcional | contexto de quem retomou o passo (requisição, webhook, ciclo do `prazos`): vira *span link*, a ligação entre dois traces, na publicação |
 | `entregue_em` | data | opcional | confirmação do broker; começa a retenção de 7 dias |
 | `morta_em` | data | opcional | começa a retenção da linha `dead`, de 30 dias |
-| `reivindicacao` | UUID | opcional | token do relay que detém a linha; toda marcação o exige (fencing) |
+| `reivindicacao` | UUID | opcional | token do relay que detém a linha; toda marcação o exige (*fencing*: o relay atrasado não sobrescreve o que outro retomou) |
 | `ultimo_erro` | texto | opcional | só a classe do erro ou o código do broker |
 | `envelope` | objeto | obrigatório | a mensagem inteira (seção 5) |
 
@@ -333,7 +334,7 @@ A **outbox** é a coleção das mensagens a publicar: o caso de uso grava o esta
 | `_id` | UUID | não declarado | `id` do comando consumido; é a chave da idempotência |
 | `tipo` | texto | obrigatório | nome do comando |
 | `correlation_id` | UUID | obrigatório | a ordem de serviço |
-| `processada_em` | data | obrigatório | grava-se uma vez; o índice TTL conta daqui |
+| `processada_em` | data | obrigatório | grava-se uma vez; o índice TTL (*time to live*, que apaga o documento sozinho) conta daqui |
 
 #### `versao_do_banco`
 
@@ -362,9 +363,9 @@ Os testes criam o banco com o mesmo código do init e comparam esta tabela com o
 | `outbox` | `status`, `criado_em` | | a idade da linha pendente mais antiga, lida do índice sem ordenar o backlog |
 | `outbox` | `entregue_em` | TTL 7 dias, parcial | apaga a linha entregue; filtro `status: entregue` |
 | `outbox` | `morta_em` | TTL 30 dias, parcial | apaga a linha `dead` depois da investigação; filtro `status: dead` |
-| `mensagens_processadas` | `processada_em` | TTL 30 dias | a janela de idempotência passa da retenção da DLQ |
+| `mensagens_processadas` | `processada_em` | TTL 30 dias | a janela de idempotência passa da retenção da DLQ (*dead letter queue*, a fila de mensagens mortas) |
 
-O índice TTL (*time to live*) é o que apaga o documento sozinho, sem código de limpeza.
+O índice TTL não precisa de código de limpeza: o MongoDB apaga o documento quando passa o prazo.
 
 ### 3.6 Estados dos agregados
 
@@ -700,6 +701,8 @@ Treze eventos, no exchange `pytstop.eventos`, com o usuário `billing`, todos co
 
 ## 6. Segurança e LGPD
 
+A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que ela pede deste serviço está no parágrafo "LGPD", mais abaixo.
+
 **Autenticação e autorização** ([ADR-039](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/039-autenticacao-entre-servicos.md)): o Billing não emite token. Valida o JWT (RS256) que o OS Service emite, com a chave pública do JWKS (JSON Web Key Set, o conjunto de chaves públicas que o OS publica), conferindo assinatura, emissor, audiência, expiração, `sub` (UUID), `type=access` e `papel`. Toda falha de credencial responde o mesmo 401 `NAO_AUTENTICADO`, com uma mensagem única; papel válido sem permissão, 403 `ACESSO_NEGADO`; JWKS fora do ar e sem cópia, 503 com `Retry-After`. O `admin` passa em toda rota interna.
 
 | Rotas | Quem acessa |
@@ -743,7 +746,7 @@ Treze eventos, no exchange `pytstop.eventos`, com o usuário `billing`, todos co
 - O texto livre da recusa do provedor (`message` e `description`) não entra em nenhum log. Ele continua em três lugares que não são log: o `estornos_automaticos[].falha` do pagamento (visível na consulta interna), o `motivo` do `EstornoDePagamentoFalhou` e o corpo do 409 que o webhook devolve quando a consulta ao provedor é recusada. Trocar esses textos por um texto fixo é dívida registrada no `MEMORY.md`.
 - Logs e erros passam por um mascaramento de CPF, CNPJ, e-mail, telefone e chaves sensíveis, inclusive o traceback; os spans não levam o texto das exceções nem o caminho cru da URL.
 
-**LGPD.** A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural. O Billing não recebe nome, documento nem contato (o OS Service, dono do cadastro, manda e-mail e elimina os dados do titular), e por isso **não tem fluxo de anonimização**: o `AnonimizarVeiculo` da eliminação é um comando da Execução, e nenhum comando do Billing leva dado do titular. O que sobra são identificadores (`ordem_id`, o `sub` do atendente) e os textos do provedor acima.
+**LGPD.** O Billing não recebe nome, documento nem contato (o OS Service, dono do cadastro, manda e-mail e elimina os dados do titular), e por isso **não tem fluxo de anonimização**: o `AnonimizarVeiculo` da eliminação é um comando da Execução, e nenhum comando do Billing leva dado do titular. O que sobra são identificadores (`ordem_id`, o `sub` do atendente) e os textos do provedor acima.
 
 **Retenção.** Linha entregue da outbox por 7 dias, linha `dead` por 30 e `mensagens_processadas` por 30, por índice TTL (seção 3.5). Orçamentos, pagamentos e preços não expiram por tempo.
 
