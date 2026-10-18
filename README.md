@@ -353,7 +353,7 @@ Os 13 eventos do catálogo do Billing (RFC-004, seção 5.3), no envelope da se�
 
 ## Observabilidade
 
-Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/043-observabilidade-distribuida.md). Os quatro processos (API, relay, consumidor e `prazos`) instalam o SDK do OpenTelemetry pela mesma função (`criar_provedor`) e exportam os traces por OTLP/gRPC para o Jaeger quando `OTEL_ENABLED=true`. As métricas são as do Prometheus, no `/metrics` que cada processo já serve (a API na porta 8000 e os outros três na 9100; nenhuma porta nova), com os rótulos que o Prometheus põe em todo alvo (`job`, `app`, `processo`, `namespace` e `pod`). 
+Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/043-observabilidade-distribuida.md). Os quatro processos (API, relay, consumidor e `prazos`) instalam o SDK do OpenTelemetry pela mesma função (`criar_provedor`) e exportam os traces por OTLP/gRPC para o Jaeger quando `OTEL_ENABLED=true`. As métricas são as do Prometheus, no `/metrics` que cada processo já serve (a API na porta 8000 e os outros três na 9100; nenhuma porta nova), com os rótulos que o Prometheus põe em todo alvo (`job`, `app`, `processo`, `namespace` e `pod`).
 
 Os painéis, os alertas e o [catálogo das métricas dos três serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md#catálogo-de-métricas) ficam no `platform`, em `observabilidade/`; abaixo estão as séries, os spans e os logs deste serviço.
 
