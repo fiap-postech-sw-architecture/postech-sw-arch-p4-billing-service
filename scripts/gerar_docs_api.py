@@ -453,7 +453,7 @@ def colecao(openapi: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def criar_app() -> FastAPI:
+def app_da_documentacao() -> FastAPI:
     """O app da documentacao: o simulador ligado e um provider descartavel, que
     nao instala nada no processo. Nao conecta ao MongoDB (so o lifespan o faz)."""
     from opentelemetry.sdk.trace import TracerProvider
@@ -468,7 +468,7 @@ def criar_app() -> FastAPI:
 
 
 def main() -> int:
-    documento = criar_app().openapi()
+    documento = app_da_documentacao().openapi()
     try:
         postman = colecao(documento)
     except ValueError as erro:
