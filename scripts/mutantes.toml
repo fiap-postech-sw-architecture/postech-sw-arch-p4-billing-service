@@ -250,7 +250,7 @@ arquivo = "src/compartilhado/infraestrutura/jwks.py"
 testes = "jwt"
 de = "algorithms=[\"RS256\"],"
 para = "algorithms=[\"RS256\", \"HS256\"],"
-equivalente = "no resultado, e so enquanto valem duas condicoes: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o decode com um PyJWK recusa \"Token algorithm 'HS256' does not match the key's algorithm 'RS256'\") e o validador passa um PyJWK ao decode. Com elas, HS256 na lista nao muda o desfecho (o token segue dando 401 token_invalido; so muda o texto do erro do PyJWT, que autenticacao.py nao usa) e test_troca_de_algoritmo_nao_e_aceita guarda as duas barreiras; sem elas, a lista RS256 e a unica barreira e nenhum teste a prende"
+equivalente = "no resultado, e so enquanto valem duas condicoes: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o decode com um PyJWK recusa \"Token algorithm 'HS256' does not match the key's algorithm 'RS256'\") e o validador passa um PyJWK ao decode. Com elas, HS256 na lista nao muda o desfecho (o token segue dando 401 token_invalido; so muda o texto do erro do PyJWT, que autenticacao.py nao usa) e test_troca_de_algoritmo_nao_e_aceita guarda o desfecho; sem elas, a lista RS256 e a unica barreira e nenhum teste a prende"
 
 [[mutante]]
 id = "J02"
