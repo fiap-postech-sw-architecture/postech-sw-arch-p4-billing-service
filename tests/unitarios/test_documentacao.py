@@ -4,7 +4,8 @@
 - ``docs/api`` (OpenAPI e colecao Postman) acompanha o app (``make docs-api``), e
   a colecao cumpre o que o README promete dela.
 - Toda rota do OpenAPI tem um ``curl`` na secao Exemplos da API do README, e cada
-  ``curl`` traz o corpo no schema e os cabecalhos que a operacao pede.
+  ``curl`` do Billing casa com uma rota e traz a query, o corpo no schema e os
+  cabecalhos que a operacao pede (``Authorization: Bearer``, ``Content-Type``).
 - ``docs/arquitetura.md`` segue o codigo: os campos e os indices das colecoes, os
   estados dos agregados e as tabelas de comandos e eventos (a coluna "Etapa
   esperada" e do OS Service e fica de fora).
@@ -26,6 +27,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
+from urllib.parse import parse_qsl
 
 import pytest
 import yaml
@@ -638,13 +640,16 @@ class Curl(NamedTuple):
     corpo: str | None
     # Os nomes dos cabecalhos, em minusculas.
     cabecalhos: frozenset[str] = frozenset()
+    # O que vem depois do ``?`` e o valor do cabecalho Authorization.
+    query: str = ""
+    autorizacao: str = ""
 
 
 def _curl(trecho: str) -> Curl | None:
     """O ``curl`` do comeco de ``trecho``, ate o pipe, o ``)`` ou o ``;``."""
     lexer = shlex.shlex(trecho, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
-    metodo, url, corpo = "", "", None
+    metodo, url, corpo, autorizacao = "", "", None, ""
     cabecalhos: set[str] = set()
     palavras = iter(lexer)
     for palavra in palavras:
@@ -655,16 +660,21 @@ def _curl(trecho: str) -> Curl | None:
             metodo = valor.upper() if palavra in {"-X", "--request"} else metodo
             corpo = valor if palavra in _DADOS else corpo
             if palavra in {"-H", "--header"}:
-                cabecalhos.add(valor.partition(":")[0].strip().lower())
+                nome, _, conteudo = valor.partition(":")
+                cabecalhos.add(nome.strip().lower())
+                if nome.strip().lower() == "authorization":
+                    autorizacao = conteudo.strip()
             elif palavra == "--json":  # o curl ja manda o Content-Type
                 cabecalhos.add("content-type")
         elif not palavra.startswith("-") and not url:
             url = palavra
-    caminho = re.match(r"(?:https?://)?[^/]+(/[^?#]*)", url)
+    caminho = re.match(r"(?:https?://)?[^/]+(/[^?#]*)(?:\?([^#]*))?", url)
     if caminho is None:
         return None
     metodo = metodo or ("POST" if corpo else "GET")
-    return Curl(metodo, caminho[1], corpo, frozenset(cabecalhos))
+    return Curl(
+        metodo, caminho[1], corpo, frozenset(cabecalhos), caminho[2] or "", autorizacao
+    )
 
 
 def _curls(texto: str) -> list[Curl]:
@@ -705,6 +715,8 @@ def test_leitura_dos_curl_do_readme() -> None:
         'curl -s "localhost:8000/api/v1/x?limit=5" -H "Authorization: x"\n'
         "curl -s -X DELETE localhost:8000/api/v1/x/$ID; echo\n"
         "curl -sk https://localhost/billing/api/v1/saude\n"
+        'curl -sk "$BASE_URL/api/v1/w?data.id=$REF&type=payment" '
+        '-H "Authorization: Bearer $TOKEN"\n'
         'curl -s localhost:8000/x -d \'{"r": "\'"$REFRESH"\'"}\'\n'
         "curl -s --data-binary '{\"a\": 1}' localhost:8000/y\n"
         "curl -s --json '{\"b\": 2}' localhost:8000/z\n"
@@ -719,9 +731,24 @@ def test_leitura_dos_curl_do_readme() -> None:
             '{"email": "a@b.dev"}',
             frozenset({"content-type"}),
         ),
-        Curl("GET", "/api/v1/x", None, frozenset({"authorization"})),
+        Curl(
+            "GET",
+            "/api/v1/x",
+            None,
+            frozenset({"authorization"}),
+            "limit=5",
+            "x",
+        ),
         Curl("DELETE", "/api/v1/x/$ID", None),
         Curl("GET", "/billing/api/v1/saude", None),
+        Curl(
+            "GET",
+            "/api/v1/w",
+            None,
+            frozenset({"authorization"}),
+            "data.id=$REF&type=payment",
+            "Bearer $TOKEN",
+        ),
         Curl("POST", "/x", '{"r": "$REFRESH"}'),
         Curl("POST", "/y", '{"a": 1}'),
         Curl("POST", "/z", '{"b": 2}', frozenset({"content-type"})),
@@ -767,16 +794,63 @@ def test_curl_fora_da_secao_exemplos_da_api_nao_conta(openapi: dict[str, Any]) -
     assert _curls(texto) == [Curl("GET", "/api/v1/saude", None)]
 
 
+# O curl cujo caminho comeca assim e do Billing (o do OS Service passa por /os/ e o
+# da borda do kind por /billing/): tem de casar com uma rota do OpenAPI.
+_CAMINHOS_DO_BILLING = ("/api/v1/", "/simulador/")
+# O webhook le o ``type`` de ``request.query_params``, e o OpenAPI so declara o
+# ``data.id`` (src/ nao muda neste PR).
+_QUERY_FORA_DO_OPENAPI = {("post", "/api/v1/webhooks/mercadopago"): {"type"}}
+
+
+def _erros_de_acesso(
+    openapi: dict[str, Any], par: tuple[str, str], curl: Curl, onde: str
+) -> list[str]:
+    """Token com o esquema da operacao, e a query que a operacao declara."""
+    operacao = openapi["paths"][par[1]][par[0]]
+    erros: list[str] = []
+    if "security" in operacao:
+        esquemas = openapi["components"]["securitySchemes"]
+        aceitos = {
+            esquemas[nome]["scheme"].capitalize()
+            for requisito in operacao["security"]
+            for nome in requisito
+        }
+        if "authorization" not in curl.cabecalhos:
+            erros.append(f"{onde}: rota protegida sem Authorization")
+        elif not any(re.fullmatch(rf"{e} \S+", curl.autorizacao) for e in aceitos):
+            erros.append(
+                f"{onde}: Authorization {curl.autorizacao!r} "
+                f"fora do esquema {sorted(aceitos)}"
+            )
+    parametros = [p for p in operacao.get("parameters", []) if p["in"] == "query"]
+    declarados = {p["name"] for p in parametros}
+    obrigatorios = {p["name"] for p in parametros if p.get("required")}
+    usados = {nome for nome, _ in parse_qsl(curl.query, keep_blank_values=True)}
+    fora = _QUERY_FORA_DO_OPENAPI.get(par, set())
+    erros += [
+        f"{onde}: query {nome} que a rota nao declara"
+        for nome in sorted(usados - declarados - fora)
+    ]
+    erros += [
+        f"{onde}: sem a query obrigatoria {nome}"
+        for nome in sorted(obrigatorios - usados)
+    ]
+    return erros
+
+
 def _erros_do_curl(openapi: dict[str, Any], curl: Curl) -> list[str]:
-    """O que a operacao pede e o curl nao traz: token, corpo e Content-Type."""
+    """O que a operacao pede e o curl nao traz, ou o curl que nenhuma rota tem.
+
+    Rota, query e esquema do token; corpo e Content-Type.
+    """
+    onde = f"{curl.metodo} {curl.caminho}"
     par = _rota(openapi, curl)
     if par is None:
+        if curl.caminho.startswith(_CAMINHOS_DO_BILLING):
+            return [f"{onde}: nenhuma rota do OpenAPI casa com o curl"]
         return []
     operacao = openapi["paths"][par[1]][par[0]]
-    onde = f"{curl.metodo} {curl.caminho}"
-    erros: list[str] = []
-    if "security" in operacao and "authorization" not in curl.cabecalhos:
-        erros.append(f"{onde}: rota protegida sem Authorization")
+    erros = _erros_de_acesso(openapi, par, curl, onde)
     if "requestBody" not in operacao:
         erros += [f"{onde}: corpo numa rota sem requestBody"] if curl.corpo else []
     elif curl.corpo is None:
@@ -807,12 +881,15 @@ def test_curl_sem_token_sem_content_type_ou_com_corpo_errado_reprova(
     servicos = "/api/v1/precos/servicos"
     corpo = '{"codigo": "srv-x", "nome": "x", "descricao": "y", "preco": "1.00"}'
     com_token = frozenset({"authorization"})
+    bearer = "Bearer $TOKEN"
 
     assert _erros_do_curl(openapi, Curl("POST", servicos, None)) == [
         f"POST {servicos}: rota protegida sem Authorization",
         f"POST {servicos}: rota com requestBody e curl sem corpo",
     ]
-    assert _erros_do_curl(openapi, Curl("POST", servicos, corpo, com_token)) == [
+    assert _erros_do_curl(
+        openapi, Curl("POST", servicos, corpo, com_token, "", bearer)
+    ) == [
         f"POST {servicos}: corpo sem Content-Type (a API responderia 422)",
         f"POST {servicos}: 'srv-x' does not match '^[A-Z0-9]+(?:-[A-Z0-9]+)*$'",
         f"POST {servicos}: o modelo CadastrarServicoRequest recusa codigo: "
@@ -827,6 +904,8 @@ def test_curl_sem_token_sem_content_type_ou_com_corpo_errado_reprova(
             servicos,
             '{"codigo": "SRV-X", "nome": "x", "descricao": "y", "preco": "abc"}',
             com_token | {"content-type"},
+            "",
+            bearer,
         ),
     ) == [
         f"POST {servicos}: o modelo CadastrarServicoRequest recusa preco: "
@@ -835,6 +914,101 @@ def test_curl_sem_token_sem_content_type_ou_com_corpo_errado_reprova(
     assert _erros_do_curl(openapi, Curl("GET", "/api/v1/saude", "{}")) == [
         "GET /api/v1/saude: corpo numa rota sem requestBody"
     ]
+
+
+_COM_TOKEN = frozenset({"authorization"})
+_BEARER = "Bearer $TOKEN"
+
+
+@pytest.mark.parametrize(
+    ("curl", "esperado"),
+    [
+        pytest.param(
+            Curl("GET", "/api/v1/orcamentos", None, _COM_TOKEN, "ordem=$O", _BEARER),
+            [
+                "GET /api/v1/orcamentos: query ordem que a rota nao declara",
+                "GET /api/v1/orcamentos: sem a query obrigatoria ordem_id",
+            ],
+            id="nome-da-query-trocado",
+        ),
+        pytest.param(
+            Curl("GET", "/api/v1/orcamentos", None, _COM_TOKEN, "", _BEARER),
+            ["GET /api/v1/orcamentos: sem a query obrigatoria ordem_id"],
+            id="query-obrigatoria-ausente",
+        ),
+        pytest.param(
+            Curl("GET", "/simulador/checkout/$P", None, frozenset(), "tok=$T"),
+            ["GET /simulador/checkout/$P: query tok que a rota nao declara"],
+            id="query-do-checkout-trocada",
+        ),
+        pytest.param(
+            Curl(
+                "POST",
+                "/api/v1/webhooks/mercadopago",
+                "{}",
+                frozenset({"content-type"}),
+                "tipo=x",
+            ),
+            [
+                "POST /api/v1/webhooks/mercadopago: query tipo que a rota nao declara",
+            ],
+            id="query-do-webhook-que-nao-existe",
+        ),
+        pytest.param(
+            Curl("GET", "/api/v1/pagamentos/$P", None, _COM_TOKEN, "", "Basic $TOKEN"),
+            [
+                "GET /api/v1/pagamentos/$P: Authorization 'Basic $TOKEN' "
+                "fora do esquema ['Bearer']"
+            ],
+            id="esquema-basic",
+        ),
+        pytest.param(
+            Curl("GET", "/api/v1/pagamentos/$P", None, _COM_TOKEN, "", "Bearer"),
+            [
+                "GET /api/v1/pagamentos/$P: Authorization 'Bearer' "
+                "fora do esquema ['Bearer']"
+            ],
+            id="bearer-sem-credencial",
+        ),
+        pytest.param(
+            Curl("GET", "/api/v1/pagamento/$P", None, _COM_TOKEN, "", _BEARER),
+            ["GET /api/v1/pagamento/$P: nenhuma rota do OpenAPI casa com o curl"],
+            id="caminho-sem-rota",
+        ),
+        pytest.param(
+            Curl("PATCH", "/api/v1/precos/pecas/$S", "{}", _COM_TOKEN, "", _BEARER),
+            ["PATCH /api/v1/precos/pecas/$S: nenhuma rota do OpenAPI casa com o curl"],
+            id="metodo-sem-rota",
+        ),
+        pytest.param(
+            Curl("POST", "/os/api/v1/autenticacao/login", "{}"),
+            [],
+            id="curl-de-outro-servico-fica-de-fora",
+        ),
+    ],
+)
+def test_curl_com_query_esquema_ou_rota_errados_reprova(
+    openapi: dict[str, Any], curl: Curl, esperado: list[str]
+) -> None:
+    assert _erros_do_curl(openapi, curl) == esperado
+
+
+def test_curl_com_o_type_do_webhook_e_o_esquema_bearer_passa(
+    openapi: dict[str, Any],
+) -> None:
+    webhook = Curl(
+        "POST",
+        "/api/v1/webhooks/mercadopago",
+        '{"type": "payment"}',
+        frozenset({"content-type", "x-signature"}),
+        "data.id=$REFERENCIA&type=payment",
+    )
+    atendente = Curl(
+        "GET", "/api/v1/orcamentos", None, _COM_TOKEN, "ordem_id=$O", _BEARER
+    )
+
+    assert _erros_do_curl(openapi, webhook) == []
+    assert _erros_do_curl(openapi, atendente) == []
 
 
 # docs/arquitetura.md e as referencias do README.
