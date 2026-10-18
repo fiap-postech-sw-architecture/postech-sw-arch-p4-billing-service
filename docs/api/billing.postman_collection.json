@@ -1021,7 +1021,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code === 200) pm.collectionVariables.set(\"orcamento_id\", pm.response.json()[0].id);"
+                  "if (pm.response.code === 200 && pm.response.json().length) pm.collectionVariables.set(\"orcamento_id\", pm.response.json()[0].id);"
                 ]
               }
             }

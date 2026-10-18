@@ -403,6 +403,18 @@ def _requisicao(
     return item
 
 
+def _condicao(status: int, campo: str) -> str:
+    """O status esperado e, no acesso por indice (``[0].id``), a lista nao vazia.
+
+    A lista vazia e resposta valida (a consulta do orcamento antes de ele nascer),
+    e ``[0].id`` nela levanta TypeError no script de teste.
+    """
+    condicao = f"pm.response.code === {status}"
+    if campo.startswith("["):
+        return f"{condicao} && pm.response.json().length"
+    return condicao
+
+
 def _script_de_teste(status: int, guarda: dict[str, str]) -> dict[str, Any]:
     """Guarda campos da resposta em variaveis da colecao, uma linha por variavel."""
     return {
@@ -410,7 +422,7 @@ def _script_de_teste(status: int, guarda: dict[str, str]) -> dict[str, Any]:
         "script": {
             "type": "text/javascript",
             "exec": [
-                f"if (pm.response.code === {status}) pm.collectionVariables.set("
+                f"if ({_condicao(status, campo)}) pm.collectionVariables.set("
                 f'"{variavel}", pm.response.json(){campo});'
                 for variavel, campo in guarda.items()
             ],

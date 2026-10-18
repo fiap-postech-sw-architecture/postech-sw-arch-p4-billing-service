@@ -242,7 +242,7 @@ _CORPO_JSON = {"key": "Content-Type", "value": "application/json"}
 # diz de onde cada um vem (README, Exemplos da API).
 _DE_FORA = ("token", "ordem_id", "pagamento_id", "token_do_link", "token_do_checkout")
 _GUARDA = re.compile(
-    r"if \(pm\.response\.code === (\d+)\) "
+    r"if \(pm\.response\.code === (\d+)( && pm\.response\.json\(\)\.length)?\) "
     r'pm\.collectionVariables\.set\("(\w+)", '
     r"pm\.response\.json\(\)((?:\[\d+\]|\.\w+)+)\);"
 )
@@ -272,10 +272,13 @@ def _guardadas(colecao: dict[str, Any]) -> tuple[set[str], list[str]]:
                 if achado is None:
                     erros.append(f"{onde}: script fora do molde de uma linha")
                     continue
-                status, variavel, acesso = achado.groups()
+                status, lista_conferida, variavel, acesso = achado.groups()
                 guardadas.add(variavel)
                 if int(status) != resposta["code"]:
                     erros.append(f"{onde}: o script espera {status}")
+                if "[" in acesso and not lista_conferida:
+                    # A lista vazia e resposta valida, e [0].id nela e TypeError.
+                    erros.append(f"{onde}: {acesso} sem conferir que a lista tem item")
                 corpo = str(resposta["body"])
                 if not corpo or not _acessa(json.loads(corpo), acesso):
                     erros.append(f"{onde}: {acesso} nao esta na resposta de exemplo")
@@ -385,6 +388,20 @@ def test_script_de_teste_com_status_ou_campo_que_a_resposta_nao_tem_e_apontado()
         "POST /api/v1/precos/pecas: .sku nao esta na resposta de exemplo",
         "POST /api/v1/precos/servicos: o script espera 201",
     ]
+
+
+def test_script_que_le_a_lista_sem_conferir_que_tem_item_e_apontado() -> None:
+    colecao = json.loads(COLECAO.read_text(encoding="utf-8"))
+    itens = {_par(item["request"]): item for item in _requisicoes(colecao)}
+    itens["get", "/api/v1/orcamentos"]["event"][0]["script"]["exec"] = [
+        'if (pm.response.code === 200) pm.collectionVariables.set("orcamento_id", '
+        "pm.response.json()[0].id);"
+    ]
+
+    guardadas, erros = _guardadas(colecao)
+
+    assert guardadas == {"codigo", "sku", "orcamento_id"}
+    assert erros == ["GET /api/v1/orcamentos: [0].id sem conferir que a lista tem item"]
 
 
 def _erros_do_exemplo(openapi: dict[str, Any], item: dict[str, Any]) -> list[str]:
