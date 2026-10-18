@@ -324,13 +324,13 @@ curl -sk "$BASE_URL/api/v1/pagamentos/$PAGAMENTO_ID" -H "Authorization: Bearer $
 
 ### Webhook do Mercado Pago
 
-O Mercado Pago avisa cada tentativa em `POST /api/v1/webhooks/mercadopago?data.id=<tentativa>&type=payment`, com o `x-signature` e o `x-request-id`. O corpo JSON é obrigatório, e só o `data.id` da query conta: o status vem da consulta ao provedor. A assinatura é o HMAC-SHA256, com o `MP_WEBHOOK_SECRET`, do manifesto `id:<data.id em minúsculas>;request-id:<x-request-id>;ts:<ts>;`. Sem a assinatura certa a resposta é 401, e sem o `MP_WEBHOOK_SECRET` no servidor, 503: no kind o Secret `billing-mercadopago` não existe, então a rota só responde 200 no compose, com a variável definida. Notificação sem `data.id`, de outro tipo ou de pagamento que o provedor não conhece responde 200 com `{"processado": false}`:
+O Mercado Pago avisa cada tentativa em `POST /api/v1/webhooks/mercadopago?data.id=<tentativa>&type=payment`, com o `x-signature` e o `x-request-id`. O corpo JSON é obrigatório, e só o `data.id` da query conta: o status vem da consulta ao provedor. A assinatura é o HMAC-SHA256, com o `MP_WEBHOOK_SECRET`, do manifesto `id:<data.id em minúsculas>;request-id:<x-request-id>;ts:<ts>;`; o bloco abaixo lê a chave da variável de ambiente, e não de um argumento, que ficaria na lista de processos. Sem a assinatura certa a resposta é 401, e sem o `MP_WEBHOOK_SECRET` no servidor, 503: no kind o Secret `billing-mercadopago` não existe, então a rota só responde 200 no compose, com a variável definida. Notificação sem `data.id`, de outro tipo ou de pagamento que o provedor não conhece responde 200 com `{"processado": false}`:
 
 ```bash
 export REFERENCIA=1234567890
 export TS=$(date +%s)
 export REQUISICAO=$(uuidgen | tr 'A-Z' 'a-z')
-export ASSINATURA=$(printf 'id:%s;request-id:%s;ts:%s;' "$REFERENCIA" "$REQUISICAO" "$TS" | openssl dgst -sha256 -hmac "$MP_WEBHOOK_SECRET" | sed 's/^.* //')
+export ASSINATURA=$(python3 -c 'import hashlib, hmac, os, sys; print(hmac.new(os.environ["MP_WEBHOOK_SECRET"].encode(), sys.argv[1].encode(), hashlib.sha256).hexdigest())' "id:$REFERENCIA;request-id:$REQUISICAO;ts:$TS;")
 curl -sk -X POST "$BASE_URL/api/v1/webhooks/mercadopago?data.id=$REFERENCIA&type=payment" \
   -H "x-signature: ts=$TS,v1=$ASSINATURA" -H "x-request-id: $REQUISICAO" \
   -H 'Content-Type: application/json' -d '{"type": "payment"}'
