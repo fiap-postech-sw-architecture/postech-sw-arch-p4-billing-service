@@ -13,8 +13,10 @@
 # comenta isso em cada PR.
 #
 # O que o Dependabot nao cobre e a versao ficou fixada de proposito, a ser
-# subida a mao: mongo e percona/mongodb_exporter em k8s/ e no compose (README,
-# Implantacao), trivy, gitleaks, pip-audit e diff-cover (Makefile e workflows).
+# subida a mao: mongo e percona/mongodb_exporter em k8s/ (README, Implantacao),
+# mongo e rabbitmq do compose e dos testes de integracao, o SonarQube do ci.yml
+# e o scanner de scripts/sonar, o trivy, o kubeconform, o pip-audit e o
+# diff-cover (Makefile e workflows) e o gitleaks (security.yml).
 version: 2
 
 updates:
@@ -54,7 +56,9 @@ updates:
       actions-patch-e-minor:
         update-types: ["minor", "patch"]
 
-  # Imagens base do Dockerfile (uv e python).
+  # Imagens das linhas FROM do Dockerfile: o uv do estagio builder
+  # (ghcr.io/astral-sh/uv) e o python do runtime. O Dependabot so le linhas
+  # FROM; um `COPY --from=<imagem>` ficaria de fora.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -69,10 +73,12 @@ updates:
       docker-patch-e-minor:
         update-types: ["minor", "patch"]
     # O Python sobe a mao, de uma vez em .python-version, UV_PYTHON e
-    # python-version dos workflows, requires-python do pyproject e nas duas
+    # python-version dos workflows, requires-python e python_version (mypy) do
+    # pyproject, sonar.python.version do sonar-project.properties e nas duas
     # imagens do Dockerfile: o venv do builder tem de rodar no Python do runtime.
     # Sem isto o 3.14 -> 3.15 chegaria como "minor", dentro do grupo acima, e
-    # trocaria so a imagem do runtime. O patch do Python segue automatico.
+    # trocaria so a imagem do runtime. O patch vem do rebuild da tag movel do
+    # runtime (python:3.14-slim-trixie), sem PR.
     ignore:
       - dependency-name: "python"
         update-types:
