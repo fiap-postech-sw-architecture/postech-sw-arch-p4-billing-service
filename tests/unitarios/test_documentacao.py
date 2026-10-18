@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 import re
 import shlex
@@ -25,6 +26,7 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 from opentelemetry.sdk.trace import TracerProvider
+from pydantic import ValidationError
 
 from src.banco import preparar_banco
 from src.compartilhado.infraestrutura.mensageria import contratos
@@ -143,6 +145,36 @@ def _fora_do_schema(
         format_checker=Draft202012Validator.FORMAT_CHECKER,
     )
     return [f"{onde}: {erro.message}" for erro in validador.iter_errors(valor)]
+
+
+# O JSON Schema que o Pydantic gera para o Decimal tem o pattern sem ancora no
+# fim ("abc" passa), entao o corpo tambem passa pelo modelo que a rota usa.
+_MODULOS_DOS_SCHEMAS = (
+    "src.precos.interfaces.schemas",
+    "src.orcamento.interfaces.schemas",
+    "src.pagamento.interfaces.schemas",
+)
+
+
+def _recusado_pelo_modelo(
+    declaracao: dict[str, Any], valor: object, onde: str
+) -> list[str]:
+    """Erros do modelo Pydantic do ``requestBody`` (o mesmo que a API aplica)."""
+    ref = declaracao["content"]["application/json"]["schema"]["$ref"]
+    nome = ref.rsplit("/", 1)[1]
+    [modelo] = [
+        getattr(modulo, nome)
+        for modulo in map(importlib.import_module, _MODULOS_DOS_SCHEMAS)
+        if hasattr(modulo, nome)
+    ]
+    try:
+        modelo.model_validate(valor)
+    except ValidationError as erro:
+        return [
+            f"{onde}: o modelo {nome} recusa {'.'.join(map(str, e['loc']))}: {e['msg']}"
+            for e in erro.errors()
+        ]
+    return []
 
 
 # docs/api: o OpenAPI e a colecao Postman.
@@ -363,10 +395,9 @@ def _erros_do_exemplo(openapi: dict[str, Any], item: dict[str, Any]) -> list[str
     onde = f"{metodo.upper()} {rota}"
     erros: list[str] = []
     if "requestBody" in operacao:
-        bruto = item["request"].get("body", {}).get("raw", "null")
-        erros += _fora_do_schema(
-            openapi, operacao["requestBody"], json.loads(bruto), onde
-        )
+        corpo = json.loads(item["request"].get("body", {}).get("raw", "null"))
+        erros += _fora_do_schema(openapi, operacao["requestBody"], corpo, onde)
+        erros += _recusado_pelo_modelo(operacao["requestBody"], corpo, onde)
     elif "body" in item["request"]:
         erros.append(f"{onde}: corpo numa rota sem requestBody")
     for resposta in item["response"]:
@@ -414,6 +445,10 @@ def test_exemplo_com_corpo_a_mais_ou_fora_do_schema_ou_do_formato_reprova(
         "POST /api/v1/precos/pecas: 'pec-minuscula' does not match "
         "'^[A-Z0-9]+(?:-[A-Z0-9]+)*$'",
         "POST /api/v1/precos/pecas: 'preco' is a required property",
+        "POST /api/v1/precos/pecas: o modelo CadastrarPecaRequest recusa preco: "
+        "Field required",
+        "POST /api/v1/precos/pecas: o modelo CadastrarPecaRequest recusa sku: "
+        "String should match pattern '^[A-Z0-9]+(?:-[A-Z0-9]+)*$'",
     ]
     assert sorted(_erros_do_exemplo(openapi, decisao)) == [
         "POST /api/v1/orcamentos/{}/decisao resposta: 'nao-e-uuid' is not a 'uuid'",
@@ -654,9 +689,9 @@ def _erros_do_curl(openapi: dict[str, Any], curl: Curl) -> list[str]:
     else:
         if "content-type" not in curl.cabecalhos:
             erros.append(f"{onde}: corpo sem Content-Type (a API responderia 422)")
-        erros += _fora_do_schema(
-            openapi, operacao["requestBody"], json.loads(curl.corpo), onde
-        )
+        corpo = json.loads(curl.corpo)
+        erros += _fora_do_schema(openapi, operacao["requestBody"], corpo, onde)
+        erros += _recusado_pelo_modelo(operacao["requestBody"], corpo, onde)
     return erros
 
 
@@ -685,6 +720,22 @@ def test_curl_sem_token_sem_content_type_ou_com_corpo_errado_reprova(
     assert _erros_do_curl(openapi, Curl("POST", servicos, corpo, com_token)) == [
         f"POST {servicos}: corpo sem Content-Type (a API responderia 422)",
         f"POST {servicos}: 'srv-x' does not match '^[A-Z0-9]+(?:-[A-Z0-9]+)*$'",
+        f"POST {servicos}: o modelo CadastrarServicoRequest recusa codigo: "
+        "String should match pattern '^[A-Z0-9]+(?:-[A-Z0-9]+)*$'",
+    ]
+    # O pattern que o Pydantic gera para o Decimal deixa "abc" passar no JSON
+    # Schema; so o modelo da rota o recusa.
+    assert _erros_do_curl(
+        openapi,
+        Curl(
+            "POST",
+            servicos,
+            '{"codigo": "SRV-X", "nome": "x", "descricao": "y", "preco": "abc"}',
+            com_token | {"content-type"},
+        ),
+    ) == [
+        f"POST {servicos}: o modelo CadastrarServicoRequest recusa preco: "
+        "Input should be a valid decimal"
     ]
     assert _erros_do_curl(openapi, Curl("GET", "/api/v1/saude", "{}")) == [
         "GET /api/v1/saude: corpo numa rota sem requestBody"
