@@ -3,9 +3,10 @@
 # abre PR proprio, para ser lido com o changelog.
 #
 # O limite de 3 PRs abertos vale ate o congelamento do codigo em 06/11/2026.
-# Depois dele, trocar `open-pull-requests-limit` por 0 nos tres blocos: o 0
-# desliga so as atualizacoes de versao; os PRs de seguranca do Dependabot
-# (habilitados no repositorio) nao entram no limite e seguem abrindo.
+# Depois dele, trocar `open-pull-requests-limit` por 0 nos tres blocos (e o 3
+# do teste em tests/unitarios/test_scripts_ci.py): o 0 desliga so as
+# atualizacoes de versao; os PRs de seguranca do Dependabot (habilitados no
+# repositorio) nao entram no limite e seguem abrindo.
 #
 # Sem `labels`: os PRs levam os rotulos padrao do Dependabot (`dependencies` e o
 # do ecossistema), que ele cria no repositorio se faltarem. Com `labels`

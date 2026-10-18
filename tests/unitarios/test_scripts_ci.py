@@ -325,8 +325,9 @@ def test_dependabot_tem_agenda_prefixo_grupos_e_ignore_de_cada_bloco() -> None:
             ],
         }
     ]
-    # Um grupo por nome (o do OpenTelemetry) ficaria vazio: o Dependabot prefere
-    # o de update-types, entao cada bloco tem so o de patch e minor.
+    # Um grupo por nome (o do OpenTelemetry) ficaria vazio: no job real os
+    # opentelemetry-* sairam dele para o de update-types ("belongs to more
+    # specific group"), entao cada bloco tem so o de patch e minor.
     esperado = {
         "uv": ("chore(deps)", {"python-patch-e-minor": patch_e_minor}, []),
         "github-actions": ("ci", {"actions-patch-e-minor": patch_e_minor}, []),
