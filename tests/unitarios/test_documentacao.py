@@ -17,8 +17,11 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import os
 import re
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -60,6 +63,7 @@ from tests.factories import (
     pagamento,
     situacao,
 )
+from tests.unitarios.test_cobertura_resumo import XML_DOS_CONTEXTOS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1377,6 +1381,78 @@ def test_link_de_outro_repositorio_na_secao_de_cobertura_e_apontado(
 
     with pytest.raises(AssertionError, match="sem o link do run do CI"):
         _secao_de_cobertura(cobertura, texto.replace(secao, de_outro))
+
+
+@pytest.mark.parametrize(
+    "run",
+    ["", "abc", "../1", "12 34", "1;ls"],
+    ids=["vazio", "texto", "caminho", "espaco", "comando"],
+)
+def test_make_cobertura_readme_so_aceita_o_id_numerico_do_run(run: str) -> None:
+    resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
+        ["make", "--no-print-directory", "cobertura-readme", f"RUN={run}"],  # noqa: S607
+        cwd=RAIZ,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert resultado.returncode == 2
+    assert "RUN=<CI run id, digits only> is required" in resultado.stderr
+    assert not (RAIZ / "reports" / f"ci-{run}").exists()
+
+
+def test_make_cobertura_readme_baixa_o_artefato_do_run_e_reescreve_a_secao(
+    tmp_path: Path,
+) -> None:
+    for caminho in ("Makefile", "scripts/cobertura_resumo.py"):
+        (tmp_path / caminho).parent.mkdir(exist_ok=True)
+        (tmp_path / caminho).write_bytes((RAIZ / caminho).read_bytes())
+    (tmp_path / "README.md").write_text(
+        "# Servico\n<!-- cobertura:inicio -->\nvelha\n<!-- cobertura:fim -->\n",
+        encoding="utf-8",
+    )
+    # O gh de mentira grava o coverage.xml no destino do -D e anota os argumentos.
+    (tmp_path / "bin").mkdir()
+    gh = tmp_path / "bin" / "gh"
+    gh.write_text(
+        '#!/bin/sh\necho "$@" > gh-args\nmkdir -p "$7"\n'
+        + "cat > \"$7/coverage.xml\" <<'XML'\n"
+        + XML_DOS_CONTEXTOS
+        + "XML\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    (tmp_path / "bin" / "python").symlink_to(sys.executable)
+
+    comando = ["make", "--no-print-directory", "cobertura-readme", "RUN=123"]
+    resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
+        [*comando, "PY=env"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env={**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"},
+    )
+
+    assert resultado.returncode == 0, resultado.stderr
+    assert (tmp_path / "gh-args").read_text().split() == [
+        "run",
+        "download",
+        "123",
+        "-n",
+        "relatorios-de-teste",
+        "-D",
+        "reports/ci-123",
+    ]
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "velha" not in readme
+    assert (
+        "[run 123 do CI](https://github.com/fiap-postech-sw-architecture/"
+        "postech-sw-arch-p4-billing-service/actions/runs/123)"
+    ) in readme
 
 
 def test_gate_do_readme_e_o_do_coveragerc_e_o_do_makefile() -> None:

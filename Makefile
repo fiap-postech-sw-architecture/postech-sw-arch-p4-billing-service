@@ -98,7 +98,8 @@ docs-api:
 CI_RUNS := https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs
 
 cobertura-readme:
-	@test -n "$(RUN)" || { echo "cobertura-readme: RUN=<CI run id> is required" >&2; exit 2; }
+	@printf '%s' "$(RUN)" | grep -Eq '^[0-9]+$$' \
+		|| { echo "cobertura-readme: RUN=<CI run id, digits only> is required" >&2; exit 2; }
 	rm -rf reports/ci-$(RUN)
 	gh run download $(RUN) -n relatorios-de-teste -D reports/ci-$(RUN)
 	$(PY) python scripts/cobertura_resumo.py reports/ci-$(RUN)/coverage.xml \
