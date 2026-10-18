@@ -368,15 +368,37 @@ make mutacao
 make mutacao MUTANTES="D06 R03"
 ```
 
-O alvo para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900) e escreve a tabela em `reports/mutacao.md`. Antes do primeiro mutante de cada grupo de testes, o script roda o grupo na cópia sem mutante: se ele já reprova (ou estoura o tempo), os mutantes do grupo saem `erro`, porque um teste que já falha mataria qualquer um. O comando sai com 2 se um id de `MUTANTES` não existir (a mensagem lista os válidos) ou se o `.toml` não bater com o código, e com 1 se algum mutante sair `erro` (medida inválida, como o Docker fora); sobrevivente não reprova, porque não há gate (ADR-041). Com `erro` ou `nao rodado` o percentual vira `n/d`. Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container. Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo) e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
+Como o alvo se comporta:
+
+- Para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900); os que sobram saem `nao rodado`. A tabela vai para `reports/mutacao.md`.
+- Antes do primeiro mutante de cada grupo de testes, roda o grupo na cópia sem mutante. Se o grupo já reprova ou estoura o tempo, os mutantes dele saem `erro`: um teste que já falha mataria qualquer um.
+- Com `erro` ou `nao rodado`, o percentual vira `n/d`.
+- Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container.
+- O script lê o arquivo original de `src/` a cada mutante: não edite `src/` com a bateria rodando.
+- Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo), e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
+
+Códigos de saída:
+
+- `0`: nenhum mutante saiu `erro`. Sobrevivente e `nao rodado` não reprovam, porque não há gate (ADR-041).
+- `1`: algum mutante saiu `erro`, uma medida inválida, como o Docker fora.
+- `2`: um id de `MUTANTES` não existe (a mensagem lista os válidos) ou o `.toml` não bate com o código.
 
 **Para outro serviço:** copie `scripts/mutacao_manual.py` e o alvo `mutacao` do Makefile para o repositório dele (o script é o mesmo nos três serviços). Troque a tabela `[config]` do `scripts/mutantes.toml` (o que vai para a cópia `mutants/`), os grupos de `[testes]` e os `[[mutante]]`. Antes de começar, o script recusa trecho ausente ou repetido.
 
 ## Dependências automatizadas
 
-O Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) abre pull requests uma vez por semana, às segundas às 06:00 (São Paulo), para três ecossistemas: `pyproject.toml` e `uv.lock` (uv), as actions dos workflows e as imagens base do `Dockerfile`. Patch e minor de cada ecossistema chegam agrupados num PR só, major abre PR próprio para ser lido com o changelog, e há no máximo 3 abertos por ecossistema. O commit usa o prefixo `chore(deps)` (`ci` nas actions, como no OS) e os rótulos `dependencies` e o do ecossistema (`python`, `github_actions`, `docker`). As bibliotecas `opentelemetry-*` formam um grupo próprio, com a major incluída: o SDK fixa `opentelemetry-api` e `opentelemetry-semantic-conventions` na mesma versão e cada instrumentação fixa a sua, então subir só uma parte não resolve e a família inteira vai num PR só. O SDK e o exportador têm teto `<1.46` no `pyproject.toml` (como o OS), porque `mensageria/telemetria.py` troca `_status` e `_events` de um span, atributos privados do SDK que um minor novo pode mudar. Cada PR passa pelos mesmos 9 checks do CI, inclusive o `pip-audit`, o trivy e o gate de cobertura. O Python é a exceção no bloco do Docker: major e minor ficam de fora (o patch segue), porque a versão sobe à mão de uma vez em `.python-version`, `UV_PYTHON` e `python-version` dos workflows, `requires-python` e nas duas imagens do `Dockerfile`; sem isso o 3.14 → 3.15 chegaria como "minor" e trocaria só a imagem do runtime.
+O Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) abre pull requests para três ecossistemas: `pyproject.toml` e `uv.lock` (uv), as actions dos workflows e as imagens base do `Dockerfile`.
 
-Depois do congelamento do código em 06/11/2026, o `open-pull-requests-limit` de cada bloco passa de 3 para 0. O 0 desliga só as atualizações de versão: os PRs de segurança do Dependabot, habilitados no repositório, não entram no limite e seguem abrindo. Sobem à mão, porque o Dependabot não os enxerga ou a versão está fixada de propósito: `mongo` e `percona/mongodb_exporter` (a cada release do serviço, junto da tabela do `platform`, seção [Implantação](#implantação)), o trivy, o gitleaks, o pip-audit, o diff-cover e o RabbitMQ do compose.
+- **Agenda:** uma vez por semana, às segundas às 06:00 (São Paulo), com no máximo 3 PRs abertos por ecossistema.
+- **Grupos:** patch e minor de cada ecossistema chegam juntos num PR. Major abre PR próprio, para ser lido com o changelog.
+- **Commit e rótulos:** prefixo `chore(deps)`, ou `ci` nas actions (como no OS). O arquivo não declara `labels`: os PRs levam os rótulos padrão do Dependabot (`dependencies` e o do ecossistema), que ele cria no repositório se faltarem. Com `labels` explícito, rótulo que não existe no repositório é ignorado e o Dependabot comenta isso em cada PR.
+- **OpenTelemetry:** as bibliotecas `opentelemetry-*` sobem juntas no grupo de patch e minor do uv. O SDK fixa `opentelemetry-api` e `opentelemetry-semantic-conventions` na mesma versão e cada instrumentação fixa a sua, então subir só uma parte não resolve. Um grupo só delas ficaria vazio, porque o Dependabot o trata como menos específico que o de patch e minor.
+- **Teto do OpenTelemetry:** a major da família fica fora, atrás do teto do `pyproject.toml`: `<1.46` no SDK e no exportador e `<0.67` nas instrumentações. O SDK tem teto porque `mensageria/telemetria.py` troca `_status` e `_events` de um span, atributos privados que um minor novo pode mudar.
+- **Docker:** o Dependabot só lê as linhas `FROM` do `Dockerfile`. O uv entra por `FROM ghcr.io/astral-sh/uv:... AS builder`, então sobe pelo bloco do Docker, junto da imagem do Python do runtime. Se o uv passasse a entrar por `COPY --from=<imagem>`, o Dependabot deixaria de vê-lo.
+- **Python:** no bloco do Docker, major e minor do Python ficam de fora. A versão sobe à mão, de uma vez, em `.python-version`, `UV_PYTHON` e `python-version` dos workflows, `requires-python` e `python_version` (mypy) do `pyproject.toml`, `sonar.python.version` do `sonar-project.properties` e nas duas imagens do `Dockerfile`. Sem isso, o 3.14 → 3.15 chegaria como "minor" e trocaria só a imagem do runtime. O patch não passa pelo Dependabot: vem do rebuild da tag móvel `python:3.14-slim-trixie`.
+- **Checks:** cada PR passa pelos mesmos 9 checks do CI e da varredura de segurança, inclusive o `pip-audit`, o trivy e o gate de cobertura.
+
+Depois do congelamento do código em 06/11/2026, o `open-pull-requests-limit` de cada bloco passa de 3 para 0. O 0 desliga só as atualizações de versão: os PRs de segurança do Dependabot, habilitados no repositório, não entram no limite e seguem abrindo. Sobem à mão, porque o Dependabot não os enxerga ou a versão está fixada de propósito: `mongo` e `percona/mongodb_exporter` (a cada release do serviço, junto da tabela do `platform`, seção [Implantação](#implantação)), o `mongo` e o RabbitMQ do compose e dos testes de integração, o SonarQube do `ci.yml` e o scanner de `scripts/sonar`, o trivy, o kubeconform, o gitleaks, o pip-audit e o diff-cover.
 
 ## Implantação
 
