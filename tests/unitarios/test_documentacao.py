@@ -1690,15 +1690,23 @@ def test_make_cobertura_readme_so_aceita_o_id_numerico_do_run(run: str) -> None:
         "1'; touch {marca}; echo '",
         "`touch {marca}`",
         "$$(touch {marca})",
+        "$(shell touch {marca})",
         "1\ntouch {marca}",
     ],
-    ids=["aspas", "aspa-simples", "crase", "substituicao", "quebra-de-linha"],
+    ids=[
+        "aspas",
+        "aspa-simples",
+        "crase",
+        "substituicao",
+        "funcao-do-make",
+        "quebra-de-linha",
+    ],
 )
 def test_make_cobertura_readme_recusa_o_run_sem_executar_o_que_vem_nele(
     molde: str, tmp_path: Path
 ) -> None:
-    # O valor chega ao shell como texto do ambiente: o que vem dentro das aspas
-    # ou da crase nao roda nem antes de o alvo recusar o RUN.
+    # O valor chega ao shell como texto do ambiente: o que vem dentro das aspas,
+    # da crase ou de uma funcao do make nao roda nem antes de o alvo recusar o RUN.
     marca = tmp_path / "executou"
     resultado = subprocess.run(  # noqa: S603 - o Makefile do proprio repositorio
         [  # noqa: S607

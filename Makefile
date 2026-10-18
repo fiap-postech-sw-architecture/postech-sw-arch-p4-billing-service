@@ -97,7 +97,10 @@ docs-api:
 # ci.yml); o gh baixa o artefato em reports/ci-<id>. O RUN vai ao shell pelo
 # ambiente ("$RUN" na receita), e nao colado no texto do comando: aspas ou crase
 # nele rodariam antes de o case recusar o valor (que tambem recusa a quebra de linha).
+# Uma funcao do make (RUN='$(shell ...)') rodaria ao exportar a variavel: o $(value)
+# a guarda como texto.
 CI_RUNS := https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs
+override RUN := $(value RUN)
 export RUN
 
 cobertura-readme:
