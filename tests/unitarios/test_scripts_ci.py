@@ -1,8 +1,9 @@
 """Scripts do CI (``scripts/ci/``): a conferencia que estreita a excecao do
 trivy (KSV-0109) ao ConfigMap do ``replica-set.js`` e o relatorio das imagens
 de terceiros, que nunca reprova o job, o registro da saida do pip-audit e do
-trivy no summary, o formato das entradas do ``.gitleaksignore`` e os nomes das
-variaveis do ``make kind-deploy``."""
+trivy no summary, o formato das entradas do ``.gitleaksignore``, os nomes das
+variaveis do ``make kind-deploy``, a guarda de frescor do ``make diff-cover`` e
+o ``dependabot.yml``."""
 
 from __future__ import annotations
 
@@ -300,6 +301,53 @@ def test_o_security_yml_registra_o_pip_audit_e_o_trivy_no_summary(
     assert len(comandos) == 1
     assert comandos[0].startswith("scripts/ci/registra-no-summary.sh ")
     assert titulo in comandos[0].split(ferramenta)[0]
+
+
+def test_dependabot_tem_agenda_prefixo_grupos_e_ignore_de_cada_bloco() -> None:
+    config = yaml.safe_load(
+        (RAIZ / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    )
+    blocos = {bloco["package-ecosystem"]: bloco for bloco in config["updates"]}
+    agenda = {
+        "interval": "weekly",
+        "day": "monday",
+        "time": "06:00",
+        "timezone": "America/Sao_Paulo",
+    }
+    patch_e_minor = {"update-types": ["minor", "patch"]}
+    # O Python sobe a mao; o uv do builder (um FROM) sobe pelo Dependabot, sem ignore.
+    so_patch_do_python = [
+        {
+            "dependency-name": "python",
+            "update-types": [
+                "version-update:semver-major",
+                "version-update:semver-minor",
+            ],
+        }
+    ]
+    # Um grupo por nome (o do OpenTelemetry) ficaria vazio: o Dependabot prefere
+    # o de update-types, entao cada bloco tem so o de patch e minor.
+    esperado = {
+        "uv": ("chore(deps)", {"python-patch-e-minor": patch_e_minor}, []),
+        "github-actions": ("ci", {"actions-patch-e-minor": patch_e_minor}, []),
+        "docker": (
+            "chore(deps)",
+            {"docker-patch-e-minor": patch_e_minor},
+            so_patch_do_python,
+        ),
+    }
+
+    assert set(blocos) == set(esperado)
+    for nome, (prefixo, grupos, ignore) in esperado.items():
+        bloco = blocos[nome]
+        assert bloco["directory"] == "/", nome
+        assert bloco["schedule"] == agenda, nome
+        assert bloco["open-pull-requests-limit"] == 3, nome
+        assert bloco["commit-message"] == {"prefix": prefixo}, nome
+        assert bloco["groups"] == grupos, nome
+        assert bloco.get("ignore", []) == ignore, nome
+        # Rotulo declarado e inexistente no repositorio vira comentario em cada PR.
+        assert "labels" not in bloco, nome
 
 
 PADRAO = "../postech-sw-arch-p4-platform"
