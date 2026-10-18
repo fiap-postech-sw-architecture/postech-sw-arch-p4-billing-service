@@ -130,17 +130,20 @@ def test_rodar_um_traduz_a_saida_do_pytest_em_resultado(
     assert (copia / "calculadora.py").read_text(encoding="utf-8") == _CALCULADORA
 
 
-def test_rodar_um_conta_o_tempo_esgotado_como_morto(
-    copia: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def teste_lento(copia: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, ...]:
+    """Grupo com um teste que dorme 30 s na copia, e o limite de um mutante em 1 s."""
     (copia / "tests" / "test_lento.py").write_text(
         "import time\n\n\ndef test_lento():\n    time.sleep(30)\n", encoding="utf-8"
     )
     monkeypatch.setattr(mutacao_manual, "LIMITE_DE_UM_MUTANTE_SEGUNDOS", 1)
+    return ("tests/test_lento.py",)
 
-    resultado = mutacao_manual._rodar_um(
-        _mutante("return x * 3", testes=("tests/test_lento.py",))
-    )
+
+def test_rodar_um_conta_o_tempo_esgotado_como_morto(
+    copia: Path, teste_lento: tuple[str, ...]
+) -> None:
+    resultado = mutacao_manual._rodar_um(_mutante("return x * 3", testes=teste_lento))
 
     assert resultado == ("morto", "(tempo esgotado)")
     assert (copia / "calculadora.py").read_text(encoding="utf-8") == _CALCULADORA
@@ -185,15 +188,10 @@ def test_grupo_que_ja_falha_na_copia_limpa_nao_mata_ninguem(
 
 
 def test_grupo_que_estoura_o_tempo_na_copia_limpa_sai_como_erro(
-    copia: Path, monkeypatch: pytest.MonkeyPatch
+    teste_lento: tuple[str, ...],
 ) -> None:
-    (copia / "tests" / "test_lento.py").write_text(
-        "import time\n\n\ndef test_lento():\n    time.sleep(30)\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(mutacao_manual, "LIMITE_DE_UM_MUTANTE_SEGUNDOS", 1)
-
     (linha,) = mutacao_manual.executar(
-        (_mutante("return x * 3", testes=("tests/test_lento.py",)),), 600
+        (_mutante("return x * 3", testes=teste_lento),), 600
     )
 
     assert (linha["resultado"], linha["teste"]) == (
