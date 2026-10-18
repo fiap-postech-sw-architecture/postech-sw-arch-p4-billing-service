@@ -533,7 +533,9 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
   - corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`);
   - expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`);
   - leeway de 10 s do `exp` do JWT (J12): `test_leeway_de_10_segundos_no_exp` cerca o valor entre 9 e 12 s e `test_leeway_e_o_do_contrato_com_o_os_service` o fixa.
-- **Equivalentes:** o teto exato do `Dinheiro` (a checagem seguinte, depois do arredondamento, recusa do mesmo jeito) e `HS256` na lista de algoritmos do JWKS (o PyJWT recusa HS256 com uma chave RS256 do JWKS mesmo assim). Cada um traz o motivo no campo `equivalente` do `mutantes.toml`.
+- **Equivalentes**, cada um com a condição em que vale no campo `equivalente` do `mutantes.toml`:
+  - D01, o teto exato do `Dinheiro` (`>=` virando `>`): só para +10^10, que a checagem seguinte, depois do arredondamento, recusa com a mesma mensagem. Para -10^10 a recusa é a mesma exceção, mas a mensagem muda, de "acima de 10 dígitos inteiros" para "Valor nao pode ser negativo", e nenhum teste confere a mensagem desse caso.
+  - J01, `HS256` na lista de algoritmos do JWKS: equivale no resultado (o token segue dando 401, só muda o texto do erro do PyJWT, que a API não usa), e só enquanto valem duas condições: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o `decode` com um `PyJWK` recusa `Token algorithm 'HS256' does not match the key's algorithm 'RS256'`) e o validador passa um `PyJWK` ao `decode`. Sem elas, a lista `RS256` seria a única barreira, e nenhum teste a prende.
 - **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 65 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
 
 Para refazer:
