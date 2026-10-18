@@ -7,6 +7,11 @@
 # desliga so as atualizacoes de versao; os PRs de seguranca do Dependabot
 # (habilitados no repositorio) nao entram no limite e seguem abrindo.
 #
+# Sem `labels`: os PRs levam os rotulos padrao do Dependabot (`dependencies` e o
+# do ecossistema), que ele cria no repositorio se faltarem. Com `labels`
+# explicito, rotulo que nao existe no repositorio e ignorado, e o Dependabot
+# comenta isso em cada PR.
+#
 # O que o Dependabot nao cobre e a versao ficou fixada de proposito, a ser
 # subida a mao: mongo e percona/mongodb_exporter em k8s/ e no compose (README,
 # Implantacao), trivy, gitleaks, pip-audit e diff-cover (Makefile e workflows).
@@ -22,7 +27,6 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 3
-    labels: ["dependencies", "python"]
     commit-message:
       prefix: "chore(deps)"
     groups:
@@ -44,7 +48,6 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 3
-    labels: ["dependencies", "github_actions"]
     commit-message:
       prefix: "ci"
     groups:
@@ -60,7 +63,6 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 3
-    labels: ["dependencies", "docker"]
     commit-message:
       prefix: "chore(deps)"
     groups:
