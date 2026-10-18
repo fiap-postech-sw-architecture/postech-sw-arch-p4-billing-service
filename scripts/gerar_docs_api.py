@@ -74,15 +74,10 @@ VARIAVEIS = {
     "codigo": "SRV-LIMPEZA-INJETORES",
     "sku": "PEC-CORREIA-DENTADA",
 }
-# Valores que a API do Billing nao devolve em nenhuma resposta: a colecao os
-# declara na descricao e nao os guarda.
-VARIAVEIS_DE_FORA = (
-    "token",
-    "ordem_id",
-    "pagamento_id",
-    "token_do_link",
-    "token_do_checkout",
-)
+# token, ordem_id, pagamento_id, token_do_link e token_do_checkout nao saem de
+# resposta nenhuma da API do Billing: a DESCRICAO diz de onde vem cada um.
+# codigo, sku e orcamento_id sao guardados por script de teste (`guarda`, em
+# EXEMPLOS).
 # O parametro `token` do caminho publico e o do link de decisao; `{{token}}` e o
 # bearer da colecao.
 PARAMETRO_DA_ROTA = {"token": "token_do_link"}
