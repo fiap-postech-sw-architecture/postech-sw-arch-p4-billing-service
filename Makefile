@@ -9,7 +9,7 @@ COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
 	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed \
-	docs-api
+	docs-api cobertura-readme
 
 install:
 	uv sync --frozen
@@ -90,6 +90,19 @@ mutacao:
 # atras do codigo (tests/unitarios/test_documentacao.py).
 docs-api:
 	$(PY) python scripts/gerar_docs_api.py
+
+# A secao Cobertura do README sai do coverage.xml de um run do CI (o artefato
+# relatorios-de-teste do job test), com o link dele, e nunca e digitada: o make
+# test reprova a tabela editada a mao. RUN=<id do run> (gh run list --workflow
+# ci.yml); o gh baixa o artefato em reports/ci-<id>.
+CI_RUNS := https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs
+
+cobertura-readme:
+	@test -n "$(RUN)" || { echo "cobertura-readme: RUN=<CI run id> is required" >&2; exit 2; }
+	rm -rf reports/ci-$(RUN)
+	gh run download $(RUN) -n relatorios-de-teste -D reports/ci-$(RUN)
+	$(PY) python scripts/cobertura_resumo.py reports/ci-$(RUN)/coverage.xml \
+		--readme README.md --run $(CI_RUNS)/$(RUN)
 
 check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"
