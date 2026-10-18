@@ -206,7 +206,7 @@ def _reescrever_readme(xml: Path, readme: Path, url_do_run: str) -> int:
         secao = secao_do_readme(medir(xml), url_do_run)
         texto = atualizar_readme(readme.read_text(encoding="utf-8"), secao)
         readme.write_text(texto, encoding="utf-8")
-    except (ValueError, ElementTree.ParseError) as erro:
+    except (OSError, ValueError, ElementTree.ParseError) as erro:
         print(erro, file=sys.stderr)
         return 1
     print(f"{readme}: secao Cobertura reescrita a partir de {xml}")

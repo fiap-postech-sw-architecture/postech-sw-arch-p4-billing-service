@@ -337,6 +337,42 @@ def test_coverage_ausente_reprova_a_reescrita_com_uma_linha_e_sem_traceback(
     assert readme.read_text(encoding="utf-8") == antes
 
 
+@pytest.mark.parametrize("quebra", ["ausente", "diretorio", "binario"])
+def test_readme_ausente_ilegivel_ou_que_nao_e_texto_reprova_com_uma_linha(
+    script: ModuleType,
+    xml: Path,
+    tmp_path: Path,
+    quebra: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    readme = tmp_path / "README.md"
+    if quebra == "diretorio":
+        readme.mkdir()
+    elif quebra == "binario":
+        readme.write_bytes(b"\xff\xfe# Servico\n")
+
+    assert script.main(_argv(xml, readme)) == 1
+
+    erro = capsys.readouterr().err
+    assert erro.count("\n") == 1
+    assert "Traceback" not in erro
+
+
+def test_coverage_que_e_um_diretorio_reprova_a_reescrita_sem_traceback(
+    script: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    readme = _readme(
+        tmp_path, f"{script.MARCADOR_INICIO}\nvelha\n{script.MARCADOR_FIM}"
+    )
+    antes = readme.read_text(encoding="utf-8")
+    diretorio = tmp_path / "coverage.xml"
+    diretorio.mkdir()
+
+    assert script.main(_argv(diretorio, readme)) == 1
+    assert capsys.readouterr().err.count("\n") == 1
+    assert readme.read_text(encoding="utf-8") == antes
+
+
 def test_coverage_que_nao_e_xml_reprova_a_reescrita_sem_traceback(
     script: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
