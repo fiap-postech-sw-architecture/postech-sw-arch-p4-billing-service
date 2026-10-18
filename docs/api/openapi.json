@@ -1,0 +1,2683 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PytStop Billing Service",
+    "description": "Tabela de precos, orcamento e pagamento (Mercado Pago) do PytStop. Erros no envelope {erro: {codigo, mensagem, id_requisicao}}.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/saude": {
+      "get": {
+        "tags": [
+          "saude"
+        ],
+        "summary": "Liveness (processo atende) e modo do pagamento",
+        "description": "Responde 200 quando o processo atende, com o ``MP_MODE`` em uso.\n\n``async`` de proposito (licao do p3): roda no event loop, fora do\nthreadpool das rotas sync, e responde mesmo com o pool saturado. Nao\nconsulta o MongoDB: uma queda do banco nao deve reiniciar os pods. O modo\ndeixa visivel quando o simulador esta ligado (ADR-040).",
+        "operationId": "saude_api_v1_saude_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Saude Api V1 Saude Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/saude/pronto": {
+      "get": {
+        "tags": [
+          "saude"
+        ],
+        "summary": "Readiness: MongoDB responde e esta preparado",
+        "description": "Ping e versao do banco em ate 2 s; 503 tira o pod do Service.",
+        "operationId": "pronto_api_v1_saude_pronto_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Pronto Api V1 Saude Pronto Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "MongoDB fora do ar ou nao preparado."
+          }
+        }
+      }
+    },
+    "/api/v1/precos/servicos": {
+      "post": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Cadastra o preco de um servico (admin)",
+        "operationId": "cadastrar_servico_api_v1_precos_servicos_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CadastrarServicoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Codigo ja cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Lista os precos de servicos (paginado)",
+        "operationId": "listar_servicos_api_v1_precos_servicos_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 0,
+              "description": "Itens a pular (ate 1.000.000)",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Itens a pular (ate 1.000.000)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicoListaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/precos/servicos/{codigo}": {
+      "get": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Consulta o preco de um servico",
+        "operationId": "obter_servico_api_v1_precos_servicos__codigo__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "codigo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Codigo"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Codigo nao cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Atualiza nome, descricao, preco e situacao de um servico (admin)",
+        "operationId": "atualizar_servico_api_v1_precos_servicos__codigo__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "codigo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Codigo"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AtualizarServicoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Codigo nao cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Desativa um servico (admin); orcamentos ja gerados nao mudam",
+        "operationId": "desativar_servico_api_v1_precos_servicos__codigo__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "codigo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Codigo"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Codigo nao cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/precos/pecas": {
+      "post": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Cadastra o preco de uma peca (admin)",
+        "operationId": "cadastrar_peca_api_v1_precos_pecas_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CadastrarPecaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PecaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SKU ja cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Lista os precos de pecas (paginado)",
+        "operationId": "listar_pecas_api_v1_precos_pecas_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 0,
+              "description": "Itens a pular (ate 1.000.000)",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Itens a pular (ate 1.000.000)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PecaListaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/precos/pecas/{sku}": {
+      "get": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Consulta o preco de uma peca",
+        "operationId": "obter_peca_api_v1_precos_pecas__sku__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sku",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sku"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PecaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SKU nao cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Atualiza nome, preco e situacao de uma peca (admin)",
+        "operationId": "atualizar_peca_api_v1_precos_pecas__sku__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sku",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sku"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AtualizarPecaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PecaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SKU nao cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Desativa uma peca (admin); orcamentos ja gerados nao mudam",
+        "operationId": "desativar_peca_api_v1_precos_pecas__sku__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sku",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sku"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SKU nao cadastrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/precos/validacao": {
+      "post": {
+        "tags": [
+          "precos"
+        ],
+        "summary": "Valida codigos de servicos e skus de pecas (Execucao -> Billing)",
+        "description": "Devolve os codigos inexistentes ou inativos; lista vazia = todos validos.",
+        "operationId": "validar_itens_api_v1_precos_validacao_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidacaoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidacaoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/orcamentos/{orcamento_id}": {
+      "get": {
+        "tags": [
+          "orcamentos"
+        ],
+        "summary": "Consulta um orcamento",
+        "operationId": "obter_orcamento_api_v1_orcamentos__orcamento_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "orcamento_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Orcamento Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrcamentoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Orcamento nao encontrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orcamentos": {
+      "get": {
+        "tags": [
+          "orcamentos"
+        ],
+        "summary": "Lista o orcamento de uma ordem de servico (0 ou 1)",
+        "operationId": "listar_por_ordem_api_v1_orcamentos_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "ordem_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Ordem Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrcamentoResponse"
+                  },
+                  "title": "Response Listar Por Ordem Api V1 Orcamentos Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orcamentos/{orcamento_id}/decisao": {
+      "post": {
+        "tags": [
+          "orcamentos"
+        ],
+        "summary": "Aprova ou recusa o orcamento em nome do cliente (atendente)",
+        "operationId": "decidir_por_atendente_api_v1_orcamentos__orcamento_id__decisao_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "orcamento_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Orcamento Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisaoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrcamentoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Orcamento nao encontrado."
+          },
+          "409": {
+            "description": "Orcamento ja decidido, cancelado ou expirado."
+          },
+          "410": {
+            "description": "Prazo de decisao esgotado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/publico/orcamentos/{token}": {
+      "get": {
+        "tags": [
+          "publico"
+        ],
+        "summary": "Consulta o orcamento pelo link enviado ao cliente",
+        "operationId": "consultar_pelo_link_api_v1_publico_orcamentos__token__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrcamentoPublicoResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Link invalido, expirado ou ja utilizado (mesma resposta para todos)."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/publico/orcamentos/{token}/decisao": {
+      "post": {
+        "tags": [
+          "publico"
+        ],
+        "summary": "Aprova ou recusa o orcamento pelo link enviado ao cliente",
+        "operationId": "decidir_pelo_link_api_v1_publico_orcamentos__token__decisao_post",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisaoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrcamentoPublicoResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Link invalido, expirado ou ja utilizado (mesma resposta para todos)."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pagamentos/{pagamento_id}": {
+      "get": {
+        "tags": [
+          "pagamentos"
+        ],
+        "summary": "Consulta um pagamento",
+        "operationId": "obter_pagamento_api_v1_pagamentos__pagamento_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pagamento_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Pagamento Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagamentoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente, invalida ou expirada (uma resposta para toda falha).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel sem permissao para a rota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "JWKS do OS Service indisponivel; o header `Retry-After` traz os segundos ate a proxima tentativa.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Pagamento nao encontrado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/mercadopago": {
+      "post": {
+        "tags": [
+          "pagamentos"
+        ],
+        "summary": "Webhook do Mercado Pago (valida x-signature)",
+        "description": "Confere a assinatura e consulta o pagamento no provedor.\n\nO id vem so do ``data.id`` da query, o que a ``x-signature`` assina\n(ADR-040); sem ele nao ha o que consultar e a resposta e 200 sem\nprocessar. O corpo nao decide nada: status e valor vem sempre do\n``GET /v1/payments/{id}``. Notificacao de outro tipo tambem responde 200\nsem processar (o Mercado Pago so para de reenviar com 2xx).",
+        "operationId": "receber_notificacao_api_v1_webhooks_mercadopago_post",
+        "parameters": [
+          {
+            "name": "data.id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Data.Id"
+            }
+          },
+          {
+            "name": "x-signature",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Signature"
+            }
+          },
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificacaoMercadoPagoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "x-signature ausente ou invalida."
+          },
+          "503": {
+            "description": "MP_WEBHOOK_SECRET nao configurado ou Mercado Pago indisponivel na consulta (o provedor reenvia a notificacao)."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/simulador/checkout/{pagamento_id}": {
+      "get": {
+        "tags": [
+          "simulador"
+        ],
+        "summary": "Pagina de checkout simulada (botoes Aprovar/Recusar)",
+        "operationId": "checkout_simulador_checkout__pagamento_id__get",
+        "parameters": [
+          {
+            "name": "pagamento_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Pagamento Id"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Token do checkout_url (assinado, com expiracao)",
+              "title": "Token"
+            },
+            "description": "Token do checkout_url (assinado, com expiracao)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Checkout nao encontrado ou expirado (token invalido)."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/simulador/pagamentos/{pagamento_id}/aprovar": {
+      "post": {
+        "tags": [
+          "simulador"
+        ],
+        "summary": "Simula o pagamento aprovado no provedor",
+        "operationId": "aprovar_api_v1_simulador_pagamentos__pagamento_id__aprovar_post",
+        "parameters": [
+          {
+            "name": "pagamento_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Pagamento Id"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Token do checkout_url (assinado, com expiracao)",
+              "title": "Token"
+            },
+            "description": "Token do checkout_url (assinado, com expiracao)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagamentoResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Checkout nao encontrado ou expirado (token invalido)."
+          },
+          "409": {
+            "description": "Pagamento ja processado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/simulador/pagamentos/{pagamento_id}/recusar": {
+      "post": {
+        "tags": [
+          "simulador"
+        ],
+        "summary": "Simula o pagamento recusado no provedor",
+        "operationId": "recusar_api_v1_simulador_pagamentos__pagamento_id__recusar_post",
+        "parameters": [
+          {
+            "name": "pagamento_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Pagamento Id"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Token do checkout_url (assinado, com expiracao)",
+              "title": "Token"
+            },
+            "description": "Token do checkout_url (assinado, com expiracao)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagamentoResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Checkout nao encontrado ou expirado (token invalido)."
+          },
+          "409": {
+            "description": "Pagamento ja processado."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AtualizarPecaRequest": {
+        "properties": {
+          "nome": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nome"
+          },
+          "preco": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,8}|(?=[\\d.]{1,11}0*$)\\d{0,8}\\.\\d{0,2}0*$)"
+              }
+            ],
+            "title": "Preco"
+          },
+          "ativo": {
+            "type": "boolean",
+            "title": "Ativo"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "nome",
+          "preco",
+          "ativo"
+        ],
+        "title": "AtualizarPecaRequest"
+      },
+      "AtualizarServicoRequest": {
+        "properties": {
+          "nome": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nome"
+          },
+          "descricao": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Descricao"
+          },
+          "preco": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,8}|(?=[\\d.]{1,11}0*$)\\d{0,8}\\.\\d{0,2}0*$)"
+              }
+            ],
+            "title": "Preco"
+          },
+          "ativo": {
+            "type": "boolean",
+            "title": "Ativo"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "nome",
+          "descricao",
+          "preco",
+          "ativo"
+        ],
+        "title": "AtualizarServicoRequest"
+      },
+      "CadastrarPecaRequest": {
+        "properties": {
+          "sku": {
+            "type": "string",
+            "maxLength": 50,
+            "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$",
+            "title": "Sku",
+            "examples": [
+              "PEC-OLEO-5W30"
+            ]
+          },
+          "nome": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nome",
+            "examples": [
+              "Oleo de motor 5W30 (1 L)"
+            ]
+          },
+          "preco": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,8}|(?=[\\d.]{1,11}0*$)\\d{0,8}\\.\\d{0,2}0*$)"
+              }
+            ],
+            "title": "Preco",
+            "examples": [
+              "45.00"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sku",
+          "nome",
+          "preco"
+        ],
+        "title": "CadastrarPecaRequest"
+      },
+      "CadastrarServicoRequest": {
+        "properties": {
+          "codigo": {
+            "type": "string",
+            "maxLength": 50,
+            "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$",
+            "title": "Codigo",
+            "examples": [
+              "SRV-TROCA-OLEO"
+            ]
+          },
+          "nome": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nome",
+            "examples": [
+              "Troca de oleo"
+            ]
+          },
+          "descricao": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Descricao"
+          },
+          "preco": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,8}|(?=[\\d.]{1,11}0*$)\\d{0,8}\\.\\d{0,2}0*$)"
+              }
+            ],
+            "title": "Preco",
+            "examples": [
+              "120.00"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "codigo",
+          "nome",
+          "descricao",
+          "preco"
+        ],
+        "title": "CadastrarServicoRequest"
+      },
+      "DecisaoRequest": {
+        "properties": {
+          "decisao": {
+            "type": "string",
+            "enum": [
+              "aprovar",
+              "recusar"
+            ],
+            "title": "Decisao"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decisao"
+        ],
+        "title": "DecisaoRequest"
+      },
+      "DecisaoResponse": {
+        "properties": {
+          "canal": {
+            "type": "string",
+            "title": "Canal"
+          },
+          "decidido_em": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Decidido Em"
+          },
+          "decidido_por": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decidido Por"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canal",
+          "decidido_em"
+        ],
+        "title": "DecisaoResponse"
+      },
+      "Erro": {
+        "properties": {
+          "codigo": {
+            "type": "string",
+            "title": "Codigo"
+          },
+          "mensagem": {
+            "type": "string",
+            "title": "Mensagem"
+          },
+          "id_requisicao": {
+            "type": "string",
+            "title": "Id Requisicao"
+          }
+        },
+        "type": "object",
+        "required": [
+          "codigo",
+          "mensagem",
+          "id_requisicao"
+        ],
+        "title": "Erro"
+      },
+      "ErroResponse": {
+        "properties": {
+          "erro": {
+            "$ref": "#/components/schemas/Erro"
+          }
+        },
+        "type": "object",
+        "required": [
+          "erro"
+        ],
+        "title": "ErroResponse",
+        "description": "``{\"erro\": {codigo, mensagem, id_requisicao}}``, o envelope de todo erro\n(o 422 de schema e a excecao: ``{detail, id_requisicao}``, formato do p3)."
+      },
+      "EstornoAutomaticoResponse": {
+        "properties": {
+          "referencia_pagamento": {
+            "type": "string",
+            "title": "Referencia Pagamento"
+          },
+          "registrado_em": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Registrado Em"
+          },
+          "falha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Falha"
+          }
+        },
+        "type": "object",
+        "required": [
+          "referencia_pagamento",
+          "registrado_em",
+          "falha"
+        ],
+        "title": "EstornoAutomaticoResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LinhaResponse": {
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "title": "Tipo"
+          },
+          "codigo": {
+            "type": "string",
+            "title": "Codigo"
+          },
+          "descricao": {
+            "type": "string",
+            "title": "Descricao"
+          },
+          "quantidade": {
+            "type": "integer",
+            "title": "Quantidade"
+          },
+          "preco_unitario": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Preco Unitario"
+          },
+          "subtotal": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Subtotal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tipo",
+          "codigo",
+          "descricao",
+          "quantidade",
+          "preco_unitario",
+          "subtotal"
+        ],
+        "title": "LinhaResponse"
+      },
+      "NotificacaoMercadoPagoRequest": {
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "title": "NotificacaoMercadoPagoRequest",
+        "description": "Corpo do webhook: so o ``type`` e lido (quando a query nao o traz). O id\na consultar vem do ``data.id`` da query, que a ``x-signature`` assina."
+      },
+      "NotificacaoResponse": {
+        "properties": {
+          "recebida_em": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Recebida Em"
+          },
+          "referencia_pagamento": {
+            "type": "string",
+            "title": "Referencia Pagamento"
+          },
+          "status_provedor": {
+            "type": "string",
+            "title": "Status Provedor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recebida_em",
+          "referencia_pagamento",
+          "status_provedor"
+        ],
+        "title": "NotificacaoResponse"
+      },
+      "OrcamentoPublicoResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "linhas": {
+            "items": {
+              "$ref": "#/components/schemas/LinhaResponse"
+            },
+            "type": "array",
+            "title": "Linhas"
+          },
+          "total": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total"
+          },
+          "moeda": {
+            "type": "string",
+            "title": "Moeda"
+          },
+          "valido_ate": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Valido Ate"
+          },
+          "decisao": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisaoResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "linhas",
+          "total",
+          "moeda",
+          "valido_ate",
+          "decisao"
+        ],
+        "title": "OrcamentoPublicoResponse",
+        "description": "Projecao para o cliente via link: sem dados internos da ordem."
+      },
+      "OrcamentoResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "ordem_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Ordem Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "linhas": {
+            "items": {
+              "$ref": "#/components/schemas/LinhaResponse"
+            },
+            "type": "array",
+            "title": "Linhas"
+          },
+          "total": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total"
+          },
+          "moeda": {
+            "type": "string",
+            "title": "Moeda"
+          },
+          "criado_em": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Criado Em"
+          },
+          "valido_ate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valido Ate"
+          },
+          "decisao": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisaoResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "motivo_cancelamento": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Motivo Cancelamento"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ordem_id",
+          "status",
+          "linhas",
+          "total",
+          "moeda",
+          "criado_em",
+          "valido_ate",
+          "decisao",
+          "motivo_cancelamento"
+        ],
+        "title": "OrcamentoResponse"
+      },
+      "PagamentoResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "ordem_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Ordem Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "orcamento_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orcamento Id"
+          },
+          "valor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor"
+          },
+          "moeda": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moeda"
+          },
+          "provedor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provedor"
+          },
+          "referencia_preferencia": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referencia Preferencia"
+          },
+          "checkout_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkout Url"
+          },
+          "expira_em": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expira Em"
+          },
+          "criado_em": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Criado Em"
+          },
+          "recusas": {
+            "type": "integer",
+            "title": "Recusas"
+          },
+          "referencia_pagamento": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referencia Pagamento"
+          },
+          "confirmado_em": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmado Em"
+          },
+          "encerrado_em": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Encerrado Em"
+          },
+          "motivo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Motivo"
+          },
+          "estornado_em": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estornado Em"
+          },
+          "motivo_estorno": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Motivo Estorno"
+          },
+          "notificacoes": {
+            "items": {
+              "$ref": "#/components/schemas/NotificacaoResponse"
+            },
+            "type": "array",
+            "title": "Notificacoes"
+          },
+          "estornos_automaticos": {
+            "items": {
+              "$ref": "#/components/schemas/EstornoAutomaticoResponse"
+            },
+            "type": "array",
+            "title": "Estornos Automaticos"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ordem_id",
+          "status",
+          "orcamento_id",
+          "valor",
+          "moeda",
+          "provedor",
+          "referencia_preferencia",
+          "checkout_url",
+          "expira_em",
+          "criado_em",
+          "recusas",
+          "referencia_pagamento",
+          "confirmado_em",
+          "encerrado_em",
+          "motivo",
+          "estornado_em",
+          "motivo_estorno",
+          "notificacoes",
+          "estornos_automaticos"
+        ],
+        "title": "PagamentoResponse",
+        "description": "Pagamento; campos da cobranca nulos so na lapide (compensacao que\nchegou antes do ``SolicitarPagamento``)."
+      },
+      "PecaListaResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PecaResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "offset",
+          "limit"
+        ],
+        "title": "PecaListaResponse"
+      },
+      "PecaResponse": {
+        "properties": {
+          "sku": {
+            "type": "string",
+            "title": "Sku"
+          },
+          "nome": {
+            "type": "string",
+            "title": "Nome"
+          },
+          "preco": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Preco"
+          },
+          "moeda": {
+            "type": "string",
+            "title": "Moeda"
+          },
+          "ativo": {
+            "type": "boolean",
+            "title": "Ativo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sku",
+          "nome",
+          "preco",
+          "moeda",
+          "ativo"
+        ],
+        "title": "PecaResponse"
+      },
+      "ServicoListaResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ServicoResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "offset",
+          "limit"
+        ],
+        "title": "ServicoListaResponse"
+      },
+      "ServicoResponse": {
+        "properties": {
+          "codigo": {
+            "type": "string",
+            "title": "Codigo"
+          },
+          "nome": {
+            "type": "string",
+            "title": "Nome"
+          },
+          "descricao": {
+            "type": "string",
+            "title": "Descricao"
+          },
+          "preco": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Preco"
+          },
+          "moeda": {
+            "type": "string",
+            "title": "Moeda"
+          },
+          "ativo": {
+            "type": "boolean",
+            "title": "Ativo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "codigo",
+          "nome",
+          "descricao",
+          "preco",
+          "moeda",
+          "ativo"
+        ],
+        "title": "ServicoResponse"
+      },
+      "ValidacaoRequest": {
+        "properties": {
+          "servicos": {
+            "items": {
+              "type": "string",
+              "maxLength": 50,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Servicos"
+          },
+          "pecas": {
+            "items": {
+              "type": "string",
+              "maxLength": 50,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Pecas"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ValidacaoRequest"
+      },
+      "ValidacaoResponse": {
+        "properties": {
+          "invalidos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalidos"
+          }
+        },
+        "type": "object",
+        "required": [
+          "invalidos"
+        ],
+        "title": "ValidacaoResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WebhookResponse": {
+        "properties": {
+          "processado": {
+            "type": "boolean",
+            "title": "Processado"
+          }
+        },
+        "type": "object",
+        "required": [
+          "processado"
+        ],
+        "title": "WebhookResponse"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

@@ -8,7 +8,8 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
+	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed \
+	docs-api
 
 install:
 	uv sync --frozen
@@ -82,6 +83,13 @@ MUTANTES ?=
 
 mutacao:
 	$(PY) python scripts/mutacao_manual.py --prazo $(MUTACAO_PRAZO) $(if $(MUTANTES),--so $(MUTANTES))
+
+# OpenAPI do app (o mesmo do /docs) e colecao Postman com um exemplo por rota,
+# gerados juntos em docs/api para nao divergirem. So monta o app: nao sobe
+# servidor nem banco. O make test reprova se os arquivos versionados ficarem
+# atras do codigo (tests/unitarios/test_documentacao.py).
+docs-api:
+	$(PY) python scripts/gerar_docs_api.py
 
 check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"
