@@ -26,7 +26,7 @@ import sys
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -205,11 +205,36 @@ def _pagina(item: dict[str, Any]) -> dict[str, Any]:
 
 _PAGINACAO = {"offset": 0, "limit": 20}
 _JSON = {"Content-Type": "application/json"}
+# A pagina de checkout que a rota do simulador devolve (router_simulador.py), com
+# os valores da colecao; os botoes levam o token da requisicao, escapado na URL.
+# tests/unitarios/test_documentacao.py a compara com a resposta real da rota.
+_PAGINA_DO_CHECKOUT = """<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Checkout simulado - PytStop</title></head>
+<body>
+<h1>Checkout simulado</h1>
+<p>Ambiente de simulacao: nenhuma cobranca real e feita.</p>
+<dl>
+<dt>Pagamento</dt><dd>{pagamento}</dd>
+<dt>Valor</dt><dd>BRL 570.00</dd>
+<dt>Status</dt><dd>SOLICITADO</dd>
+</dl>
+<form method="post" action="{acoes}/aprovar?token={token}">
+<button type="submit">Aprovar</button></form>
+<form method="post" action="{acoes}/recusar?token={token}">
+<button type="submit">Recusar</button></form>
+</body>
+</html>
+""".format(
+    pagamento=_PAGAMENTO,
+    acoes=f"{VARIAVEIS['baseUrl']}/api/v1/simulador/pagamentos/{_PAGAMENTO}",
+    token=quote(VARIAVEIS["token_do_checkout"], safe=""),
+)
 
 # Ordem dos fluxos do README; as chaves sao as do OpenAPI (metodo, rota). Cada
 # exemplo tem `status` e, quando a rota os tem, `corpo`, `query`, `cabecalhos`
-# (alem do Content-Type), `resposta` e `guarda` (variavel -> acesso ao campo da
-# resposta que o script de teste grava).
+# (alem do Content-Type), `resposta` (JSON) ou `html` (a pagina do checkout) e
+# `guarda` (variavel -> acesso ao campo da resposta que o script de teste grava).
 EXEMPLOS: dict[tuple[str, str], dict[str, Any]] = {
     ("get", "/api/v1/saude"): {
         "status": 200,
@@ -315,6 +340,7 @@ EXEMPLOS: dict[tuple[str, str], dict[str, Any]] = {
     ("get", "/simulador/checkout/{pagamento_id}"): {
         "query": {"token": "{{token_do_checkout}}"},
         "status": 200,
+        "html": _PAGINA_DO_CHECKOUT,
     },
     ("post", "/api/v1/simulador/pagamentos/{pagamento_id}/aprovar"): {
         "query": {"token": "{{token_do_checkout}}"},
@@ -393,6 +419,12 @@ def _requisicao(
         resposta["header"] = [{"key": "Content-Type", "value": "application/json"}]
         resposta["body"] = _json(exemplo["resposta"]).rstrip("\n")
         resposta["_postman_previewlanguage"] = "json"
+    elif "html" in exemplo:
+        resposta["header"] = [
+            {"key": "Content-Type", "value": "text/html; charset=utf-8"}
+        ]
+        resposta["body"] = exemplo["html"]
+        resposta["_postman_previewlanguage"] = "html"
     item: dict[str, Any] = {
         "name": operacao["summary"],
         "request": pedido,

@@ -22,11 +22,14 @@ import re
 import shlex
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import ValidationError
@@ -49,6 +52,7 @@ from src.pagamento.dominio.estados import (
 )
 from src.pagamento.dominio.pagamento import Pagamento
 from src.pagamento.infraestrutura.repository import MongoPagamentoRepository
+from src.pagamento.interfaces.dependencies import obter_simular_resultado
 from src.precos.dominio.preco import PrecoPeca, PrecoServico
 from src.precos.infraestrutura.repository import (
     MongoPrecoPecaRepository,
@@ -68,6 +72,7 @@ from tests.unitarios.test_cobertura_resumo import XML_DOS_CONTEXTOS
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import ModuleType
+    from uuid import UUID
 
     from fastapi import FastAPI
 
@@ -291,8 +296,8 @@ def _promessas_quebradas(openapi: dict[str, Any], colecao: dict[str, Any]) -> li
     O token da colecao como bearer, herdado pelas rotas com JWT, e ``noauth`` nas
     outras (sondas, link publico, webhook e simulador); ``Content-Type`` em todo
     corpo; a URL a partir de ``{{baseUrl}}``; uma resposta de exemplo por
-    requisicao; e todo id que as rotas usam gravado por um script de teste, ou
-    declarado na descricao como vindo de fora.
+    requisicao, com corpo (menos a do 204); e todo id que as rotas usam gravado
+    por um script de teste, ou declarado na descricao como vindo de fora.
     """
     erros = []
     if colecao.get("auth") != _TOKEN_DA_COLECAO:
@@ -317,6 +322,8 @@ def _promessas_quebradas(openapi: dict[str, Any], colecao: dict[str, Any]) -> li
             erros.append(f"{onde}: URL sem a variavel baseUrl")
         if not item["response"]:
             erros.append(f"{onde}: sem resposta de exemplo")
+        elif item["response"][0]["code"] != 204 and not item["response"][0]["body"]:
+            erros.append(f"{onde}: resposta de exemplo sem corpo")
     guardadas, erros_dos_scripts = _guardadas(colecao)
     usadas = set(re.findall(r"\{\{(\w+)\}\}", json.dumps(colecao["item"])))
     sem_dono = usadas - {"baseUrl", *_DE_FORA} - guardadas
@@ -348,6 +355,7 @@ def test_colecao_que_quebra_cada_promessa_e_apontada(openapi: dict[str, Any]) ->
         "http://127.0.0.1:8002/api/v1/precos/pecas?limit=20"
     )
     itens["get", "/api/v1/precos/pecas/{}"]["response"] = []
+    itens["get", "/simulador/checkout/{}"]["response"][0]["body"] = ""
     del itens["post", "/api/v1/precos/pecas"]["event"]
     itens["get", "/api/v1/orcamentos"]["event"][0]["script"]["exec"] = [
         "pm.collectionVariables.set('orcamento_id', 1);"
@@ -362,6 +370,7 @@ def test_colecao_que_quebra_cada_promessa_e_apontada(openapi: dict[str, Any]) ->
         "GET /api/v1/precos/pecas: URL sem a variavel baseUrl",
         "GET /api/v1/precos/servicos: auth fora do padrao (token so nas rotas com JWT)",
         "GET /api/v1/saude: auth fora do padrao (token so nas rotas com JWT)",
+        "GET /simulador/checkout/{}: resposta de exemplo sem corpo",
         "POST /api/v1/precos/servicos: corpo sem Content-Type: application/json",
         "colecao sem o token {{token}} como bearer",
         "variavel orcamento_id sem script que a grave",
@@ -423,7 +432,16 @@ def _erros_do_exemplo(openapi: dict[str, Any], item: dict[str, Any]) -> list[str
         erros.append(f"{onde}: corpo numa rota sem requestBody")
     for resposta in item["response"]:
         declarada = operacao["responses"][str(resposta["code"])]
-        if resposta["body"]:
+        if not resposta["body"]:
+            continue
+        # Sem Content-Type na resposta de exemplo, o corpo e JSON.
+        tipo = {h["key"].lower(): h["value"] for h in resposta["header"]}.get(
+            "content-type", "application/json"
+        )
+        if tipo.startswith("text/html"):
+            if "text/html" not in declarada.get("content", {}):
+                erros.append(f"{onde} resposta: a rota nao declara text/html")
+        else:
             valor = json.loads(resposta["body"])
             erros += _fora_do_schema(openapi, declarada, valor, f"{onde} resposta")
     return erros
@@ -476,6 +494,62 @@ def test_exemplo_com_corpo_a_mais_ou_fora_do_schema_ou_do_formato_reprova(
         "POST /api/v1/orcamentos/{}/decisao resposta: "
         "'ontem de manha' is not a 'date-time'",
     ]
+
+
+def test_exemplo_html_em_rota_que_so_declara_json_reprova(
+    openapi: dict[str, Any],
+) -> None:
+    colecao = json.loads(COLECAO.read_text(encoding="utf-8"))
+    itens = {_par(item["request"]): item for item in _requisicoes(colecao)}
+    resposta = itens["get", "/api/v1/saude"]["response"][0]
+    resposta["header"] = [{"key": "Content-Type", "value": "text/html; charset=utf-8"}]
+    resposta["body"] = "<p>ola</p>"
+
+    assert _erros_do_exemplo(openapi, itens["get", "/api/v1/saude"]) == [
+        "GET /api/v1/saude resposta: a rota nao declara text/html"
+    ]
+
+
+class _CheckoutFalso:
+    """O caso de uso da pagina de checkout, sem banco: o pagamento da colecao."""
+
+    def consultar(self, pagamento_id: UUID, token: str | None) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=pagamento_id, moeda="BRL", valor=Decimal("570.00"), status="SOLICITADO"
+        )
+
+
+def test_exemplo_html_do_checkout_e_a_pagina_que_a_rota_devolve(
+    gerador: ModuleType,
+) -> None:
+    variaveis = gerador.VARIAVEIS
+    config = Configuracao.do_ambiente(
+        {
+            "ENVIRONMENT": "test",
+            "MP_MODE": "simulado",
+            "BILLING_PUBLIC_URL": variaveis["baseUrl"],
+        }
+    )
+    app = criar_app(config, provedor=TracerProvider(shutdown_on_exit=False))
+    app.dependency_overrides[obter_simular_resultado] = _CheckoutFalso
+
+    resposta = TestClient(app).get(
+        f"/simulador/checkout/{variaveis['pagamento_id']}",
+        params={"token": variaveis["token_do_checkout"]},
+    )
+
+    colecao = json.loads(COLECAO.read_text(encoding="utf-8"))
+    [item] = [
+        item
+        for item in _requisicoes(colecao)
+        if _par(item["request"]) == ("get", "/simulador/checkout/{}")
+    ]
+    exemplo = item["response"][0]
+    assert resposta.status_code == exemplo["code"] == 200
+    assert {"key": "Content-Type", "value": resposta.headers["content-type"]} in (
+        exemplo["header"]
+    )
+    assert resposta.text == exemplo["body"], "pagina de checkout mudou: make docs-api"
 
 
 def test_rota_nova_sem_exemplo_reprova_a_geracao(
