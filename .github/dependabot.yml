@@ -26,12 +26,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      # Antes do generico (o primeiro grupo que casa leva a dependencia). O SDK
-      # fixa opentelemetry-api e semantic-conventions na mesma versao, e cada
-      # instrumentacao fixa a sua: subir so uma parte nao resolve, entao a
-      # familia inteira (e as majors dela) vai num PR so.
-      opentelemetry:
-        patterns: ["opentelemetry-*"]
+      # Leva tambem os opentelemetry-*, e os patches e minors da familia sobem
+      # juntos aqui: o SDK fixa opentelemetry-api e semantic-conventions na
+      # mesma versao, e subir so uma parte nao resolve. Um grupo so deles
+      # ficaria vazio, mesmo antes deste no arquivo: o Dependabot o trata como
+      # menos especifico que este. A major fica fora do grupo e atras do teto
+      # do pyproject.toml (<1.46 e <0.67).
       python-patch-e-minor:
         update-types: ["minor", "patch"]
 
