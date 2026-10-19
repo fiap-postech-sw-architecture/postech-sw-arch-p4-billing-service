@@ -103,6 +103,28 @@ def mongo_uri() -> Iterator[str]:
             yield uri
 
 
+@pytest.fixture(scope="module")
+def mongo_uri_do_coletor() -> Iterator[str]:
+    """Mongo exclusivo dos failpoints de leitura; nunca usa a URI externa."""
+    from testcontainers.core.container import DockerContainer
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+
+    with pytest.MonkeyPatch.context() as ambiente:
+        _docker_do_colima(ambiente)
+        container = (
+            DockerContainer(IMAGEM_MONGO)
+            .with_command(["--bind_ip_all", "--setParameter", "enableTestCommands=1"])
+            .with_exposed_ports(27017)
+            .waiting_for(
+                LogMessageWaitStrategy(re.compile(r"waiting for connections", re.I))
+            )
+        )
+        with container:
+            host = container.get_container_host_ip()
+            porta = container.get_exposed_port(27017)
+            yield f"mongodb://{host}:{porta}/?directConnection=true"
+
+
 # Como o StatefulSet: keyfile so do usuario do mongod (400) e o entrypoint da
 # imagem, que cria o root no primeiro boot e liga o --auth.
 _CHAVE_E_MONGOD = (

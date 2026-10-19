@@ -13,8 +13,10 @@ import logging
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import pika
@@ -24,7 +26,7 @@ from opentelemetry.trace import SpanKind, StatusCode
 from pika.exceptions import AMQPConnectionError, StreamLostError
 from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
 from pymongo import MongoClient
-from pymongo.errors import AutoReconnect
+from pymongo.errors import AutoReconnect, ExecutionTimeout, NetworkTimeout
 
 from src import relay as processo_relay
 from src.compartilhado.infraestrutura.logging import configurar_logging
@@ -49,6 +51,7 @@ from tests.factories import orcamento
 from tests.integracao.apoio import PublicadorFalso, RelogioFixo
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -814,6 +817,50 @@ class TestMetricas:
         with pytest.raises(ValueError, match="Duplicated timeseries"):
             registro.register(ColetorDaOutbox("outbox", banco))
 
+    @pytest.mark.parametrize("erro", [ExecutionTimeout, NetworkTimeout])
+    def test_falha_do_coletor_registra_so_a_classe(
+        self,
+        banco: Banco,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+        erro: type[Exception],
+    ) -> None:
+        coletor = ColetorDaOutbox("outbox", banco)
+
+        def falhar(*_args: Any, **_opcoes: Any) -> None:
+            raise erro("SENTINELA_DRIVER")
+
+        monkeypatch.setattr(coletor._outbox, "find_one", falhar)
+        with caplog.at_level(logging.WARNING):
+            assert list(coletor.collect()) == []
+
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "outbox_metrics_unavailable"
+        ]
+        assert getattr(registro, "tipo_do_erro", None) == erro.__name__
+        assert registro.exc_info is None
+        saida = capsys.readouterr()
+        assert "SENTINELA_DRIVER" not in repr(registro.__dict__) + saida.out + saida.err
+
+    def test_erro_de_programacao_do_coletor_nao_e_absorvido(
+        self,
+        banco: Banco,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        coletor = ColetorDaOutbox("outbox", banco)
+
+        def falhar(*_args: Any, **_opcoes: Any) -> None:
+            raise RuntimeError("SENTINELA_PROGRAMACAO")
+
+        monkeypatch.setattr(coletor._outbox, "find_one", falhar)
+        with pytest.raises(RuntimeError, match="SENTINELA_PROGRAMACAO"):
+            list(coletor.collect())
+        assert not any(
+            r.getMessage() == "outbox_metrics_unavailable" for r in caplog.records
+        )
+
     def test_banco_fora_responde_no_prazo_e_sem_as_series(self) -> None:
         """Com o cliente de producao (5 s para achar o servidor, 10 s por
         operacao) a raspagem levava 10,1 s, mais que o ``scrape_timeout`` do
@@ -850,6 +897,120 @@ class TestMetricas:
 
         assert texto == ""
         assert duracao < 5
+
+
+@contextmanager
+def _coletor_com_mongo_proprio(
+    uri: str,
+) -> Iterator[tuple[CollectorRegistry, Banco, str]]:
+    appname = f"coletor-{uuid4().hex}"
+    partes = urlsplit(uri)
+    query = dict(parse_qsl(partes.query))
+    query["appName"] = appname
+    uri_do_coletor = urlunsplit(partes._replace(query=urlencode(query)))
+    nome = f"teste_coletor_{uuid4().hex}"
+    with criar_cliente(uri) as administrativo, criar_cliente(uri_do_coletor) as cliente:
+        banco = cliente[nome]
+        relogio = RelogioFixo()
+        banco["outbox"].insert_many(
+            [
+                {
+                    "status": "pendente",
+                    "criado_em": relogio.agora - timedelta(seconds=10),
+                },
+                {"status": "dead", "criado_em": relogio.agora},
+            ]
+        )
+        registro = CollectorRegistry()
+        registro.register(ColetorDaOutbox("outbox", banco, relogio=relogio))
+        try:
+            yield registro, administrativo.admin, appname
+        finally:
+            administrativo.admin.command(
+                "configureFailPoint", "failCommand", mode="off"
+            )
+            administrativo.drop_database(nome)
+
+
+def _confere_coletor_positivo(registro: CollectorRegistry) -> None:
+    assert {f.name: f.samples[0].value for f in registro.collect()} == {
+        "outbox_pendentes": 1,
+        "outbox_dead": 1,
+        "pytstop_outbox_mais_antiga_segundos": 10,
+    }
+
+
+class TestPrazosDoColetor:
+    def test_find_one_lento_e_limitado_pelo_prazo_da_raspagem(
+        self, mongo_uri_do_coletor: str
+    ) -> None:
+        with _coletor_com_mongo_proprio(mongo_uri_do_coletor) as (
+            registro,
+            admin,
+            appname,
+        ):
+            _confere_coletor_positivo(registro)
+            ativacao = admin.command(
+                "configureFailPoint",
+                "failCommand",
+                mode={"times": 1},
+                data={
+                    "failCommands": ["find"],
+                    "appName": appname,
+                    "blockConnection": True,
+                    "blockTimeMS": 6000,
+                },
+            )
+            try:
+                inicio = time.monotonic()
+                texto = generate_latest(registro)
+                duracao = time.monotonic() - inicio
+                admin.command(
+                    "waitForFailPoint",
+                    "failCommand",
+                    timesEntered=ativacao["count"] + 1,
+                    maxTimeMS=1000,
+                )
+                assert texto == b""
+                assert duracao < 3.5
+            finally:
+                admin.command("configureFailPoint", "failCommand", mode="off")
+            _confere_coletor_positivo(registro)
+
+    def test_execution_timeout_no_find_omite_as_tres_series(
+        self, mongo_uri_do_coletor: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with _coletor_com_mongo_proprio(mongo_uri_do_coletor) as (
+            registro,
+            admin,
+            appname,
+        ):
+            _confere_coletor_positivo(registro)
+            ativacao = admin.command(
+                "configureFailPoint",
+                "failCommand",
+                mode={"times": 1},
+                data={"failCommands": ["find"], "appName": appname, "errorCode": 50},
+            )
+            try:
+                with caplog.at_level(logging.WARNING):
+                    assert generate_latest(registro) == b""
+                admin.command(
+                    "waitForFailPoint",
+                    "failCommand",
+                    timesEntered=ativacao["count"] + 1,
+                    maxTimeMS=1000,
+                )
+                [aviso] = [
+                    r
+                    for r in caplog.records
+                    if r.getMessage() == "outbox_metrics_unavailable"
+                ]
+                assert getattr(aviso, "tipo_do_erro", None) == "ExecutionTimeout"
+                assert aviso.exc_info is None
+            finally:
+                admin.command("configureFailPoint", "failCommand", mode="off")
+            _confere_coletor_positivo(registro)
 
 
 class TestCasosDeBorda:

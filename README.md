@@ -391,7 +391,9 @@ Os painéis, os alertas e o [catálogo das métricas dos três serviços](https:
 | `User-Agent` e endereço e porta do par da conexão | Texto livre sem limite e dado de rede de quem chamou, sem uso operacional; o Jaeger guarda 5.000 traces em memória, sem como apagar um titular | O hook grava `REDACTED` nos textos e `0` nas portas |
 | `baggage` do chamador | O ADR-043 prevê só `traceparent` e `tracestate`; o padrão do SDK somaria o `baggage`, que a API aceitaria e o httpx repassaria ao Mercado Pago | O propagador global é só o `TraceContext` (`instalar_propagador`). O `tracestate` acima de 512 caracteres não vai para a outbox nem para o AMQP |
 
-Três ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). O `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada. E o `Host` que o chamador manda sai como veio, em `http.server_name` e dentro do `http.url` do `SERVER` (`http://<Host><template da rota>`): o hook tira o token da URL, não o `Host`, que é texto do chamador sem limite (`http.host` é o endereço do próprio servidor, não o dele). Trocá-lo por um valor fixo muda `src/` e fica para o pull request seguinte.
+Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). O `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada.
+
+O hook do `SERVER` substitui toda a autoridade da URL (usuário, senha, host e porta) por `REDACTED`, mantendo o esquema e o template da rota. Os atributos textuais de Host e servidor recebem `REDACTED`, e as portas recebem `0`, quando existem no span; uma URL malformada fica só com o template. O parentesco e os spans de cliente seguem iguais.
 
 ### Métricas
 

@@ -137,8 +137,11 @@ class ColetorDaOutbox(Collector):
                 mais_antiga = self._outbox.find_one(
                     PENDENTES, {"criado_em": 1}, sort=list(MAIS_ANTIGA)
                 )
-        except PyMongoError:
-            _log.warning("outbox_metrics_unavailable")
+        except PyMongoError as exc:
+            _log.warning(
+                "outbox_metrics_unavailable",
+                extra={"tipo_do_erro": type(exc).__name__},
+            )
             return
         yield _pendentes(pendentes)
         yield _mortas(mortas)

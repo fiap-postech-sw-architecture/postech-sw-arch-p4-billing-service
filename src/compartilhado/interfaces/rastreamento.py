@@ -46,13 +46,24 @@ _QUERY: Final = "url.query"
 _REDIGIDO: Final = "REDACTED"
 # Dado de quem chamou que a operacao nao usa: o User-Agent (texto livre, sem
 # limite) e o par da conexao (no cluster, o pod do Kong). Convencao antiga e nova.
+# Host e enderecos do servidor tambem viram valor fixo: o Host e do chamador.
 _TEXTOS_DO_CHAMADOR: Final = (
     "http.user_agent",
     "user_agent.original",
     "net.peer.ip",
     "client.address",
+    "http.host",
+    "http.server_name",
+    "server.address",
+    "net.host.name",
+    "net.host.ip",
 )
-_PORTAS_DO_CHAMADOR: Final = ("net.peer.port", "client.port")
+_PORTAS_DO_CHAMADOR: Final = (
+    "net.peer.port",
+    "client.port",
+    "net.host.port",
+    "server.port",
+)
 
 
 def _substituicoes(rota: str) -> dict[str, str | int]:
@@ -89,7 +100,9 @@ def _url_do_template(url: str, rota: str) -> str:
         partes = urlsplit(url)
     except ValueError:  # Host malformado (``[``, ``a]b``): nada a preservar
         return rota
-    return urlunsplit(partes._replace(path=rota, query="", fragment=""))
+    return urlunsplit(
+        partes._replace(netloc=_REDIGIDO, path=rota, query="", fragment="")
+    )
 
 
 def instrumentar_api(app: FastAPI, provedor: TracerProvider) -> None:

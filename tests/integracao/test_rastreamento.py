@@ -470,6 +470,32 @@ def esperar_servidores(rastreamento: Rastreamento, quantos: int) -> list[Readabl
 class TestHostDoChamador:
     """O ``Host`` e do chamador: a instrumentacao monta a URL do span com ele."""
 
+    @pytest.mark.parametrize("host", ["SENTINELA-HOST:8123", "SENTINELA-HOST/metrics"])
+    def test_host_do_chamador_nao_chega_ao_span_server(
+        self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any], host: str
+    ) -> None:
+        _, token = salvar_orcamento_pendente(rastreamento.banco)
+        modelo = "/api/v1/publico/orcamentos/{token}"
+        with uvicorn_real(rastreamento.criar_app()) as porta:
+            rastreamento.exportador.clear()
+            linha = pedir(porta, f"/api/v1/publico/orcamentos/{token}", host)
+            [servidor] = esperar_servidores(rastreamento, 1)
+
+        assert linha == "HTTP/1.1 200 OK"
+        atributos = dict(servidor.attributes or {})
+        assert servidor.name == f"GET {modelo}"
+        assert atributos["http.url"] == f"http://REDACTED{modelo}"
+        assert atributos["http.server_name"] == "REDACTED"
+        for nome in ("http.host", "server.address", "net.host.name", "net.host.ip"):
+            if nome in atributos:
+                assert atributos[nome] == "REDACTED"
+        for nome in ("net.host.port", "server.port"):
+            if nome in atributos:
+                assert atributos[nome] == 0
+        assert not any(
+            "SENTINELA" in t for t in tudo_que_os_spans_levam(rastreamento.spans)
+        )
+
     @pytest.mark.parametrize("host", ["[", "a]b", "[::1"])
     def test_host_malformado_nao_vaza_o_token_nem_a_query(
         self, rastreamento: Rastreamento, jwks_publicado: dict[str, Any], host: str
