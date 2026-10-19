@@ -26,12 +26,11 @@ if TYPE_CHECKING:
 type Documento = dict[str, Any]  # documento BSON cru (o driver o tipa assim)
 
 # Falha rapido quando o banco cai: 5 s para achar o primario em vez dos 30 s
-# padrao, e no maximo 10 s por operacao (CSOT): um mongod travado no meio da
-# operacao nao prende a thread para sempre nem esgota o threadpool da API. O
+# padrao, e no maximo 10 s por operacao (CSOT) nos workers; a API passa 2 s
+# para ambos. Um mongod travado nao prende a thread para sempre. O
 # laco de repeticao da transacao tem teto proprio (unit_of_work.py): o
 # with_transaction repete por ate 120 s sem olhar este limite.
 _TIMEOUT_SELECAO_SERVIDOR_MS: Final = 5000
-_TIMEOUT_OPERACAO_MS: Final = 10_000
 # Threadpool da API (40) com folga; o processo prazos usa uma conexao.
 _MAX_CONEXOES: Final = 50
 
@@ -75,14 +74,18 @@ def reidratacao[T](ler: Callable[[Documento], T]) -> Callable[[Documento], T]:
     return reidratar
 
 
-def criar_cliente(uri: str) -> MongoClient[Documento]:
+def criar_cliente(
+    uri: str, *, timeout_segundos: float = 10.0
+) -> MongoClient[Documento]:
     """Cliente com UUID nativo (binario subtipo 4), datas em UTC e limites."""
     return MongoClient(
         uri,
         uuidRepresentation="standard",
         tz_aware=True,
-        serverSelectionTimeoutMS=_TIMEOUT_SELECAO_SERVIDOR_MS,
-        timeoutMS=_TIMEOUT_OPERACAO_MS,
+        serverSelectionTimeoutMS=min(
+            _TIMEOUT_SELECAO_SERVIDOR_MS, timeout_segundos * 1000
+        ),
+        timeoutMS=timeout_segundos * 1000,
         maxPoolSize=_MAX_CONEXOES,
     )
 

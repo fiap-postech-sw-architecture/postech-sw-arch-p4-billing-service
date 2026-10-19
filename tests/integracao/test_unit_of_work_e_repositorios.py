@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import timedelta
 from decimal import Decimal
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import pymongo
 import pytest
 from bson.decimal128 import Decimal128
-from pymongo.errors import ExecutionTimeout, OperationFailure
+from pymongo.errors import ConnectionFailure, ExecutionTimeout, OperationFailure
 
 from src.compartilhado.dominio.exceptions import ValorInvalidoError
-from src.compartilhado.infraestrutura import unit_of_work
-from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
+from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError, criar_cliente
 from src.compartilhado.infraestrutura.unit_of_work import (
     MensagemRecebida,
     MongoUnitOfWork,
@@ -222,7 +222,13 @@ class TestUnidadeDeTrabalho:
     def test_falha_transitoria_que_nao_passa_estoura_o_teto_da_transacao(
         self, banco: Banco, monkeypatch: pytest.MonkeyPatch, caminho: str
     ) -> None:
-        monkeypatch.setattr(unit_of_work, "LIMITE_DA_TRANSACAO_SEGUNDOS", 0.3)
+        timeout_real = pymongo.timeout
+
+        def timeout_curto(segundos: float) -> AbstractContextManager[None]:
+            assert segundos == 10.0
+            return timeout_real(0.3)
+
+        monkeypatch.setattr(pymongo, "timeout", timeout_curto)
         chamadas: list[float] = []
 
         def conflito() -> None:
@@ -557,3 +563,16 @@ class TestRepositorioDePrecos:
         assert [p.sku for p in pecas.listar(offset=0, limit=10)] == ["PEC-A"]
         assert pecas.contar() == 1
         assert set(pecas.obter_por_codigos(["PEC-A"])) == {"PEC-A"}
+
+
+def test_transacao_da_api_com_banco_fora_aborta_em_menos_de_4_segundos() -> None:
+    with criar_cliente("mongodb://127.0.0.1:1/?directConnection=true") as cliente:
+        banco = cliente["billing"]
+        uow = MongoUnitOfWork(banco, timeout_segundos=2.0)
+        inicio = time.monotonic()
+        with pytest.raises((ConnectionFailure, ExecutionTimeout)):
+            uow.executar(
+                lambda: banco["teste"].insert_one({"valor": 1}, session=uow.sessao)
+            )
+        assert time.monotonic() - inicio < 4
+        assert uow.sessao is None

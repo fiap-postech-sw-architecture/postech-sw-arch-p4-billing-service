@@ -32,6 +32,8 @@ from src.precos.infraestrutura.repository import MongoPrecoServicoRepository
 from tests.integracao.apoio import configuracao, provedor_descartavel
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pymongo.database import Database
 
     Banco = Database[dict[str, Any]]
@@ -393,3 +395,36 @@ class TestSeed:
             "seed de precos: 11 criados, 0 ja existiam",
             "seed de precos: 0 criados, 11 ja existiam",
         ]
+
+
+@pytest.mark.parametrize("metodo", ["GET", "POST"])
+def test_banco_fora_nas_rotas_de_dados_responde_503_em_menos_de_4_segundos(
+    jwks_publicado: dict[str, Any],
+    cabecalhos: Callable[[str], dict[str, str]],
+    metodo: str,
+) -> None:
+    app = criar_app(
+        configuracao(MONGODB_URI="mongodb://127.0.0.1:1/?directConnection=true"),
+        provedor=provedor_descartavel(),
+    )
+    with TestClient(app) as cliente:
+        inicio = time.monotonic()
+        resposta = cliente.request(
+            metodo,
+            "/api/v1/precos/servicos",
+            headers=cabecalhos("admin"),
+            json={
+                "codigo": "SRV-TROCA-OLEO",
+                "nome": "Troca de oleo",
+                "descricao": "Troca do oleo do motor",
+                "preco": "120.00",
+            }
+            if metodo == "POST"
+            else None,
+        )
+        decorrido = time.monotonic() - inicio
+        assert resposta.status_code == 503
+        assert decorrido < 4
+        assert resposta.json()["erro"]["codigo"] == "DEPENDENCIA_INDISPONIVEL"
+        assert cliente.get("/api/v1/saude").status_code == 200
+        assert cliente.get("/api/v1/saude/pronto").status_code == 503

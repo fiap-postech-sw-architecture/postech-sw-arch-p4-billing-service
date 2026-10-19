@@ -105,8 +105,10 @@ class MongoUnitOfWork:
         banco: Database[Documento],
         *,
         relogio: Relogio = agora_utc,
+        timeout_segundos: float = LIMITE_DA_TRANSACAO_SEGUNDOS,
     ) -> None:
         self.banco = banco
+        self._timeout_segundos = timeout_segundos
         self._relogio = relogio
         self._mensagem: MensagemRecebida | None = None
         self._sessao: ClientSession | None = None
@@ -137,7 +139,9 @@ class MongoUnitOfWork:
             return resultado
 
         try:
-            resultado = _na_transacao(self.banco, tentativa)
+            resultado = _na_transacao(
+                self.banco, tentativa, timeout_segundos=self._timeout_segundos
+            )
         finally:
             self._sessao = None
         for agregado, _colecao in self._agregados:
@@ -329,10 +333,13 @@ def processar_mensagem[T](
 
 
 def _na_transacao[T](
-    banco: Database[Documento], tentativa: Callable[[ClientSession], T]
+    banco: Database[Documento],
+    tentativa: Callable[[ClientSession], T],
+    *,
+    timeout_segundos: float = LIMITE_DA_TRANSACAO_SEGUNDOS,
 ) -> T:
     with (
-        pymongo.timeout(LIMITE_DA_TRANSACAO_SEGUNDOS),
+        pymongo.timeout(timeout_segundos),
         banco.client.start_session() as sessao,
     ):
         return sessao.with_transaction(

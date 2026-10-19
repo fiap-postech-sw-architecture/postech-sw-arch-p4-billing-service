@@ -73,7 +73,7 @@ def obter_pagamento(
         },
     },
 )
-def receber_notificacao(
+def receber_notificacao(  # noqa: PLR0913 - corpo, dependencias e metadados HTTP
     request: Request,
     corpo: NotificacaoMercadoPagoRequest,
     processar: Annotated[
@@ -82,6 +82,7 @@ def receber_notificacao(
     data_id: Annotated[str | None, Query(alias="data.id")] = None,
     x_signature: Annotated[str | None, Header()] = None,
     x_request_id: Annotated[str | None, Header()] = None,
+    tipo: Annotated[str | None, Query(alias="type")] = None,
 ) -> WebhookResponse:
     """Confere a assinatura e consulta o pagamento no provedor.
 
@@ -111,7 +112,7 @@ def receber_notificacao(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Assinatura do webhook invalida",
         )
-    tipo = request.query_params.get("type") or corpo.type
+    tipo = tipo or corpo.type
     if tipo != "payment":
         return WebhookResponse(processado=False)
     # 200 mesmo para pagamento que nao e nosso: reenviar nao mudaria nada.

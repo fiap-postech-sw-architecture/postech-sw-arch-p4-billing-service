@@ -12,7 +12,7 @@
           "saude"
         ],
         "summary": "Liveness (processo atende) e modo do pagamento",
-        "description": "Responde 200 quando o processo atende, com o ``MP_MODE`` em uso.\n\n``async`` de proposito (licao do p3): roda no event loop, fora do\nthreadpool das rotas sync, e responde mesmo com o pool saturado. Nao\nconsulta o MongoDB: uma queda do banco nao deve reiniciar os pods. O modo\ndeixa visivel quando o simulador esta ligado (ADR-040).",
+        "description": "Informa se a API esta ativa e o modo de pagamento em uso; nao consulta dependencias.",
         "operationId": "saude_api_v1_saude_get",
         "responses": {
           "200": {
@@ -1422,6 +1422,22 @@
                 }
               ],
               "title": "Data.Id"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
             }
           },
           {

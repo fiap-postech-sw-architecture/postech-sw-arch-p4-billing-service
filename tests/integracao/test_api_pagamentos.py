@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
     from src.compartilhado.dominio.relogio import Relogio
     from src.pagamento.aplicacao.dtos import PagamentoDTO
+    from src.pagamento.infraestrutura.simulado import GatewayPagamentoSimulado
 
     Cabecalhos = Callable[[str], dict[str, str]]
     Banco = Database[dict[str, Any]]
@@ -118,6 +120,34 @@ class TestConsulta:
         )
         assert corpo["notificacoes"] == []
 
+    def test_falha_legada_sai_com_mensagem_fixa_sem_regravar(
+        self, api: TestClient, app: FastAPI, cabecalhos: Cabecalhos
+    ) -> None:
+        dto = solicitado(app)
+        uow = MongoUnitOfWork(app.state.banco)
+        repo = MongoPagamentoRepository(uow)
+
+        def registrar() -> None:
+            alvo = repo.obter_por_id(dto.id)
+            assert alvo is not None
+            alvo.registrar_estorno_automatico(
+                "legada", agora=agora_utc(), falha="SENTINELA_LEGADA"
+            )
+            alvo.registrar_estorno_automatico("sucesso", agora=agora_utc())
+            repo.salvar(alvo)
+
+        uow.executar(registrar)
+        resposta = api.get(
+            f"/api/v1/pagamentos/{dto.id}", headers=cabecalhos("atendente")
+        )
+        assert resposta.status_code == 200
+        falhas = [e["falha"] for e in resposta.json()["estornos_automaticos"]]
+        assert falhas == ["Provedor de pagamento recusou a operacao", None]
+        assert "SENTINELA_LEGADA" not in resposta.text
+        documento = app.state.banco["pagamentos"].find_one({"_id": dto.id})
+        assert documento is not None
+        assert documento["estornos_automaticos"][0]["falha"] == "SENTINELA_LEGADA"
+
     def test_inexistente_e_permissao(
         self, api: TestClient, cabecalhos: Cabecalhos
     ) -> None:
@@ -167,6 +197,39 @@ class TestWebhook:
         # R$ 335,00 em centavos inteiros, somado depois do commit.
         assert centavos_confirmados() == antes + 33500
 
+    def test_consulta_lenta_do_provedor_nao_consume_prazo_da_transacao(
+        self, api: TestClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dto = solicitado(app)
+        gateway: GatewayPagamentoSimulado = app.state.gateway_pagamento
+        referencia = gateway.registrar_resultado(
+            pagamento_id=dto.id, valor=dinheiro("335.00"), aprovado=True
+        )
+        original = gateway.consultar_pagamento
+        primeira = True
+
+        def consultar(referencia: str) -> SituacaoNoProvedor | None:
+            nonlocal primeira
+            if primeira:
+                primeira = False
+                time.sleep(2.1)
+            return original(referencia)
+
+        monkeypatch.setattr(gateway, "consultar_pagamento", consultar)
+        resposta = api.post(
+            WEBHOOK,
+            params={"data.id": referencia, "type": "payment"},
+            json=notificacao(referencia),
+            headers=assinatura(referencia),
+        )
+        assert resposta.status_code == 200
+        assert resposta.json() == {"processado": True}
+        [envelope] = eventos_do_outbox(app.state.banco, "PagamentoConfirmado")
+        assert envelope["dados"]["pagamento_id"] == str(dto.id)
+        documento = app.state.banco["pagamentos"].find_one({"_id": dto.id})
+        assert documento is not None
+        assert documento["status"] == "CONFIRMADO"
+
     @pytest.mark.parametrize(
         "com_data_no_corpo", [True, False], ids=["data", "sem-data"]
     )
@@ -212,6 +275,39 @@ class TestWebhook:
         )
         assert resposta.json() == {"processado": False}
         assert consultas == []
+
+    @pytest.mark.parametrize(
+        ("query", "corpo", "esperadas"),
+        [
+            ("payment", "merchant_order", ["42"]),
+            ("merchant_order", "payment", []),
+            (None, "payment", ["42"]),
+            ("", "payment", ["42"]),
+        ],
+    )
+    @pytest.mark.parametrize("valida", [True, False])
+    def test_tipo_da_query_prevalece_e_assinatura_e_conferida_primeiro(
+        self,
+        api: TestClient,
+        consultas: list[str],
+        query: str | None,
+        corpo: str,
+        esperadas: list[str],
+        valida: bool,
+    ) -> None:
+        params = {"data.id": "42"}
+        if query is not None:
+            params["type"] = query
+        resposta = api.post(
+            WEBHOOK,
+            params=params,
+            json={**notificacao("42"), "type": corpo},
+            headers=assinatura("42" if valida else "errada"),
+        )
+        assert resposta.status_code == (200 if valida else 401)
+        assert consultas == (esperadas if valida else [])
+        if valida:
+            assert resposta.json() == {"processado": False}
 
     def test_mesma_notificacao_repetida_confirma_uma_vez(
         self, api: TestClient, app: FastAPI
@@ -528,7 +624,7 @@ class TestModoMercadoPago:
         uow.executar(lambda: MongoPagamentoRepository(uow).salvar(pendente))
         with respx.mock(base_url="https://api.mercadopago.com") as mp:
             mp.get("/v1/payments/1").respond(
-                401, json={"message": "invalid access token", "status": 401}
+                401, json={"message": "SENTINELA_PRIVACIDADE", "status": 401}
             )
             resposta = api_mp.post(
                 WEBHOOK,
@@ -540,6 +636,10 @@ class TestModoMercadoPago:
         # revogada nao pode parar o reenvio do Mercado Pago.
         assert resposta.status_code == 409
         assert resposta.json()["erro"]["codigo"] == "GATEWAY_PAGAMENTO_RECUSOU"
+        assert resposta.json()["erro"]["mensagem"] == (
+            "Provedor de pagamento recusou a operacao"
+        )
+        assert "SENTINELA_PRIVACIDADE" not in resposta.text
         documento = banco["pagamentos"].find_one({"_id": pendente.id})
         assert documento is not None
         assert documento["status"] == "SOLICITADO"

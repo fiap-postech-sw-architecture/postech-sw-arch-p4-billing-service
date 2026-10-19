@@ -539,7 +539,7 @@ class TestNotificacao:
     ) -> None:
         dto = confirmado(banco, gateway, relogio)
         gateway.respostas["999"] = tentativa(dto.id)
-        gateway.erro_no_estorno = GatewayPagamentoRecusouError("payment too old")
+        gateway.erro_no_estorno = GatewayPagamentoRecusouError("SENTINELA_PRIVACIDADE")
         with caplog.at_level(logging.ERROR):
             resultado = processar(banco, gateway, relogio, metricas).executar("999")
         assert resultado is not None
@@ -547,9 +547,16 @@ class TestNotificacao:
         [estorno] = resultado.estornos_automaticos
         assert (estorno.referencia_pagamento, estorno.falha) == (
             "999",
-            "payment too old",
+            "Provedor de pagamento recusou a operacao",
         )
+        documento = banco["pagamentos"].find_one({"_id": dto.id})
+        assert documento is not None
+        assert documento["estornos_automaticos"][0]["falha"] == (
+            "Provedor de pagamento recusou a operacao"
+        )
+        assert "SENTINELA_PRIVACIDADE" not in str(documento)
         assert eventos_do_outbox(banco, "PagamentoEstornado") == []
+        assert eventos_do_outbox(banco, "EstornoDePagamentoFalhou") == []
         assert metricas.estornos_automaticos_recusados == 1
         assert "automatic_refund_refused" in caplog.messages
 
@@ -990,7 +997,7 @@ class TestEstornarPagamento:
     ) -> None:
         pago = confirmado(banco, gateway, relogio)
         gateway.erro_no_estorno = GatewayPagamentoRecusouError(
-            "Mercado Pago respondeu 400: payment too old to refund " + "x" * 600
+            "SENTINELA_PRIVACIDADE" + "x" * 600
         )
         resultado = estornar(banco, gateway, relogio, metricas).executar(
             ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x"
@@ -998,8 +1005,13 @@ class TestEstornarPagamento:
         assert resultado.status == "CONFIRMADO"
         [envelope] = eventos_do_outbox(banco, "EstornoDePagamentoFalhou")
         motivo = envelope["dados"]["motivo"]
-        assert motivo.startswith("Mercado Pago respondeu 400: payment too old")
-        assert len(motivo) == 500
+        assert motivo == "Provedor de pagamento recusou a operacao"
+        documento = banco["pagamentos"].find_one({"_id": pago.id})
+        assert documento is not None
+        assert documento["status"] == "CONFIRMADO"
+        assert "SENTINELA_PRIVACIDADE" not in str(documento)
+        assert "SENTINELA_PRIVACIDADE" not in str(envelope)
+        assert eventos_do_outbox(banco, "PagamentoEstornado") == []
         assert metricas.estornos == []
         assert metricas.valores == []
 

@@ -47,6 +47,9 @@ class GatewayPagamentoRecusouError(DomainException):
     codigo = "GATEWAY_PAGAMENTO_RECUSOU"
     mensagem_padrao = "Provedor de pagamento recusou a operacao"
 
+    def __init__(self, mensagem: str | None = None) -> None:
+        super().__init__(self.mensagem_padrao)
+
 
 @dataclass(frozen=True, slots=True)
 class ItemCobranca:

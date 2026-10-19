@@ -270,13 +270,12 @@ def test_tracestate_de_exatamente_512_caracteres_e_mantido(
 def test_api_nao_deixa_o_fastapi_montar_o_export_otlp_na_partida(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Com o endpoint OTLP no ambiente (como no cluster), o FastAPI tentaria
-    somar exportadores http/protobuf na partida e, sem o extra
+    """Com configuracao automatica ligada e endpoint OTLP no ambiente, o FastAPI
+    tentaria somar exportadores http/protobuf na partida e, sem o extra
     ``fastapi[opentelemetry]``, avisaria que a configuracao falhou. O
     ``auto_configure`` desligado mantem o log de boot limpo."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger.pytstop-plataforma:4317"
-    )
+    monkeypatch.setenv("FASTAPI_OTEL_AUTO_CONFIGURE", "true")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
     avisos: list[str] = []
 
     class Coletor(logging.Handler):
