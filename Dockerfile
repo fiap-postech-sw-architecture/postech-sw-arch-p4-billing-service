@@ -3,7 +3,7 @@
 # mesmo Debian (trixie): o venv copiado do builder aponta para o interpretador
 # em /usr/local/bin e usa a glibc do runtime. O uv do builder acompanha a
 # versao que gerou o uv.lock.
-FROM ghcr.io/astral-sh/uv:0.11-python3.14-trixie-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.13-python3.14-trixie-slim AS builder
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
