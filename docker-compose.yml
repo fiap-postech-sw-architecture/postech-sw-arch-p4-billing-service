@@ -46,7 +46,8 @@ x-broker: &broker
 # Variaveis OTEL: os quatro processos (api, relay, consumidor, prazos) instalam
 # o SDK do OpenTelemetry e exportam os traces com OTEL_ENABLED=true. O endpoint
 # no ambiente da API (como no ConfigMap do cluster) tambem e o que o FastAPI le
-# na partida; o smoke confere que ele nao gera aviso no log.
+# na partida quando FASTAPI_OTEL_AUTO_CONFIGURE=true; o smoke forca essa
+# configuracao e confere que o override da aplicacao impede o aviso no log.
 x-traces: &traces
   OTEL_ENABLED: ${OTEL_ENABLED:-false}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
@@ -93,6 +94,7 @@ services:
       - "127.0.0.1:${API_PORT:-8002}:8000"
     environment:
       <<: [*banco, *comandos, *traces]
+      FASTAPI_OTEL_AUTO_CONFIGURE: "true"
       # JWKS do OS Service rodando no host (porta 8000, a do compose dele); sem
       # ele as rotas internas respondem 503 e as publicas (link do cliente,
       # webhook, simulador) seguem.

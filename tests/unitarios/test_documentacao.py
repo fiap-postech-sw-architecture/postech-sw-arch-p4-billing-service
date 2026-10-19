@@ -799,9 +799,6 @@ def test_curl_fora_da_secao_exemplos_da_api_nao_conta(openapi: dict[str, Any]) -
 # O curl cujo caminho comeca assim e do Billing (o do OS Service passa por /os/ e o
 # da borda do kind por /billing/): tem de casar com uma rota do OpenAPI.
 _CAMINHOS_DO_BILLING = ("/api/v1/", "/simulador/")
-# O webhook le o ``type`` de ``request.query_params``, e o OpenAPI so declara o
-# ``data.id`` (src/ nao muda neste PR).
-_QUERY_FORA_DO_OPENAPI = {("post", "/api/v1/webhooks/mercadopago"): {"type"}}
 
 
 def _erros_de_acesso(
@@ -828,10 +825,9 @@ def _erros_de_acesso(
     declarados = {p["name"] for p in parametros}
     obrigatorios = {p["name"] for p in parametros if p.get("required")}
     usados = {nome for nome, _ in parse_qsl(curl.query, keep_blank_values=True)}
-    fora = _QUERY_FORA_DO_OPENAPI.get(par, set())
     erros += [
         f"{onde}: query {nome} que a rota nao declara"
-        for nome in sorted(usados - declarados - fora)
+        for nome in sorted(usados - declarados)
     ]
     erros += [
         f"{onde}: sem a query obrigatoria {nome}"
@@ -1796,3 +1792,18 @@ def test_gate_do_readme_e_o_do_coveragerc_e_o_do_makefile() -> None:
     assert novo is not None
     assert diff_cover is not None
     assert novo[1] == diff_cover[1]
+
+
+def test_saude_tem_descricao_publica_e_query_type_documentada(
+    openapi: dict[str, Any],
+) -> None:
+    assert openapi["paths"]["/api/v1/saude"]["get"]["description"] == (
+        "Informa se a API esta ativa e o modo de pagamento em uso; "
+        "nao consulta dependencias."
+    )
+    parametros = openapi["paths"]["/api/v1/webhooks/mercadopago"]["post"]["parameters"]
+    [tipo] = [p for p in parametros if p["name"] == "type"]
+    assert tipo["in"] == "query"
+    assert tipo["required"] is False
+    assert tipo["schema"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert "enum" not in tipo["schema"]

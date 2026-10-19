@@ -19,7 +19,14 @@ _log = structlog.get_logger(__name__)
 router = APIRouter(tags=["saude"])
 
 
-@router.get("/api/v1/saude", summary="Liveness (processo atende) e modo do pagamento")
+@router.get(
+    "/api/v1/saude",
+    summary="Liveness (processo atende) e modo do pagamento",
+    description=(
+        "Informa se a API esta ativa e o modo de pagamento em uso; "
+        "nao consulta dependencias."
+    ),
+)
 async def saude(request: Request) -> dict[str, str]:
     """Responde 200 quando o processo atende, com o ``MP_MODE`` em uso.
 

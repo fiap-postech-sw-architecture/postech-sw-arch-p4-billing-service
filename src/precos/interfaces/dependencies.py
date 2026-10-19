@@ -13,15 +13,15 @@ from src.precos.infraestrutura.repository import (
 
 
 def obter_precos_de_servicos(request: Request) -> PrecosDeServicos:
-    uow = MongoUnitOfWork(request.app.state.banco)
+    uow = MongoUnitOfWork(request.app.state.banco, timeout_segundos=2.0)
     return PrecosDeServicos(uow, MongoPrecoServicoRepository(uow))
 
 
 def obter_precos_de_pecas(request: Request) -> PrecosDePecas:
-    uow = MongoUnitOfWork(request.app.state.banco)
+    uow = MongoUnitOfWork(request.app.state.banco, timeout_segundos=2.0)
     return PrecosDePecas(uow, MongoPrecoPecaRepository(uow))
 
 
 def obter_validar_itens(request: Request) -> ValidarItens:
-    uow = MongoUnitOfWork(request.app.state.banco)
+    uow = MongoUnitOfWork(request.app.state.banco, timeout_segundos=2.0)
     return ValidarItens(MongoPrecoServicoRepository(uow), MongoPrecoPecaRepository(uow))

@@ -251,7 +251,7 @@ class TestCriarCobranca:
         assert rota.call_count == 1
         assert esperas == []
 
-    def test_erro_400_vira_recusa_com_a_mensagem_do_provedor(
+    def test_erro_400_vira_recusa_com_mensagem_fixa(
         self, gateway: MercadoPagoGateway
     ) -> None:
         with respx.mock(base_url=API) as mp:
@@ -259,7 +259,8 @@ class TestCriarCobranca:
                 return_value=erro_mp(400, "unit_price invalid")
             )
             with pytest.raises(
-                GatewayPagamentoRecusouError, match="unit_price invalid"
+                GatewayPagamentoRecusouError,
+                match="Provedor de pagamento recusou a operacao",
             ):
                 gateway.criar_cobranca(
                     pagamento_id=uuid4(),
@@ -383,7 +384,8 @@ class TestConsultarPagamento:
                 return_value=erro_mp(status, "invalid access token")
             )
             with pytest.raises(
-                GatewayPagamentoRecusouError, match=f"respondeu {status}"
+                GatewayPagamentoRecusouError,
+                match="Provedor de pagamento recusou a operacao",
             ):
                 gateway.consultar_pagamento("1")
         assert rota.call_count == 1  # recusa nao e repetida
@@ -522,7 +524,10 @@ class TestEstornar:
             rota = mp.post("/v1/payments/1/refunds").mock(
                 return_value=erro_mp(400, "Payment already refunded")
             )
-            with pytest.raises(GatewayPagamentoRecusouError, match="already refunded"):
+            with pytest.raises(
+                GatewayPagamentoRecusouError,
+                match="Provedor de pagamento recusou a operacao",
+            ):
                 gateway.estornar("1", chave_idempotencia="msg-3")
         assert rota.call_count == 1
 
@@ -545,7 +550,10 @@ class TestEstornar:
             mp.post("/v1/payments/1/refunds").respond(
                 201, json={**REEMBOLSO_CRIADO, "status": status}
             )
-            with pytest.raises(GatewayPagamentoRecusouError, match=status):
+            with pytest.raises(
+                GatewayPagamentoRecusouError,
+                match="Provedor de pagamento recusou a operacao",
+            ):
                 gateway.estornar("1", chave_idempotencia="msg-6")
 
     def test_estorno_sem_status_nao_e_dado_como_concluido(
@@ -573,13 +581,19 @@ class TestEstornar:
     def test_erro_sem_corpo_json(self, gateway: MercadoPagoGateway) -> None:
         with respx.mock(base_url=API) as mp:
             mp.post("/v1/payments/1/refunds").respond(404, text="not found")
-            with pytest.raises(GatewayPagamentoRecusouError, match="sem detalhe"):
+            with pytest.raises(
+                GatewayPagamentoRecusouError,
+                match="Provedor de pagamento recusou a operacao",
+            ):
                 gateway.estornar("1", chave_idempotencia="msg-4")
 
     def test_referencia_invalida_e_recusada_sem_chamar(
         self, gateway: MercadoPagoGateway
     ) -> None:
-        with pytest.raises(GatewayPagamentoRecusouError, match="invalida"):
+        with pytest.raises(
+            GatewayPagamentoRecusouError,
+            match="Provedor de pagamento recusou a operacao",
+        ):
             gateway.estornar("../1", chave_idempotencia="msg")
 
 
@@ -615,7 +629,10 @@ class TestCancelarCobranca:
     def test_referencia_invalida_e_recusada_sem_chamar(
         self, gateway: MercadoPagoGateway
     ) -> None:
-        with pytest.raises(GatewayPagamentoRecusouError, match="invalida"):
+        with pytest.raises(
+            GatewayPagamentoRecusouError,
+            match="Provedor de pagamento recusou a operacao",
+        ):
             gateway.cancelar_cobranca("../preferences")
 
     def test_redirecionamento_nao_e_sucesso_mesmo_com_o_corpo_ignorado(
@@ -762,7 +779,10 @@ class TestRespostaForaDoContrato:
             mp.put("/checkout/preferences/pref-1").mock(
                 return_value=erro_mp(404, "preference not found")
             )
-            with pytest.raises(GatewayPagamentoRecusouError, match="not found"):
+            with pytest.raises(
+                GatewayPagamentoRecusouError,
+                match="Provedor de pagamento recusou a operacao",
+            ):
                 gateway.cancelar_cobranca("pref-1")
         assert contador("cancelar_cobranca", "nao_encontrado") == antes + 1
 
@@ -935,7 +955,7 @@ class TestLogDaRecusa:
         # Um WARNING so, a metrica conta como antes e a excecao leva a mesma frase.
         assert log.avisos() == [linha]
         assert contador("criar_cobranca", "recusado") == antes + 1
-        assert str(recusa) == "Mercado Pago respondeu 400: invalid items"
+        assert str(recusa) == "Provedor de pagamento recusou a operacao"
 
     def test_texto_livre_do_provedor_nunca_aparece_no_log(
         self,
@@ -974,8 +994,8 @@ class TestLogDaRecusa:
             "status_http": 400,
             "causas": ["4001"],
         }
-        # O texto livre segue so na mensagem da excecao, como antes.
-        assert "SENTINELA-MESSAGE" in str(recusa)
+        # A excecao tambem bloqueia o texto livre antes dos demais destinos.
+        assert str(recusa) == "Provedor de pagamento recusou a operacao"
 
     def test_so_o_evento_vai_para_o_log_sem_url_cabecalho_nem_referencia(
         self, gateway: MercadoPagoGateway, log: LogDoAdaptador
@@ -1224,7 +1244,7 @@ class TestLogDaRecusa:
             "status_http": 400,
             "causas": [],
         }
-        assert str(recusa) == "Mercado Pago respondeu 400: x"
+        assert str(recusa) == "Provedor de pagamento recusou a operacao"
 
     @pytest.mark.parametrize(
         "corpo",
@@ -1251,7 +1271,7 @@ class TestLogDaRecusa:
             "status_http": 400,
             "causas": [],
         }
-        assert str(recusa) == "Mercado Pago respondeu 400: sem detalhe"
+        assert str(recusa) == "Provedor de pagamento recusou a operacao"
 
     def test_repr_da_recusa_nao_traz_o_texto_do_provedor(self) -> None:
         # Qualquer repr, `%r` ou traceback com locals imprimiria a mensagem.
@@ -1538,3 +1558,10 @@ class TestAssinaturaDoWebhook:
         assert not assinatura_webhook_valida(
             segredo="", x_signature=f"ts=1,v1={v1}", x_request_id="r1", data_id="1"
         )
+
+
+def test_recusa_nao_transporta_texto_do_provedor() -> None:
+    exc = GatewayPagamentoRecusouError("SENTINELA_PRIVACIDADE")
+    assert str(exc) == exc.mensagem == "Provedor de pagamento recusou a operacao"
+    assert exc.args == ("Provedor de pagamento recusou a operacao",)
+    assert exc.codigo == "GATEWAY_PAGAMENTO_RECUSOU"

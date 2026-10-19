@@ -16,7 +16,7 @@ def test_cliente_fala_uuid_padrao_em_utc_e_tem_limites_explicitos() -> None:
     try:
         opcoes = cliente.options
         # Operacao presa em mongod travado cai em 10 s (CSOT), nao esgota o
-        # threadpool; sem primario a API falha em 5 s, e nao nos 30 s do padrao.
+        # threadpool; workers selecionam o primario em 5 s, a API usa 2 s.
         # Folga de conexoes sobre as 40 threads da API; o padrao do driver e 100.
         assert (
             opcoes.timeout,
@@ -35,3 +35,14 @@ def test_teto_da_transacao_e_de_10_segundos() -> None:
     # a 10 s (README e MEMORY), e o estouro vira ExecutionTimeout, que o
     # consumidor manda para a fila de retry.
     assert LIMITE_DA_TRANSACAO_SEGUNDOS == 10.0
+
+
+def test_cliente_da_api_limita_operacao_e_selecao_a_2_segundos() -> None:
+    with criar_cliente(
+        "mongodb://127.0.0.1:1/?directConnection=true", timeout_segundos=2.0
+    ) as cliente:
+        assert (
+            cliente.options.timeout,
+            cliente.options.server_selection_timeout,
+            cliente.options.pool_options.max_pool_size,
+        ) == (2, 2, 50)

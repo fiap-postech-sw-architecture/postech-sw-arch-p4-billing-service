@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import structlog
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pymongo.errors import ConnectionFailure, ExecutionTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.compartilhado.dominio.exceptions import (
@@ -118,6 +119,21 @@ async def _domain_exception_handler(  # NOSONAR - async de proposito
     )
 
 
+async def _mongo_indisponivel_handler(  # NOSONAR - async de proposito
+    request: Request, exc: ConnectionFailure | ExecutionTimeout
+) -> JSONResponse:
+    request_id = _obter_request_id(request)
+    logger.warning("mongo_unavailable", erro=type(exc).__name__, request_id=request_id)
+    return JSONResponse(
+        status_code=503,
+        content=_criar_envelope(
+            "DEPENDENCIA_INDISPONIVEL",
+            "Dependencia externa indisponivel; tente novamente",
+            request_id,
+        ),
+    )
+
+
 async def _http_exception_handler(  # NOSONAR - async de proposito
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
@@ -195,6 +211,7 @@ def registrar_error_handlers(app: FastAPI) -> None:
 
     ``DomainException`` vira 404/409/410/503 pelo mapa; ``HTTPException``
     (autenticacao, rota inexistente) mantem status e headers;
+    Conexao e timeout do MongoDB viram 503 sem detalhe do driver.
     ``ValorInvalidoError`` vira 422 ``VALOR_INVALIDO``; o resto, inclusive
     ``ValueError`` de biblioteca ou de adapter, vira 500 com traceback no log.
     """
@@ -202,4 +219,6 @@ def registrar_error_handlers(app: FastAPI) -> None:
     app.exception_handler(StarletteHTTPException)(_http_exception_handler)
     app.exception_handler(RequestValidationError)(_request_validation_handler)
     app.exception_handler(ValorInvalidoError)(_valor_invalido_handler)
+    app.exception_handler(ConnectionFailure)(_mongo_indisponivel_handler)
+    app.exception_handler(ExecutionTimeout)(_mongo_indisponivel_handler)
     app.exception_handler(Exception)(_generic_exception_handler)

@@ -553,7 +553,7 @@ sequenceDiagram
 ```
 
 1. **Assinatura.** O manifesto é `id:<data.id em minúsculas>;request-id:<x-request-id>;ts:<ts>;`, e a parte ausente sai do manifesto. A API compara o HMAC-SHA256 com o `v1` do cabeçalho em tempo constante, com o segredo `MP_WEBHOOK_SECRET`. Assinatura ausente ou inválida responde 401 e conta na métrica `pytstop_webhook_assinatura_invalida_total`. Sem o segredo no servidor, a rota responde 503.
-2. **O que a API responde 200 sem processar:** notificação sem `data.id` (essa checagem vem antes da assinatura) e, com a assinatura válida, notificação de outro tipo que não `payment`; sem a assinatura, a de outro tipo responde 401. O Mercado Pago só para de reenviar com 2xx. O corpo JSON é obrigatório; sem ele, 422.
+2. **Tipo da notificação.** A query opcional `type` prevalece sobre o corpo; ausente ou vazia, usa o `type` do corpo, sem restringir os valores por enum. **O que a API responde 200 sem processar:** notificação sem `data.id` (essa checagem vem antes da assinatura) e, com a assinatura válida, notificação de outro tipo que não `payment`; sem a assinatura, a de outro tipo responde 401. O Mercado Pago só para de reenviar com 2xx. O corpo JSON é obrigatório; sem ele, 422.
 3. **Consulta.** `GET /v1/payments/{id}` devolve a tentativa. Referência que o provedor não conhece, ou cuja `external_reference` não é um pagamento nosso, responde 200 com `processado: false`. Provedor fora do ar responde 503 e o Mercado Pago reenvia.
 4. **Aplicação.** Cada par (tentativa, status do provedor) entra no histórico `notificacoes` uma vez; repetir a mesma notificação não grava nada. Aprovação de valor e moeda iguais num pagamento `SOLICITADO` confirma. Cada tentativa recusada nova soma em `recusas`, e a de número `PAGAMENTO_MAX_RECUSAS` encerra a cobrança como `RECUSADO`, porque no Checkout Pro o comprador pode tentar de novo depois de uma recusa.
 5. **Estorno automático.** Aprovação que a cobrança não aceita (já encerrada, ou de valor ou moeda diferentes) é estornada na hora, fora da transação, com a chave de idempotência `estorno-{pagamento_id}-{tentativa}`. O resultado fica em `estornos_automaticos`. A cobrança encerrada sem pagamento vira `ESTORNADO` e publica `PagamentoEstornado{motivo=pagamento_apos_encerramento}`; a recusa do provedor ao estorno fica marcada em `falha`, sem evento, para o operador resolver.
@@ -716,7 +716,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 | `POST /api/v1/webhooks/mercadopago` | o Mercado Pago, pela `x-signature` |
 | `GET /simulador/checkout/{id}` e `POST /api/v1/simulador/pagamentos/{id}/aprovar` e `/recusar` | quem tem o token do `checkout_url`; só com `MP_MODE=simulado` |
 
-**O que cada rota devolve, e a quem.** O Billing não guarda nome, documento, contato nem endereço de cliente, então nenhuma resposta tem campo desses dados. A exceção possível é o texto livre do provedor de pagamento, que o Billing não filtra (nas linhas do pagamento abaixo). O que cada rota traz de identificador ou de credencial:
+**O que cada rota devolve, e a quem.** O Billing não guarda nome, documento, contato nem endereço de cliente, então nenhuma resposta tem campo desses dados. O texto livre de recusa do provedor é substituído por uma mensagem fixa antes de sair na API ou nos eventos. O que cada rota traz de identificador ou de credencial:
 
 | Rota | O que devolve | Identificador ou credencial na resposta |
 |---|---|---|
@@ -725,7 +725,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 | Validação de itens | os códigos que o chamador mandou e não existem ou estão inativos | nenhum |
 | Orçamento, consulta e decisão do atendente | o orçamento inteiro: `ordem_id`, linhas, total, prazo, decisão e `motivo_cancelamento` | `decisao.decidido_por` é o `sub` do atendente (UUID, não o nome) |
 | Orçamento, link público | `id`, status, linhas, total, moeda, `valido_ate` e `decisao` | nenhum: sem `ordem_id`, `criado_em` e `motivo_cancelamento`, e `decidido_por` sempre nulo |
-| Pagamento, consulta interna | o pagamento inteiro, com as notificações e os estornos automáticos | `ordem_id`; o `checkout_url`, que é credencial (no simulador leva o token que aprova o pagamento; no provedor real, o link do checkout); `motivo` e `falha` podem trazer o texto do provedor |
+| Pagamento, consulta interna | o pagamento inteiro, com as notificações e os estornos automáticos | `ordem_id`; o `checkout_url`, que é credencial (no simulador leva o token que aprova o pagamento; no provedor real, o link do checkout); a falha de estorno usa mensagem fixa |
 | Webhook | `{"processado": true ou false}` | nenhum |
 | Simulador | a página HTML (id, valor, status e o token nos botões); o `POST` devolve o pagamento inteiro, como a consulta interna | `ordem_id` e o `checkout_url` com o token, para quem já tem o token |
 
@@ -736,14 +736,14 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 - **Corpo sem `Content-Type: application/json`** dá 422 (`model_attributes_type`), inclusive no webhook, que exige corpo.
 - **Link público.** Token adulterado, expirado, de orçamento inexistente ou já decidido: 404 `LINK_DECISAO_INVALIDO`, igual para todos. Corpo inválido no `POST` dá 422 antes de olhar o token. Um `/` a mais no fim do caminho não casa a rota e dá o 404 genérico `ENTIDADE_NAO_ENCONTRADA`, porque a API não redireciona.
 - **Checkout do simulador.** Token ausente, inválido, expirado ou de outro pagamento: 404 `CHECKOUT_NAO_ENCONTRADO`; o token do link de decisão não abre o checkout (domínios de assinatura diferentes). Pagamento que já não está `SOLICITADO`: 409.
-- **Banco fora.** As rotas que leem o MongoDB esperam até 10 s e respondem 500 `ERRO_INTERNO`; a readiness responde 503 em cerca de 2 s e tira o pod do Service, e a liveness segue 200.
+- **Banco fora.** Falhas de conexão e timeout do MongoDB respondem 503 `DEPENDENCIA_INDISPONIVEL`, com `Dependencia externa indisponivel; tente novamente`, sem detalhe do driver. Na API, o cliente e cada transação têm limite de 2 s, sem incluir a espera do provedor; os workers mantêm operação/transação de 10 s e seleção de servidor de 5 s. Documento inválido, erro de programação e `OperationFailure` comum continuam 500. A readiness responde 503 em cerca de 2 s e tira o pod do Service, e a liveness segue 200.
 - **Ordem das checagens** nas rotas internas: token (401), papel (403), corpo e parâmetros (422) e só então o banco (404, 409, 410).
 
 **Segredos e dados sensíveis:**
 
 - O token do link de decisão e o do checkout são credenciais: saem mascarados do log, do access log e do atributo de URL dos spans. O `link_decisao` e o `checkout_url` nunca vão para log nem para atributo de span.
 - O `ORCAMENTO_LINK_SECRET` é obrigatório e forte fora de desenvolvimento (o valor de demonstração é recusado no boot); o `MP_ACCESS_TOKEN` e o `MP_WEBHOOK_SECRET` vêm de Secret, e o valor de cada um não está em nenhum arquivo do repositório. Como obtê-los no cluster está no README, em [Implantação](../README.md#implantação).
-- O texto livre da recusa do provedor (`message` e `description`) não entra em nenhum log. Ele continua em três lugares que não são log: o `estornos_automaticos[].falha` do pagamento (visível na consulta interna), o `motivo` do `EstornoDePagamentoFalhou` e o corpo do 409 que o webhook devolve quando a consulta ao provedor é recusada. Trocar esses textos por um texto fixo é dívida registrada no `MEMORY.md`.
+- O texto livre da recusa do provedor (`message` e `description`) não entra em nenhum log. A exceção usa `Provedor de pagamento recusou a operacao`: novos `estornos_automaticos[].falha`, o `motivo` do `EstornoDePagamentoFalhou` e o corpo do 409 do webhook levam esse texto. A consulta apresenta falhas antigas com a mesma mensagem fixa, sem alterar o documento salvo, e mantém `falha: null` para sucesso.
 - Logs e erros passam por um mascaramento de CPF, CNPJ, e-mail, telefone e chaves sensíveis, inclusive o traceback; os spans não levam o texto das exceções nem o caminho cru da URL.
 
 **LGPD.** O Billing não recebe nome, documento nem contato (o OS Service, dono do cadastro, manda e-mail e elimina os dados do titular), e por isso **não tem fluxo de anonimização**: o `AnonimizarVeiculo` da eliminação é um comando da Execução, e nenhum comando do Billing leva dado do titular. O que sobra são identificadores (`ordem_id`, o `sub` do atendente) e os textos do provedor acima.

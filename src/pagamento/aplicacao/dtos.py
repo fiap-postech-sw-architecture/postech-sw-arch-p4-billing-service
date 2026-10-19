@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from src.pagamento.aplicacao.ports import GatewayPagamentoRecusouError
+
 if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
@@ -88,7 +90,11 @@ class PagamentoDTO:
                 EstornoAutomaticoDTO(
                     referencia_pagamento=e.referencia_pagamento,
                     registrado_em=e.registrado_em,
-                    falha=e.falha,
+                    falha=(
+                        GatewayPagamentoRecusouError.mensagem_padrao
+                        if e.falha is not None
+                        else None
+                    ),
                 )
                 for e in pagamento.estornos_automaticos
             ),

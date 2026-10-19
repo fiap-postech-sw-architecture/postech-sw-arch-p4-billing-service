@@ -12,6 +12,11 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Recent decisions
 
+- 2026-10-19 - Restringe a entrada de 18/10 sobre o prazo do MongoDB: so na API a espera do provedor fica fora do prazo da transacao. No consumidor, processar_mensagem envolve o handler inteiro em pymongo.timeout(10), incluindo leitura e HTTP externo; o comportamento documentado em 07/10 permanece.
+
+- 2026-10-18 - Recusa de pagamento usa mensagem fixa na excecao, nos novos registros/eventos e na API; falha legada e protegida so na projecao, sem regravar dados. Contradiz a divida sobre texto livre nos tres destinos; ver README, Log da recusa do Mercado Pago. O alinhamento descritivo do contrato canonico e das copias depende de follow-up no platform, sem mudar formato ou versao.
+- 2026-10-18 - MongoDB na API tem cliente e transacao de 2 s; workers conservam operacao/transacao de 10 s e selecao de 5 s. So ConnectionFailure e ExecutionTimeout viram 503 DEPENDENCIA_INDISPONIVEL sem detalhe do driver; erro de dado e programacao continua 500. Consulta ao provedor fica fora do prazo da transacao.
+
 - 2026-10-18 - Contradiz a entrada de 18/10 sobre o teto do OpenTelemetry ("a familia sobe junta no `python-patch-e-minor` (patches e minors) e a major fica atras do teto `<1.46` e `<0.67`"): o teto barra tambem a proxima minor (1.46 e 0.67), entao pelo grupo so sobe patch (1.45.x e 0.66bN), e uma minor nova so entra com os dois tetos subidos a mao, juntos (SDK e exportador, instrumentacoes). O `dependabot.yml` e o README dizem isso; o que o Dependabot faz diante do teto ainda nao foi visto neste repositorio: confira no primeiro PR dele - PR #15
 - 2026-10-18 - `docs/arquitetura.md` nao compara com o codigo o tipo da coluna Tipo nem as marcas PK e UK do ER: a deriva entre o mapeamento e o documento ja e pega pelos testes de campos, de validadores e de indices, e o ER segue nomes, como na Execucao. O teste enumera toda colecao que o init cria, com validador ou com indice, e exige a tabela dela. Contradiz a frase "campos e indices" da entrada de 18/10 sobre o documento: o tipo, a Resposta dos comandos (so se confere que o evento existe), a Etapa esperada e o Quando sai dos eventos ficam sem teste, e a arquitetura e o README dizem isso - PR #15
 - 2026-10-18 - Documentacao do Billing (RNF-050 a RNF-052) em PR empilhado sobre o #14, sem mudar `src/`: `docs/arquitetura.md`, `docs/api/` (OpenAPI e colecao Postman gerados por `make docs-api`), um `curl` por rota na secao Exemplos da API do README e a tabela de cobertura escrita por `scripts/cobertura_resumo.py --readme`. O OpenAPI versionado e o do `MP_MODE=simulado`, com as tres rotas do simulador (o gerador monta o app com `Configuracao.do_ambiente({"ENVIRONMENT": "development", "MP_MODE": "simulado"})` e um `TracerProvider` descartavel, entao nao toca em banco, rede nem no provider do processo) - PR #15
@@ -83,6 +88,10 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 - 2026-10-06 - Camada de aplicacao loga com `logging` da stdlib e `extra=` (o import-linter proibe structlog la); o `ExtraAdder` no pipeline do logging vira os extras em campos JSON antes do scrub de PII
 
 ## Gotchas
+
+- 2026-10-18 - Parametro default captura a constante na definicao: o teste que encurta o prazo da transacao deve encurtar o pymongo.timeout real, conferindo o default recebido, em vez de monkeypatch da constante. Porta fechada e UoW reais provam o teto da API sem depender da pre-leitura.
+
+- 2026-10-19 - No FastAPI 0.143, o auto_configure e false por padrao. O teste de boot precisa forcar FASTAPI_OTEL_AUTO_CONFIGURE=true para detectar a remocao do override telemetry={"auto_configure": False}; apenas definir OTEL_EXPORTER_OTLP_ENDPOINT nao basta. O compose da API tambem forca a flag para o smoke exercer essa protecao. A entrada de 14/10 descreve o comportamento anterior, no FastAPI 0.142.
 
 - 2026-10-18 - Ao religar o PR #15 depois do #13 (FastAPI 0.143 e Pydantic 2.14), os dois testes de igualdade do OpenAPI reprovaram: o schema de Decimal gerado deixou de emitir pattern. Regenerar com make docs-api atualiza so docs/api/openapi.json; validadores de producao e a colecao Postman ficam iguais. Os testes versionados devem rodar tambem depois de integrar um PR de dependencias.
 

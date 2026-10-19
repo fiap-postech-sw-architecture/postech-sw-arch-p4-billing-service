@@ -88,7 +88,11 @@ def criar_app(
         # Sem acesso ao banco no boot: com o MongoDB fora a API sobe e a
         # readiness responde 503 ate ele voltar (indices e validadores sao do
         # init, ``python -m src.banco``).
-        cliente = None if banco is not None else criar_cliente(config.mongodb_uri)
+        cliente = (
+            None
+            if banco is not None
+            else criar_cliente(config.mongodb_uri, timeout_segundos=2.0)
+        )
         app.state.banco = banco if cliente is None else cliente[config.mongodb_banco]
         # Idade da outbox na raspagem da API: com o relay parado ela segue
         # exportada, e e ela que mantem o alerta de outbox parada de pe.
@@ -116,7 +120,7 @@ def criar_app(
         # /docs e /redoc em todo ambiente: a borda publica o Swagger (ADR-038).
         # Sem redirect de barra final: 404 direto, sem 307 para outra URL.
         redirect_slashes=False,
-        # Sem o export automatico do FastAPI: com o endpoint OTLP no ambiente
+        # Sem o export automatico do FastAPI: se habilitado pelo ambiente,
         # ele soma exportadores http/protobuf na partida, que pedem o extra
         # fastapi[opentelemetry] (o endpoint do cluster e gRPC) e deixavam um
         # aviso no log de boot. Quem exporta, por gRPC, e o provider do processo

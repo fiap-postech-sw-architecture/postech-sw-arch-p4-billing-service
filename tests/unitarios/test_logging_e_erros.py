@@ -14,6 +14,14 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from pymongo.errors import (
+    AutoReconnect,
+    ExecutionTimeout,
+    NetworkTimeout,
+    OperationFailure,
+    ServerSelectionTimeoutError,
+    WaitQueueTimeoutError,
+)
 
 from src.compartilhado.dominio.exceptions import (
     DependenciaIndisponivelError,
@@ -30,6 +38,7 @@ from src.compartilhado.infraestrutura.logging import (
     scrub_pii,
 )
 from src.compartilhado.infraestrutura.metricas import configurar_metricas
+from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
 
@@ -440,6 +449,13 @@ def cliente() -> TestClient:
         "valor-de-biblioteca": ValueError("Expecting value: line 1 column 1"),
         "http": HTTPException(401, "sem token", headers={"WWW-Authenticate": "Bearer"}),
         "bug": RuntimeError("bug"),
+        "mongo-selecao": ServerSelectionTimeoutError("SENTINELA_DRIVER"),
+        "mongo-reconexao": AutoReconnect("SENTINELA_DRIVER"),
+        "mongo-rede": NetworkTimeout("SENTINELA_DRIVER"),
+        "mongo-execucao": ExecutionTimeout("SENTINELA_DRIVER"),
+        "mongo-pool": WaitQueueTimeoutError("SENTINELA_DRIVER"),
+        "mongo-operacao": OperationFailure("SENTINELA_DRIVER", code=2),
+        "documento-invalido": DocumentoInvalidoError("SENTINELA_DRIVER"),
     }
 
     @app.get("/erro/{nome}")
@@ -469,6 +485,8 @@ def cliente() -> TestClient:
         ("valor-de-biblioteca", 500, "ERRO_INTERNO"),
         ("http", 401, "NAO_AUTENTICADO"),
         ("bug", 500, "ERRO_INTERNO"),
+        ("mongo-operacao", 500, "ERRO_INTERNO"),
+        ("documento-invalido", 500, "ERRO_INTERNO"),
     ],
 )
 def test_envelope_de_erro(
@@ -649,3 +667,30 @@ def test_rede_de_seguranca_sem_o_middleware_tambem_responde_o_envelope() -> None
         "mensagem": "Erro interno do servidor",
         "id_requisicao": "desconhecido",
     }
+
+
+@pytest.mark.parametrize(
+    "nome",
+    ["mongo-selecao", "mongo-reconexao", "mongo-rede", "mongo-execucao", "mongo-pool"],
+)
+def test_mongo_indisponivel_tem_503_sem_detalhe(
+    cliente: TestClient, saida_de_log: io.StringIO, nome: str
+) -> None:
+    resposta = cliente.get(f"/erro/{nome}", headers={"X-Request-ID": "req-mongo"})
+    assert resposta.status_code == 503
+    assert resposta.json() == {
+        "erro": {
+            "codigo": "DEPENDENCIA_INDISPONIVEL",
+            "mensagem": "Dependencia externa indisponivel; tente novamente",
+            "id_requisicao": "req-mongo",
+        }
+    }
+    assert resposta.headers["X-Request-ID"] == "req-mongo"
+    assert resposta.headers["X-Content-Type-Options"] == "nosniff"
+    assert "SENTINELA_DRIVER" not in resposta.text
+    assert "SENTINELA_DRIVER" not in saida_de_log.getvalue()
+    [registro] = [
+        e for e in linhas_json(saida_de_log) if e["event"] == "mongo_unavailable"
+    ]
+    assert registro["request_id"] == "req-mongo"
+    assert "exception" not in registro

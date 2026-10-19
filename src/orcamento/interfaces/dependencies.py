@@ -10,7 +10,9 @@ from src.orcamento.infraestrutura.repository import MongoOrcamentoRepository
 
 
 def obter_decidir_orcamento(request: Request) -> DecidirOrcamento:
-    uow = MongoUnitOfWork(request.app.state.banco, relogio=request.app.state.relogio)
+    uow = MongoUnitOfWork(
+        request.app.state.banco, relogio=request.app.state.relogio, timeout_segundos=2.0
+    )
     return DecidirOrcamento(
         uow,
         MongoOrcamentoRepository(uow),
@@ -21,7 +23,9 @@ def obter_decidir_orcamento(request: Request) -> DecidirOrcamento:
 
 
 def obter_consultar_orcamentos(request: Request) -> ConsultarOrcamentos:
-    uow = MongoUnitOfWork(request.app.state.banco, relogio=request.app.state.relogio)
+    uow = MongoUnitOfWork(
+        request.app.state.banco, relogio=request.app.state.relogio, timeout_segundos=2.0
+    )
     return ConsultarOrcamentos(
         MongoOrcamentoRepository(uow),
         request.app.state.link_decisao,
