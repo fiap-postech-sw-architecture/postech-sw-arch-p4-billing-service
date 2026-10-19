@@ -1,8 +1,9 @@
 """Scripts do CI (``scripts/ci/``): a conferencia que estreita a excecao do
 trivy (KSV-0109) ao ConfigMap do ``replica-set.js`` e o relatorio das imagens
 de terceiros, que nunca reprova o job, o registro da saida do pip-audit e do
-trivy no summary, o formato das entradas do ``.gitleaksignore`` e os nomes das
-variaveis do ``make kind-deploy``."""
+trivy no summary, o formato das entradas do ``.gitleaksignore``, os nomes das
+variaveis do ``make kind-deploy``, a guarda de frescor do ``make diff-cover`` e
+o ``dependabot.yml``."""
 
 from __future__ import annotations
 
@@ -302,6 +303,54 @@ def test_o_security_yml_registra_o_pip_audit_e_o_trivy_no_summary(
     assert titulo in comandos[0].split(ferramenta)[0]
 
 
+def test_dependabot_tem_agenda_prefixo_grupos_e_ignore_de_cada_bloco() -> None:
+    config = yaml.safe_load(
+        (RAIZ / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    )
+    blocos = {bloco["package-ecosystem"]: bloco for bloco in config["updates"]}
+    agenda = {
+        "interval": "weekly",
+        "day": "monday",
+        "time": "06:00",
+        "timezone": "America/Sao_Paulo",
+    }
+    patch_e_minor = {"update-types": ["minor", "patch"]}
+    # O Python sobe a mao; o uv do builder (um FROM) sobe pelo Dependabot, sem ignore.
+    so_patch_do_python = [
+        {
+            "dependency-name": "python",
+            "update-types": [
+                "version-update:semver-major",
+                "version-update:semver-minor",
+            ],
+        }
+    ]
+    # Um grupo por nome (o do OpenTelemetry) ficaria vazio: no job real os
+    # opentelemetry-* sairam dele para o de update-types ("belongs to more
+    # specific group"), entao cada bloco tem so o de patch e minor.
+    esperado = {
+        "uv": ("chore(deps)", {"python-patch-e-minor": patch_e_minor}, []),
+        "github-actions": ("ci", {"actions-patch-e-minor": patch_e_minor}, []),
+        "docker": (
+            "chore(deps)",
+            {"docker-patch-e-minor": patch_e_minor},
+            so_patch_do_python,
+        ),
+    }
+
+    assert set(blocos) == set(esperado)
+    for nome, (prefixo, grupos, ignore) in esperado.items():
+        bloco = blocos[nome]
+        assert bloco["directory"] == "/", nome
+        assert bloco["schedule"] == agenda, nome
+        assert bloco["open-pull-requests-limit"] == 3, nome
+        assert bloco["commit-message"] == {"prefix": prefixo}, nome
+        assert bloco["groups"] == grupos, nome
+        assert bloco.get("ignore", []) == ignore, nome
+        # Rotulo declarado e inexistente no repositorio vira comentario em cada PR.
+        assert "labels" not in bloco, nome
+
+
 PADRAO = "../postech-sw-arch-p4-platform"
 
 
@@ -353,7 +402,7 @@ def test_kind_deploy_aceita_platform_dir_e_kind_overlay(
 
 
 def _diff_cover(
-    tmp_path: Path, xml_mais_novo: bool
+    tmp_path: Path, xml_mais_novo: bool, *, sem_xml: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """``make diff-cover`` numa arvore minuscula, com um ``uvx`` falso no PATH que
     so registra os argumentos."""
@@ -365,6 +414,8 @@ def _diff_cover(
     os.utime(codigo, (2_000_000_000, 2_000_000_000))
     do_xml = 2_000_000_100 if xml_mais_novo else 1_999_999_900
     os.utime(xml, (do_xml, do_xml))
+    if sem_xml:
+        xml.unlink()
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     argumentos = tmp_path / "argumentos-do-uvx"
@@ -395,6 +446,15 @@ def test_diff_cover_recusa_coverage_xml_mais_velho_que_o_codigo(
 
     assert resultado.returncode != 0
     assert "coverage.xml is older than src/, run make test first" in resultado.stderr
+    assert not argumentos.exists()
+
+
+def test_diff_cover_sem_coverage_xml_manda_rodar_o_make_test(tmp_path: Path) -> None:
+    # Sem o XML o `find -newer` nao imprime nada e so a primeira guarda o pega.
+    resultado, argumentos = _diff_cover(tmp_path, xml_mais_novo=True, sem_xml=True)
+
+    assert resultado.returncode != 0
+    assert "coverage.xml missing, run make test first" in resultado.stderr
     assert not argumentos.exists()
 
 

@@ -3,13 +3,21 @@
 # abre PR proprio, para ser lido com o changelog.
 #
 # O limite de 3 PRs abertos vale ate o congelamento do codigo em 06/11/2026.
-# Depois dele, trocar `open-pull-requests-limit` por 0 nos tres blocos: o 0
-# desliga so as atualizacoes de versao; os PRs de seguranca do Dependabot
-# (habilitados no repositorio) nao entram no limite e seguem abrindo.
+# Depois dele, trocar `open-pull-requests-limit` por 0 nos tres blocos (e o 3
+# do teste em tests/unitarios/test_scripts_ci.py): o 0 desliga so as
+# atualizacoes de versao; os PRs de seguranca do Dependabot (habilitados no
+# repositorio) nao entram no limite e seguem abrindo.
+#
+# Sem `labels`: os PRs levam os rotulos padrao do Dependabot (`dependencies` e o
+# do ecossistema), que ele cria no repositorio se faltarem. Com `labels`
+# explicito, rotulo que nao existe no repositorio e ignorado, e o Dependabot
+# comenta isso em cada PR.
 #
 # O que o Dependabot nao cobre e a versao ficou fixada de proposito, a ser
-# subida a mao: mongo e percona/mongodb_exporter em k8s/ e no compose (README,
-# Implantacao), trivy, gitleaks, pip-audit e diff-cover (Makefile e workflows).
+# subida a mao: mongo e percona/mongodb_exporter em k8s/ (README, Implantacao),
+# mongo e rabbitmq do compose e dos testes de integracao, o SonarQube do ci.yml
+# e o scanner de scripts/sonar, o trivy, o kubeconform, o pip-audit e o
+# diff-cover (Makefile e workflows) e o gitleaks (security.yml).
 version: 2
 
 updates:
@@ -22,16 +30,15 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 3
-    labels: ["dependencies", "python"]
     commit-message:
       prefix: "chore(deps)"
     groups:
-      # Antes do generico (o primeiro grupo que casa leva a dependencia). O SDK
-      # fixa opentelemetry-api e semantic-conventions na mesma versao, e cada
-      # instrumentacao fixa a sua: subir so uma parte nao resolve, entao a
-      # familia inteira (e as majors dela) vai num PR so.
-      opentelemetry:
-        patterns: ["opentelemetry-*"]
+      # Leva tambem os opentelemetry-*, e os patches e minors da familia sobem
+      # juntos aqui: o SDK fixa opentelemetry-api e semantic-conventions na
+      # mesma versao, e subir so uma parte nao resolve. Um grupo so deles
+      # ficaria vazio, mesmo antes deste no arquivo: o Dependabot o trata como
+      # menos especifico que este. A major fica fora do grupo e atras do teto
+      # do pyproject.toml (<1.46 e <0.67).
       python-patch-e-minor:
         update-types: ["minor", "patch"]
 
@@ -44,14 +51,15 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 3
-    labels: ["dependencies", "github_actions"]
     commit-message:
       prefix: "ci"
     groups:
       actions-patch-e-minor:
         update-types: ["minor", "patch"]
 
-  # Imagens base do Dockerfile (uv e python).
+  # Imagens das linhas FROM do Dockerfile: o uv do estagio builder
+  # (ghcr.io/astral-sh/uv) e o python do runtime. O Dependabot so le linhas
+  # FROM; um `COPY --from=<imagem>` ficaria de fora.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -60,17 +68,18 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 3
-    labels: ["dependencies", "docker"]
     commit-message:
       prefix: "chore(deps)"
     groups:
       docker-patch-e-minor:
         update-types: ["minor", "patch"]
     # O Python sobe a mao, de uma vez em .python-version, UV_PYTHON e
-    # python-version dos workflows, requires-python do pyproject e nas duas
+    # python-version dos workflows, requires-python e python_version (mypy) do
+    # pyproject, sonar.python.version do sonar-project.properties e nas duas
     # imagens do Dockerfile: o venv do builder tem de rodar no Python do runtime.
     # Sem isto o 3.14 -> 3.15 chegaria como "minor", dentro do grupo acima, e
-    # trocaria so a imagem do runtime. O patch do Python segue automatico.
+    # trocaria so a imagem do runtime. O patch vem do rebuild da tag movel do
+    # runtime (python:3.14-slim-trixie), sem PR.
     ignore:
       - dependency-name: "python"
         update-types:
