@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -262,6 +263,22 @@ def test_main_recusa_id_desconhecido_e_lista_os_validos(
     assert "ids validos: D01 D02 D03" in erro
 
 
+@pytest.fixture
+def execucao_falsa(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
+    """Troca a preparacao da copia e a execucao: o main so escolhe e relata."""
+    recebido: dict[str, Any] = {"resultados": ("morto",)}
+
+    def executar(mutantes: tuple[Any, ...], prazo: float) -> list[dict[str, str]]:
+        recebido["ids"] = [m.id for m in mutantes]
+        recebido["prazo"] = prazo
+        return _linhas(*recebido["resultados"])
+
+    monkeypatch.setattr(mutacao_manual, "RELATORIO", tmp_path / "reports" / "r.md")
+    monkeypatch.setattr(mutacao_manual, "preparar_copia", lambda copiar: None)
+    monkeypatch.setattr(mutacao_manual, "executar", executar)
+    return recebido
+
+
 @pytest.mark.parametrize(
     ("resultados", "saida"),
     [
@@ -274,14 +291,31 @@ def test_main_recusa_id_desconhecido_e_lista_os_validos(
 def test_main_so_sai_com_erro_quando_a_medida_e_invalida(
     resultados: tuple[str, ...],
     saida: int,
-    monkeypatch: pytest.MonkeyPatch,
+    execucao_falsa: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    linhas = _linhas(*resultados)
-    monkeypatch.setattr(mutacao_manual, "RELATORIO", tmp_path / "reports" / "r.md")
-    monkeypatch.setattr(mutacao_manual, "preparar_copia", lambda copiar: None)
-    monkeypatch.setattr(mutacao_manual, "executar", lambda mutantes, prazo: linhas)
+    execucao_falsa["resultados"] = resultados
 
     assert mutacao_manual.main(["--so", "D01"]) == saida
     texto = (tmp_path / "reports" / "r.md").read_text(encoding="utf-8")
     assert texto.startswith("Mutantes manuais:")
+
+
+def test_main_so_roda_so_os_ids_pedidos_e_sem_so_roda_todos(
+    execucao_falsa: dict[str, Any],
+) -> None:
+    todos = [m.id for m in mutacao_manual.carregar().mutantes]
+
+    assert mutacao_manual.main(["--so", todos[1], todos[0]]) == 0
+    assert execucao_falsa["ids"] == [todos[0], todos[1]]
+    assert execucao_falsa["prazo"] == 900
+
+    assert mutacao_manual.main([]) == 0
+    assert execucao_falsa["ids"] == todos
+
+
+def test_main_prazo_do_argumento_chega_ao_executar(
+    execucao_falsa: dict[str, Any],
+) -> None:
+    assert mutacao_manual.main(["--prazo", "12.5"]) == 0
+    assert execucao_falsa["prazo"] == 12.5

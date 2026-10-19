@@ -1,0 +1,1722 @@
+{
+  "info": {
+    "name": "PytStop Billing Service",
+    "description": "Uma requisicao por rota do Billing Service, com corpo e resposta de exemplo. baseUrl aponta para o Kong do kind (https://localhost/billing; o certificado e autoassinado: desligue a verificacao de SSL do Postman) e pode ser trocada pelo compose do servico (http://127.0.0.1:8002), onde so as sondas, o link publico, o webhook e o simulador respondem sem o OS Service. O Billing nao tem login: token e o access_token do POST /api/v1/autenticacao/login do OS Service (admin para a tabela de precos; atendente para o orcamento e o pagamento; mecanico para a validacao de itens), colado a mao. Os ids do orcamento e do pagamento nascem na saga, nao nesta API: ordem_id, pagamento_id, token_do_link e token_do_checkout vem de fora e ficam com o valor do exemplo ate serem trocados. ordem_id e pagamento_id saem da OS aberta no OS Service (GET /api/v1/ordens-de-servico/{id}: orcamento.link_decisao tem o token_do_link no fim do caminho, e pagamento.pagamento_id e o pagamento_id); token_do_checkout e o parametro token do checkout_url do pagamento, que so existe com o simulador. codigo e sku sao guardados pelo cadastro de servico e de peca, e orcamento_id pela consulta do orcamento por ordem (o script de teste de cada uma o grava). O webhook so responde com MP_WEBHOOK_SECRET no servidor, e o x-signature do exemplo e um molde: o HMAC-SHA256 do manifesto esta no README, em Exemplos da API. Gerada por scripts/gerar_docs_api.py (make docs-api); o OpenAPI esta em docs/api/openapi.json.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://localhost/billing"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "ordem_id",
+      "value": "3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55"
+    },
+    {
+      "key": "orcamento_id",
+      "value": "c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64"
+    },
+    {
+      "key": "pagamento_id",
+      "value": "5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f"
+    },
+    {
+      "key": "token_do_link",
+      "value": "<token do link de decisao>"
+    },
+    {
+      "key": "token_do_checkout",
+      "value": "<token do checkout simulado>"
+    },
+    {
+      "key": "codigo",
+      "value": "SRV-LIMPEZA-INJETORES"
+    },
+    {
+      "key": "sku",
+      "value": "PEC-CORREIA-DENTADA"
+    }
+  ],
+  "item": [
+    {
+      "name": "saude",
+      "item": [
+        {
+          "name": "Liveness (processo atende) e modo do pagamento",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/saude",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "saude"
+              ]
+            },
+            "description": "Responde 200 quando o processo atende, com o ``MP_MODE`` em uso.\n\n``async`` de proposito (licao do p3): roda no event loop, fora do\nthreadpool das rotas sync, e responde mesmo com o pool saturado. Nao\nconsulta o MongoDB: uma queda do banco nao deve reiniciar os pods. O modo\ndeixa visivel quando o simulador esta ligado (ADR-040).",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/saude",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "saude"
+                  ]
+                },
+                "description": "Responde 200 quando o processo atende, com o ``MP_MODE`` em uso.\n\n``async`` de proposito (licao do p3): roda no event loop, fora do\nthreadpool das rotas sync, e responde mesmo com o pool saturado. Nao\nconsulta o MongoDB: uma queda do banco nao deve reiniciar os pods. O modo\ndeixa visivel quando o simulador esta ligado (ADR-040).",
+                "auth": {
+                  "type": "noauth"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"ok\",\n  \"modo\": \"simulado\"\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Readiness: MongoDB responde e esta preparado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/saude/pronto",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "saude",
+                "pronto"
+              ]
+            },
+            "description": "Ping e versao do banco em ate 2 s; 503 tira o pod do Service.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/saude/pronto",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "saude",
+                    "pronto"
+                  ]
+                },
+                "description": "Ping e versao do banco em ate 2 s; 503 tira o pod do Service.",
+                "auth": {
+                  "type": "noauth"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"pronto\"\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "precos",
+      "item": [
+        {
+          "name": "Cadastra o preco de um servico (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/servicos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "servicos"
+              ]
+            },
+            "description": "Cadastra o preco de um servico (admin)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"codigo\": \"SRV-LIMPEZA-INJETORES\",\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos injetores com ultrassom e teste de vazao\",\n  \"preco\": \"210.00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/servicos",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "servicos"
+                  ]
+                },
+                "description": "Cadastra o preco de um servico (admin)",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"codigo\": \"SRV-LIMPEZA-INJETORES\",\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos injetores com ultrassom e teste de vazao\",\n  \"preco\": \"210.00\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"codigo\": \"SRV-LIMPEZA-INJETORES\",\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos injetores com ultrassom e teste de vazao\",\n  \"preco\": \"210.00\",\n  \"moeda\": \"BRL\",\n  \"ativo\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"codigo\", pm.response.json().codigo);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lista os precos de servicos (paginado)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/servicos?offset=0&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "servicos"
+              ],
+              "query": [
+                {
+                  "key": "offset",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Lista os precos de servicos (paginado)"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/servicos?offset=0&limit=20",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "servicos"
+                  ],
+                  "query": [
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    }
+                  ]
+                },
+                "description": "Lista os precos de servicos (paginado)"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"items\": [\n    {\n      \"codigo\": \"SRV-LIMPEZA-INJETORES\",\n      \"nome\": \"Limpeza de bicos injetores\",\n      \"descricao\": \"Limpeza dos bicos injetores com ultrassom e teste de vazao\",\n      \"preco\": \"210.00\",\n      \"moeda\": \"BRL\",\n      \"ativo\": true\n    }\n  ],\n  \"total\": 1,\n  \"offset\": 0,\n  \"limit\": 20\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Consulta o preco de um servico",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/servicos/{{codigo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "servicos",
+                "{{codigo}}"
+              ]
+            },
+            "description": "Consulta o preco de um servico"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/servicos/{{codigo}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "servicos",
+                    "{{codigo}}"
+                  ]
+                },
+                "description": "Consulta o preco de um servico"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"codigo\": \"SRV-LIMPEZA-INJETORES\",\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos injetores com ultrassom e teste de vazao\",\n  \"preco\": \"210.00\",\n  \"moeda\": \"BRL\",\n  \"ativo\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Atualiza nome, descricao, preco e situacao de um servico (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/servicos/{{codigo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "servicos",
+                "{{codigo}}"
+              ]
+            },
+            "description": "Atualiza nome, descricao, preco e situacao de um servico (admin)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos com ultrassom e teste de vazao\",\n  \"preco\": \"230.00\",\n  \"ativo\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/servicos/{{codigo}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "servicos",
+                    "{{codigo}}"
+                  ]
+                },
+                "description": "Atualiza nome, descricao, preco e situacao de um servico (admin)",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos com ultrassom e teste de vazao\",\n  \"preco\": \"230.00\",\n  \"ativo\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"codigo\": \"SRV-LIMPEZA-INJETORES\",\n  \"nome\": \"Limpeza de bicos injetores\",\n  \"descricao\": \"Limpeza dos bicos com ultrassom e teste de vazao\",\n  \"preco\": \"230.00\",\n  \"moeda\": \"BRL\",\n  \"ativo\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Desativa um servico (admin); orcamentos ja gerados nao mudam",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/servicos/{{codigo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "servicos",
+                "{{codigo}}"
+              ]
+            },
+            "description": "Desativa um servico (admin); orcamentos ja gerados nao mudam"
+          },
+          "response": [
+            {
+              "name": "204 No Content",
+              "originalRequest": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/servicos/{{codigo}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "servicos",
+                    "{{codigo}}"
+                  ]
+                },
+                "description": "Desativa um servico (admin); orcamentos ja gerados nao mudam"
+              },
+              "status": "No Content",
+              "code": 204,
+              "header": [],
+              "body": ""
+            }
+          ]
+        },
+        {
+          "name": "Cadastra o preco de uma peca (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/pecas",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "pecas"
+              ]
+            },
+            "description": "Cadastra o preco de uma peca (admin)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"PEC-CORREIA-DENTADA\",\n  \"nome\": \"Correia dentada\",\n  \"preco\": \"89.90\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "201 Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/pecas",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "pecas"
+                  ]
+                },
+                "description": "Cadastra o preco de uma peca (admin)",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"sku\": \"PEC-CORREIA-DENTADA\",\n  \"nome\": \"Correia dentada\",\n  \"preco\": \"89.90\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"sku\": \"PEC-CORREIA-DENTADA\",\n  \"nome\": \"Correia dentada\",\n  \"preco\": \"89.90\",\n  \"moeda\": \"BRL\",\n  \"ativo\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"sku\", pm.response.json().sku);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lista os precos de pecas (paginado)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/pecas?offset=0&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "pecas"
+              ],
+              "query": [
+                {
+                  "key": "offset",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Lista os precos de pecas (paginado)"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/pecas?offset=0&limit=20",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "pecas"
+                  ],
+                  "query": [
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    }
+                  ]
+                },
+                "description": "Lista os precos de pecas (paginado)"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"items\": [\n    {\n      \"sku\": \"PEC-CORREIA-DENTADA\",\n      \"nome\": \"Correia dentada\",\n      \"preco\": \"89.90\",\n      \"moeda\": \"BRL\",\n      \"ativo\": true\n    }\n  ],\n  \"total\": 1,\n  \"offset\": 0,\n  \"limit\": 20\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Consulta o preco de uma peca",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/pecas/{{sku}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "pecas",
+                "{{sku}}"
+              ]
+            },
+            "description": "Consulta o preco de uma peca"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/pecas/{{sku}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "pecas",
+                    "{{sku}}"
+                  ]
+                },
+                "description": "Consulta o preco de uma peca"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"sku\": \"PEC-CORREIA-DENTADA\",\n  \"nome\": \"Correia dentada\",\n  \"preco\": \"89.90\",\n  \"moeda\": \"BRL\",\n  \"ativo\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Atualiza nome, preco e situacao de uma peca (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/pecas/{{sku}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "pecas",
+                "{{sku}}"
+              ]
+            },
+            "description": "Atualiza nome, preco e situacao de uma peca (admin)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Correia dentada (kit)\",\n  \"preco\": \"99.90\",\n  \"ativo\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/pecas/{{sku}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "pecas",
+                    "{{sku}}"
+                  ]
+                },
+                "description": "Atualiza nome, preco e situacao de uma peca (admin)",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nome\": \"Correia dentada (kit)\",\n  \"preco\": \"99.90\",\n  \"ativo\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"sku\": \"PEC-CORREIA-DENTADA\",\n  \"nome\": \"Correia dentada (kit)\",\n  \"preco\": \"99.90\",\n  \"moeda\": \"BRL\",\n  \"ativo\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Desativa uma peca (admin); orcamentos ja gerados nao mudam",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/pecas/{{sku}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "pecas",
+                "{{sku}}"
+              ]
+            },
+            "description": "Desativa uma peca (admin); orcamentos ja gerados nao mudam"
+          },
+          "response": [
+            {
+              "name": "204 No Content",
+              "originalRequest": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/pecas/{{sku}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "pecas",
+                    "{{sku}}"
+                  ]
+                },
+                "description": "Desativa uma peca (admin); orcamentos ja gerados nao mudam"
+              },
+              "status": "No Content",
+              "code": 204,
+              "header": [],
+              "body": ""
+            }
+          ]
+        },
+        {
+          "name": "Valida codigos de servicos e skus de pecas (Execucao -> Billing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precos/validacao",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precos",
+                "validacao"
+              ]
+            },
+            "description": "Devolve os codigos inexistentes ou inativos; lista vazia = todos validos.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"servicos\": [\n    \"SRV-FREIOS\"\n  ],\n  \"pecas\": [\n    \"PEC-VELA\",\n    \"PEC-X\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/precos/validacao",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "precos",
+                    "validacao"
+                  ]
+                },
+                "description": "Devolve os codigos inexistentes ou inativos; lista vazia = todos validos.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"servicos\": [\n    \"SRV-FREIOS\"\n  ],\n  \"pecas\": [\n    \"PEC-VELA\",\n    \"PEC-X\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"invalidos\": [\n    \"PEC-X\"\n  ]\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "orcamentos",
+      "item": [
+        {
+          "name": "Lista o orcamento de uma ordem de servico (0 ou 1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orcamentos?ordem_id={{ordem_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orcamentos"
+              ],
+              "query": [
+                {
+                  "key": "ordem_id",
+                  "value": "{{ordem_id}}"
+                }
+              ]
+            },
+            "description": "Lista o orcamento de uma ordem de servico (0 ou 1)"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/orcamentos?ordem_id={{ordem_id}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "orcamentos"
+                  ],
+                  "query": [
+                    {
+                      "key": "ordem_id",
+                      "value": "{{ordem_id}}"
+                    }
+                  ]
+                },
+                "description": "Lista o orcamento de uma ordem de servico (0 ou 1)"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "[\n  {\n    \"id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n    \"ordem_id\": \"3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55\",\n    \"status\": \"PENDENTE\",\n    \"linhas\": [\n      {\n        \"tipo\": \"servico\",\n        \"codigo\": \"SRV-FREIOS\",\n        \"descricao\": \"Revisao do sistema de freios\",\n        \"quantidade\": 1,\n        \"preco_unitario\": \"250.00\",\n        \"subtotal\": \"250.00\"\n      },\n      {\n        \"tipo\": \"peca\",\n        \"codigo\": \"PEC-PASTILHA-FREIO\",\n        \"descricao\": \"Jogo de pastilhas de freio\",\n        \"quantidade\": 2,\n        \"preco_unitario\": \"160.00\",\n        \"subtotal\": \"320.00\"\n      }\n    ],\n    \"total\": \"570.00\",\n    \"moeda\": \"BRL\",\n    \"criado_em\": \"2026-10-18T13:00:00Z\",\n    \"valido_ate\": \"2026-10-21T13:00:00Z\",\n    \"decisao\": null,\n    \"motivo_cancelamento\": null\n  }\n]",
+              "_postman_previewlanguage": "json"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 && pm.response.json().length) pm.collectionVariables.set(\"orcamento_id\", pm.response.json()[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consulta um orcamento",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orcamentos/{{orcamento_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orcamentos",
+                "{{orcamento_id}}"
+              ]
+            },
+            "description": "Consulta um orcamento"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/orcamentos/{{orcamento_id}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "orcamentos",
+                    "{{orcamento_id}}"
+                  ]
+                },
+                "description": "Consulta um orcamento"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"ordem_id\": \"3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55\",\n  \"status\": \"PENDENTE\",\n  \"linhas\": [\n    {\n      \"tipo\": \"servico\",\n      \"codigo\": \"SRV-FREIOS\",\n      \"descricao\": \"Revisao do sistema de freios\",\n      \"quantidade\": 1,\n      \"preco_unitario\": \"250.00\",\n      \"subtotal\": \"250.00\"\n    },\n    {\n      \"tipo\": \"peca\",\n      \"codigo\": \"PEC-PASTILHA-FREIO\",\n      \"descricao\": \"Jogo de pastilhas de freio\",\n      \"quantidade\": 2,\n      \"preco_unitario\": \"160.00\",\n      \"subtotal\": \"320.00\"\n    }\n  ],\n  \"total\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"criado_em\": \"2026-10-18T13:00:00Z\",\n  \"valido_ate\": \"2026-10-21T13:00:00Z\",\n  \"decisao\": null,\n  \"motivo_cancelamento\": null\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Aprova ou recusa o orcamento em nome do cliente (atendente)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orcamentos/{{orcamento_id}}/decisao",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orcamentos",
+                "{{orcamento_id}}",
+                "decisao"
+              ]
+            },
+            "description": "Aprova ou recusa o orcamento em nome do cliente (atendente)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decisao\": \"aprovar\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/orcamentos/{{orcamento_id}}/decisao",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "orcamentos",
+                    "{{orcamento_id}}",
+                    "decisao"
+                  ]
+                },
+                "description": "Aprova ou recusa o orcamento em nome do cliente (atendente)",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"decisao\": \"aprovar\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"ordem_id\": \"3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55\",\n  \"status\": \"APROVADO\",\n  \"linhas\": [\n    {\n      \"tipo\": \"servico\",\n      \"codigo\": \"SRV-FREIOS\",\n      \"descricao\": \"Revisao do sistema de freios\",\n      \"quantidade\": 1,\n      \"preco_unitario\": \"250.00\",\n      \"subtotal\": \"250.00\"\n    },\n    {\n      \"tipo\": \"peca\",\n      \"codigo\": \"PEC-PASTILHA-FREIO\",\n      \"descricao\": \"Jogo de pastilhas de freio\",\n      \"quantidade\": 2,\n      \"preco_unitario\": \"160.00\",\n      \"subtotal\": \"320.00\"\n    }\n  ],\n  \"total\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"criado_em\": \"2026-10-18T13:00:00Z\",\n  \"valido_ate\": \"2026-10-21T13:00:00Z\",\n  \"decisao\": {\n    \"canal\": \"atendente\",\n    \"decidido_em\": \"2026-10-18T13:10:00Z\",\n    \"decidido_por\": \"9809e49f-24a6-4e03-a4bf-c655feb2a0dd\"\n  },\n  \"motivo_cancelamento\": null\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "publico",
+      "item": [
+        {
+          "name": "Consulta o orcamento pelo link enviado ao cliente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/publico/orcamentos/{{token_do_link}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "publico",
+                "orcamentos",
+                "{{token_do_link}}"
+              ]
+            },
+            "description": "Consulta o orcamento pelo link enviado ao cliente",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/publico/orcamentos/{{token_do_link}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "publico",
+                    "orcamentos",
+                    "{{token_do_link}}"
+                  ]
+                },
+                "description": "Consulta o orcamento pelo link enviado ao cliente",
+                "auth": {
+                  "type": "noauth"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"status\": \"PENDENTE\",\n  \"linhas\": [\n    {\n      \"tipo\": \"servico\",\n      \"codigo\": \"SRV-FREIOS\",\n      \"descricao\": \"Revisao do sistema de freios\",\n      \"quantidade\": 1,\n      \"preco_unitario\": \"250.00\",\n      \"subtotal\": \"250.00\"\n    },\n    {\n      \"tipo\": \"peca\",\n      \"codigo\": \"PEC-PASTILHA-FREIO\",\n      \"descricao\": \"Jogo de pastilhas de freio\",\n      \"quantidade\": 2,\n      \"preco_unitario\": \"160.00\",\n      \"subtotal\": \"320.00\"\n    }\n  ],\n  \"total\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"valido_ate\": \"2026-10-21T13:00:00Z\",\n  \"decisao\": null\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Aprova ou recusa o orcamento pelo link enviado ao cliente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/publico/orcamentos/{{token_do_link}}/decisao",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "publico",
+                "orcamentos",
+                "{{token_do_link}}",
+                "decisao"
+              ]
+            },
+            "description": "Aprova ou recusa o orcamento pelo link enviado ao cliente",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decisao\": \"aprovar\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/publico/orcamentos/{{token_do_link}}/decisao",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "publico",
+                    "orcamentos",
+                    "{{token_do_link}}",
+                    "decisao"
+                  ]
+                },
+                "description": "Aprova ou recusa o orcamento pelo link enviado ao cliente",
+                "auth": {
+                  "type": "noauth"
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"decisao\": \"aprovar\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"status\": \"APROVADO\",\n  \"linhas\": [\n    {\n      \"tipo\": \"servico\",\n      \"codigo\": \"SRV-FREIOS\",\n      \"descricao\": \"Revisao do sistema de freios\",\n      \"quantidade\": 1,\n      \"preco_unitario\": \"250.00\",\n      \"subtotal\": \"250.00\"\n    },\n    {\n      \"tipo\": \"peca\",\n      \"codigo\": \"PEC-PASTILHA-FREIO\",\n      \"descricao\": \"Jogo de pastilhas de freio\",\n      \"quantidade\": 2,\n      \"preco_unitario\": \"160.00\",\n      \"subtotal\": \"320.00\"\n    }\n  ],\n  \"total\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"valido_ate\": \"2026-10-21T13:00:00Z\",\n  \"decisao\": {\n    \"canal\": \"link\",\n    \"decidido_em\": \"2026-10-18T13:10:00Z\",\n    \"decidido_por\": null\n  }\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pagamentos",
+      "item": [
+        {
+          "name": "Consulta um pagamento",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/pagamentos/{{pagamento_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pagamentos",
+                "{{pagamento_id}}"
+              ]
+            },
+            "description": "Consulta um pagamento"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/pagamentos/{{pagamento_id}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "pagamentos",
+                    "{{pagamento_id}}"
+                  ]
+                },
+                "description": "Consulta um pagamento"
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f\",\n  \"ordem_id\": \"3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55\",\n  \"status\": \"SOLICITADO\",\n  \"orcamento_id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"valor\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"provedor\": \"simulado\",\n  \"referencia_preferencia\": \"sim-pref-5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f\",\n  \"checkout_url\": \"https://localhost/billing/simulador/checkout/5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f?token=<token>\",\n  \"expira_em\": \"2026-10-18T14:10:00Z\",\n  \"criado_em\": \"2026-10-18T13:10:00Z\",\n  \"recusas\": 0,\n  \"referencia_pagamento\": null,\n  \"confirmado_em\": null,\n  \"encerrado_em\": null,\n  \"motivo\": null,\n  \"estornado_em\": null,\n  \"motivo_estorno\": null,\n  \"notificacoes\": [],\n  \"estornos_automaticos\": []\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Webhook do Mercado Pago (valida x-signature)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-signature",
+                "value": "ts=1760780000,v1=<hmac-sha256 do manifesto>"
+              },
+              {
+                "key": "x-request-id",
+                "value": "5f0c7c5e-1b9e-4c3e-9a4e-2d8f6b1a7c11"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/webhooks/mercadopago?data.id=1234567890&type=payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "webhooks",
+                "mercadopago"
+              ],
+              "query": [
+                {
+                  "key": "data.id",
+                  "value": "1234567890"
+                },
+                {
+                  "key": "type",
+                  "value": "payment"
+                }
+              ]
+            },
+            "description": "Confere a assinatura e consulta o pagamento no provedor.\n\nO id vem so do ``data.id`` da query, o que a ``x-signature`` assina\n(ADR-040); sem ele nao ha o que consultar e a resposta e 200 sem\nprocessar. O corpo nao decide nada: status e valor vem sempre do\n``GET /v1/payments/{id}``. Notificacao de outro tipo tambem responde 200\nsem processar (o Mercado Pago so para de reenviar com 2xx).",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"payment\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-signature",
+                    "value": "ts=1760780000,v1=<hmac-sha256 do manifesto>"
+                  },
+                  {
+                    "key": "x-request-id",
+                    "value": "5f0c7c5e-1b9e-4c3e-9a4e-2d8f6b1a7c11"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/webhooks/mercadopago?data.id=1234567890&type=payment",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "webhooks",
+                    "mercadopago"
+                  ],
+                  "query": [
+                    {
+                      "key": "data.id",
+                      "value": "1234567890"
+                    },
+                    {
+                      "key": "type",
+                      "value": "payment"
+                    }
+                  ]
+                },
+                "description": "Confere a assinatura e consulta o pagamento no provedor.\n\nO id vem so do ``data.id`` da query, o que a ``x-signature`` assina\n(ADR-040); sem ele nao ha o que consultar e a resposta e 200 sem\nprocessar. O corpo nao decide nada: status e valor vem sempre do\n``GET /v1/payments/{id}``. Notificacao de outro tipo tambem responde 200\nsem processar (o Mercado Pago so para de reenviar com 2xx).",
+                "auth": {
+                  "type": "noauth"
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"payment\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"processado\": true\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "simulador",
+      "item": [
+        {
+          "name": "Pagina de checkout simulada (botoes Aprovar/Recusar)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/simulador/checkout/{{pagamento_id}}?token={{token_do_checkout}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "simulador",
+                "checkout",
+                "{{pagamento_id}}"
+              ],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{token_do_checkout}}"
+                }
+              ]
+            },
+            "description": "Pagina de checkout simulada (botoes Aprovar/Recusar)",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/simulador/checkout/{{pagamento_id}}?token={{token_do_checkout}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "simulador",
+                    "checkout",
+                    "{{pagamento_id}}"
+                  ],
+                  "query": [
+                    {
+                      "key": "token",
+                      "value": "{{token_do_checkout}}"
+                    }
+                  ]
+                },
+                "description": "Pagina de checkout simulada (botoes Aprovar/Recusar)",
+                "auth": {
+                  "type": "noauth"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "text/html; charset=utf-8"
+                }
+              ],
+              "body": "<!doctype html>\n<html lang=\"pt-BR\">\n<head><meta charset=\"utf-8\"><title>Checkout simulado - PytStop</title></head>\n<body>\n<h1>Checkout simulado</h1>\n<p>Ambiente de simulacao: nenhuma cobranca real e feita.</p>\n<dl>\n<dt>Pagamento</dt><dd>5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f</dd>\n<dt>Valor</dt><dd>BRL 570.00</dd>\n<dt>Status</dt><dd>SOLICITADO</dd>\n</dl>\n<form method=\"post\" action=\"https://localhost/billing/api/v1/simulador/pagamentos/5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f/aprovar?token=%3Ctoken%20do%20checkout%20simulado%3E\">\n<button type=\"submit\">Aprovar</button></form>\n<form method=\"post\" action=\"https://localhost/billing/api/v1/simulador/pagamentos/5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f/recusar?token=%3Ctoken%20do%20checkout%20simulado%3E\">\n<button type=\"submit\">Recusar</button></form>\n</body>\n</html>\n",
+              "_postman_previewlanguage": "html"
+            }
+          ]
+        },
+        {
+          "name": "Simula o pagamento aprovado no provedor",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/simulador/pagamentos/{{pagamento_id}}/aprovar?token={{token_do_checkout}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "simulador",
+                "pagamentos",
+                "{{pagamento_id}}",
+                "aprovar"
+              ],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{token_do_checkout}}"
+                }
+              ]
+            },
+            "description": "Simula o pagamento aprovado no provedor",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/simulador/pagamentos/{{pagamento_id}}/aprovar?token={{token_do_checkout}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "simulador",
+                    "pagamentos",
+                    "{{pagamento_id}}",
+                    "aprovar"
+                  ],
+                  "query": [
+                    {
+                      "key": "token",
+                      "value": "{{token_do_checkout}}"
+                    }
+                  ]
+                },
+                "description": "Simula o pagamento aprovado no provedor",
+                "auth": {
+                  "type": "noauth"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f\",\n  \"ordem_id\": \"3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55\",\n  \"status\": \"CONFIRMADO\",\n  \"orcamento_id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"valor\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"provedor\": \"simulado\",\n  \"referencia_preferencia\": \"sim-pref-5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f\",\n  \"checkout_url\": \"https://localhost/billing/simulador/checkout/5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f?token=<token>\",\n  \"expira_em\": \"2026-10-18T14:10:00Z\",\n  \"criado_em\": \"2026-10-18T13:10:00Z\",\n  \"recusas\": 1,\n  \"referencia_pagamento\": \"sim-1062157c80674759b93800efcd0b41bf\",\n  \"confirmado_em\": \"2026-10-18T13:14:00Z\",\n  \"encerrado_em\": null,\n  \"motivo\": null,\n  \"estornado_em\": null,\n  \"motivo_estorno\": null,\n  \"notificacoes\": [\n    {\n      \"recebida_em\": \"2026-10-18T13:12:00Z\",\n      \"referencia_pagamento\": \"sim-3f9a1c0e8b7d4a6e9c2d5b1a7e4f8c30\",\n      \"status_provedor\": \"rejected\"\n    },\n    {\n      \"recebida_em\": \"2026-10-18T13:14:00Z\",\n      \"referencia_pagamento\": \"sim-1062157c80674759b93800efcd0b41bf\",\n      \"status_provedor\": \"approved\"\n    }\n  ],\n  \"estornos_automaticos\": []\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        },
+        {
+          "name": "Simula o pagamento recusado no provedor",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/simulador/pagamentos/{{pagamento_id}}/recusar?token={{token_do_checkout}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "simulador",
+                "pagamentos",
+                "{{pagamento_id}}",
+                "recusar"
+              ],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{token_do_checkout}}"
+                }
+              ]
+            },
+            "description": "Simula o pagamento recusado no provedor",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/simulador/pagamentos/{{pagamento_id}}/recusar?token={{token_do_checkout}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "simulador",
+                    "pagamentos",
+                    "{{pagamento_id}}",
+                    "recusar"
+                  ],
+                  "query": [
+                    {
+                      "key": "token",
+                      "value": "{{token_do_checkout}}"
+                    }
+                  ]
+                },
+                "description": "Simula o pagamento recusado no provedor",
+                "auth": {
+                  "type": "noauth"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f\",\n  \"ordem_id\": \"3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55\",\n  \"status\": \"SOLICITADO\",\n  \"orcamento_id\": \"c2a9e3f4-6b1d-4e8a-9f20-7d3c5b8a1e64\",\n  \"valor\": \"570.00\",\n  \"moeda\": \"BRL\",\n  \"provedor\": \"simulado\",\n  \"referencia_preferencia\": \"sim-pref-5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f\",\n  \"checkout_url\": \"https://localhost/billing/simulador/checkout/5e8b1f2a-3c4d-4a6b-8e9f-0a1b2c3d4e5f?token=<token>\",\n  \"expira_em\": \"2026-10-18T14:10:00Z\",\n  \"criado_em\": \"2026-10-18T13:10:00Z\",\n  \"recusas\": 1,\n  \"referencia_pagamento\": null,\n  \"confirmado_em\": null,\n  \"encerrado_em\": null,\n  \"motivo\": null,\n  \"estornado_em\": null,\n  \"motivo_estorno\": null,\n  \"notificacoes\": [\n    {\n      \"recebida_em\": \"2026-10-18T13:12:00Z\",\n      \"referencia_pagamento\": \"sim-3f9a1c0e8b7d4a6e9c2d5b1a7e4f8c30\",\n      \"status_provedor\": \"rejected\"\n    }\n  ],\n  \"estornos_automaticos\": []\n}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

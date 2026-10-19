@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import socket
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -24,6 +27,25 @@ from src.compartilhado.infraestrutura.mensageria import telemetria
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from types import ModuleType
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+
+
+def carregar_script(nome: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Carrega ``scripts/<nome>.py`` como modulo (``scripts/`` nao e um pacote).
+
+    O dataclass do modulo procura o proprio modulo em ``sys.modules``; o
+    ``monkeypatch`` o poe la e o tira no fim, sem deixar estado para os outros
+    testes.
+    """
+    spec = importlib.util.spec_from_file_location(nome, SCRIPTS / f"{nome}.py")
+    assert spec is not None
+    assert spec.loader is not None
+    modulo = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, nome, modulo)
+    spec.loader.exec_module(modulo)
+    return modulo
 
 
 def valor_da_metrica(nome: str, **rotulos: str) -> float:

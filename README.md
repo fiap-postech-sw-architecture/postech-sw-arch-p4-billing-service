@@ -4,6 +4,12 @@ Serviço de orçamento e pagamento da oficina: tabela de preços de serviços e 
 
 Parte da fase 4 do Tech Challenge (FIAP Pós Tech, Software Architecture, 15SOAT): o PytStop, sistema de gestão de oficina mecânica das fases anteriores, refatorado em microsserviços com Saga Pattern, mensageria assíncrona, CI/CD por serviço e deploy automatizado em Kubernetes.
 
+**Documentação** (os entregáveis RNF-050 a RNF-052 da [gap analysis da fase](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/requisitos/fase4/gap-analysis-fase-4.md)):
+
+- **Arquitetura (RNF-051):** [`docs/arquitetura.md`](docs/arquitetura.md) traz as responsabilidades, as camadas e módulos, o modelo completo das coleções do MongoDB, os fluxos passo a passo com diagramas de sequência, a mensageria, a segurança e a LGPD.
+- **API (RNF-052):** o OpenAPI exportado e a coleção Postman com exemplos estão em [`docs/api/`](docs/api/) (`make docs-api` os gera de novo a partir do app), e os `curl` de cada rota, agrupados por fluxo, em [Exemplos da API](#exemplos-da-api). O Swagger fica em `/docs`. A coleção do fluxo completo, que roda com newman, é do `platform`.
+- **Cobertura (RNF-050):** a tabela gerada do `coverage.xml`, com o link do run do CI, está em [Cobertura](#cobertura).
+
 O serviço participa da saga de atendimento orquestrada pelo OS Service: o processo `consumidor` recebe pela fila `billing.comandos` do RabbitMQ os comandos da saga (`GerarOrcamento`, `CancelarOrcamento`, `SolicitarPagamento`, `EstornarPagamento`), cada caso de uso grava a resposta na outbox transacional (coleção `outbox`) na mesma transação do estado, e o processo `relay` a publica no exchange `pytstop.eventos` (seção [Mensageria](#mensageria)).
 
 Arquitetura da fase 4: [RFC-004 e ADRs 034 a 043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/tree/main/docs/arquitetura) no repositório `platform` (divisão dos serviços, saga, catálogo de mensagens, rotas, dados e segurança). Este serviço segue em especial o ADR-036 (mensageria), o ADR-037 (banco por serviço), o ADR-039 (autenticação entre serviços), o ADR-040 (Mercado Pago), o ADR-041 (testes e qualidade), o ADR-042 (CI/CD) e o ADR-043 (observabilidade).
@@ -39,7 +45,7 @@ DDD + arquitetura em camadas (`dominio` ← `aplicacao` ← `infraestrutura` ←
   - `checkout_close_refused`: quando o provedor recusa fechar o checkout na compensação, o log traz só o `pagamento_id` e o `codigo`. O motivo está no `mercadopago_request_rejected` do mesmo `PUT`, se a chamada saiu: a referência de preferência inválida é recusada antes, sem `PUT` e sem esse evento.
   - O campo `erro` tem dois sentidos: no evento novo é o `error` do Mercado Pago, e em `command_dead_lettered` e `command_retry_scheduled` é o nome da classe da exceção. O nome vem do contrato com o diagnóstico do `platform` e não muda.
   - O 404 da consulta de pagamento (referência que não é nossa) é resposta esperada e não gera o evento; em criar, cancelar, buscar e estornar é recusa de verdade e gera.
-- **Webhook:** valida a `x-signature` (HMAC-SHA256 do manifesto `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`) e consulta o `data.id` da query, o único que a assinatura cobre; o status vem sempre de `GET /v1/payments/{id}`, nunca do corpo. Sem `data.id` ou de outro tipo, responde 200 sem processar.
+- **Webhook:** valida a `x-signature` (HMAC-SHA256 do manifesto `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`) e consulta o `data.id` da query, o único que a assinatura cobre; o status vem sempre de `GET /v1/payments/{id}`, nunca do corpo. Sem `data.id`, responde 200 sem processar, antes de conferir a assinatura; de outro tipo, responde 200 sem processar só com a assinatura válida (sem ela, 401).
 - **Tentativas e recusas:** no Checkout Pro o comprador pode tentar de novo depois de uma recusa, então cada tentativa recusada conta, e a de número `PAGAMENTO_MAX_RECUSAS` (padrão 3) encerra a cobrança como `RECUSADO`. Aprovação com valor ou moeda diferentes, ou que chega com a cobrança encerrada, é estornada na hora (chave `estorno-{pagamento_id}-{tentativa}`), registrada no agregado e publicada como `PagamentoEstornado{motivo=pagamento_apos_encerramento}`; recusa do provedor nesse estorno fica marcada no agregado, com métrica e log de erro.
 - **Processo `prazos`:** a cada `PRAZOS_INTERVALO_SEGUNDOS` (30 s) concilia os pagamentos solicitados com o Mercado Pago (`GET /v1/payments/search?external_reference=`, pelo mesmo caso de uso do webhook; cobre notificação perdida) e só depois expira orçamentos e pagamentos vencidos. Encerra no fim do ciclo com SIGTERM, toca um arquivo de heartbeat a cada ciclo e expõe o instante do último ciclo em `/metrics` (porta 9100).
 - **Autenticação (ADR-039):** JWT RS256 emitido pelo OS Service, validado pela chave pública do JWKS (`JWKS_URL`, timeout de 2 s, cópia fresca por 10 min; com o OS fora, a última cópia boa vale por até 1 h e 3 falhas seguidas abrem um circuit breaker por 30 s), conferindo assinatura, `iss` (`pytstop-os-service`), `aud` (`pytstop`), `exp`, `sub` (UUID do usuário), `type=access` e `papel`, com 10 s de tolerância de relógio. Toda falha de credencial responde o mesmo 401; papel válido sem permissão, 403; JWKS indisponível e sem cópia, 503 com `Retry-After`.
@@ -200,11 +206,145 @@ O `make compose-up` sobe o relay e o consumidor com o resto (RabbitMQ na 5672, c
 
 Erros no envelope do p3, `{"erro": {"codigo", "mensagem", "id_requisicao"}}`, inclusive o 500 (com os cabeçalhos de segurança e o `X-Request-ID`): 401 `NAO_AUTENTICADO` (mensagem única), 403 `ACESSO_NEGADO`, 404 `ENTIDADE_NAO_ENCONTRADA` (só as duas rotas públicas com token têm código próprio, `LINK_DECISAO_INVALIDO` e `CHECKOUT_NAO_ENCONTRADO`, o mesmo 404 para qualquer falha do token), 409 para regra de negócio, 422 `VALOR_INVALIDO` para invariante de domínio e 503 para dependência fora. A exceção, também herdada do p3 e igual no OS e na Execução, é o 422 de validação de schema: `{"detail": [{"type", "loc", "msg"}], "id_requisicao"}`, sem ecoar o valor recebido. A API não redireciona barra final, não anuncia o servidor e escreve um access log estruturado (`http_request`: método, caminho, status, duração e `request_id`, com o token do link de decisão mascarado) no lugar da linha de texto do uvicorn.
 
-Com `TOKEN` um JWT de mecânico ou admin emitido pelo OS Service, a chamada abaixo responde `{"invalidos": ["PEC-X"]}`:
+O OpenAPI exportado ([`docs/api/openapi.json`](docs/api/openapi.json)) e a coleção Postman v2.1 ([`docs/api/billing.postman_collection.json`](docs/api/billing.postman_collection.json)) saem do próprio app pelo `make docs-api`, que não sobe servidor nem banco. Um `curl` por rota está em [Exemplos da API](#exemplos-da-api).
+
+- **OpenAPI.** É o do `MP_MODE=simulado`: com o Mercado Pago real as três rotas do simulador não existem.
+- **Coleção.** Uma requisição por rota, com corpo e resposta de exemplo e as variáveis `baseUrl`, `token`, `ordem_id`, `orcamento_id`, `pagamento_id`, `token_do_link`, `token_do_checkout`, `codigo` e `sku`. O Billing não tem login: o `token` é o `access_token` do OS Service, colado a mão, e o cadastro de serviço e de peça e a consulta do orçamento por ordem guardam `codigo`, `sku` e `orcamento_id` num script de teste. O resto vem de fora, e a descrição da coleção diz de onde.
+- **Teste.** O `make test` reprova se os dois arquivos ficarem atrás do código, ou se a coleção perder o token bearer, o `noauth` das rotas sem JWT, o `Content-Type` dos corpos, o `{{baseUrl}}` das URLs, a resposta de exemplo ou os scripts de teste.
+
+## Exemplos da API
+
+Os `curl` das rotas do OpenAPI, um por rota e agrupados por fluxo. Os que levam token precisam do OS Service no ar (ele emite o JWT e publica o JWKS), então rodam contra a stack completa no kind, pela borda: o Kong do `platform`, com certificado autoassinado, daí o `-k`. No compose do serviço (`make compose-up`, `http://127.0.0.1:8002`) respondem só as sondas, o link público, o webhook e o simulador. O OpenAPI e a coleção Postman, com um exemplo de corpo e de resposta por rota, estão em [`docs/api/`](docs/api/), e os fluxos por trás de cada rota, em [`docs/arquitetura.md`](docs/arquitetura.md).
+
+- **Variáveis.** Cada bloco usa as que os anteriores preenchem. `BASE_URL` e `TOKEN` saem da preparação; `ORDEM_ID` é o `id` de uma OS aberta no OS Service; o resto sai das respostas.
+- **Quem pode o quê.** As escritas da tabela de preços são do `admin`; a leitura dela, o orçamento e o pagamento são do `atendente`, e a validação de itens, do `mecanico`. O `admin` passa em todas, então o token da preparação serve a todos os blocos.
+- **Teste.** `tests/unitarios/test_documentacao.py` reprova o README quando uma rota do OpenAPI fica sem `curl` nesta seção, quando um `curl` do Billing não casa com nenhuma rota (caminho ou método trocado), quando a query dele não é a que a rota declara (sobra um nome, ou falta o obrigatório), quando um corpo sai do schema da rota e quando falta o `Authorization: Bearer` de uma rota protegida ou o `Content-Type` de um corpo (sem ele o FastAPI responde 422).
+
+### Preparação
+
+O token do admin pelo login do OS Service. O e-mail do admin é a chave `ADMIN_EMAIL` do ConfigMap do OS Service, achado pela chave e não pelo nome, como no [runbook da saga](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/operacao/runbook-saga.md) do `platform`; a senha fica no Secret `os-admin`, e o `printf`, embutido no shell, a entrega ao `curl` pela entrada padrão, fora da lista de processos:
 
 ```bash
-curl -X POST localhost:8002/api/v1/precos/validacao -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' -d '{"servicos": ["SRV-FREIOS"], "pecas": ["PEC-VELA", "PEC-X"]}'
+export BASE_URL=https://localhost/billing
+email=$(kubectl --context kind-pytstop-p4 -n pytstop-os get configmaps -o json | jq -r 'first(.items[].data.ADMIN_EMAIL // empty)')
+senha=$(kubectl --context kind-pytstop-p4 -n pytstop-os get secret os-admin -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d)
+export TOKEN=$(printf '{"email": "%s", "senha": "%s"}' "$email" "$senha" | curl -sk https://localhost/os/api/v1/autenticacao/login -H 'Content-Type: application/json' --data @- | jq -r .access_token)
+```
+
+O token vale 15 minutos. O `ORDEM_ID` é o `id` da OS que o OS Service abriu (`POST /os/api/v1/ordens-de-servico`, no [README dele](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-os-service#readme)); o valor do bloco é só um exemplo, e deve ser trocado pelo da sua OS. O orçamento só existe depois que o mecânico conclui o diagnóstico e a saga manda o `GerarOrcamento`:
+
+```bash
+export ORDEM_ID=3c9a7e10-5b2f-4f6d-8a41-0e2d9b7c6f55
+```
+
+### Saúde
+
+Liveness (com o modo do pagamento) e readiness (503 com o MongoDB fora ou sem a versão do banco), sem token. O `/metrics` não está no OpenAPI e fica fora da borda ([Observabilidade](#observabilidade)):
+
+```bash
+curl -sk "$BASE_URL/api/v1/saude"
+curl -sk "$BASE_URL/api/v1/saude/pronto"
+```
+
+### Tabela de preços
+
+A escrita é do admin. O código e o SKU têm letras maiúsculas e dígitos separados por hífens (até 50 caracteres), o preço vai como texto, e o `DELETE` desativa sem apagar: o preço continua legível, com `ativo: false`, e os orçamentos já gerados não mudam. O seed já cadastra `SRV-TROCA-OLEO`, `PEC-OLEO-5W30` e os outros códigos de demonstração; os dois abaixo são novos:
+
+```bash
+export CODIGO=SRV-LIMPEZA-INJETORES
+curl -sk -X POST "$BASE_URL/api/v1/precos/servicos" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"codigo": "SRV-LIMPEZA-INJETORES", "nome": "Limpeza de bicos injetores", "descricao": "Limpeza dos bicos injetores com ultrassom e teste de vazao", "preco": "210.00"}'
+curl -sk "$BASE_URL/api/v1/precos/servicos?offset=0&limit=20" -H "Authorization: Bearer $TOKEN"
+curl -sk "$BASE_URL/api/v1/precos/servicos/$CODIGO" -H "Authorization: Bearer $TOKEN"
+curl -sk -X PUT "$BASE_URL/api/v1/precos/servicos/$CODIGO" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"nome": "Limpeza de bicos injetores", "descricao": "Limpeza dos bicos com ultrassom e teste de vazao", "preco": "230.00", "ativo": true}'
+curl -sk -X DELETE "$BASE_URL/api/v1/precos/servicos/$CODIGO" -H "Authorization: Bearer $TOKEN"
+```
+
+As peças seguem o mesmo molde, com o `sku` no lugar do `codigo` e sem a descrição. O `sku` é o mesmo do estoque da Execução:
+
+```bash
+export SKU=PEC-CORREIA-DENTADA
+curl -sk -X POST "$BASE_URL/api/v1/precos/pecas" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sku": "PEC-CORREIA-DENTADA", "nome": "Correia dentada", "preco": "89.90"}'
+curl -sk "$BASE_URL/api/v1/precos/pecas?offset=0&limit=20" -H "Authorization: Bearer $TOKEN"
+curl -sk "$BASE_URL/api/v1/precos/pecas/$SKU" -H "Authorization: Bearer $TOKEN"
+curl -sk -X PUT "$BASE_URL/api/v1/precos/pecas/$SKU" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"nome": "Correia dentada (kit)", "preco": "99.90", "ativo": true}'
+curl -sk -X DELETE "$BASE_URL/api/v1/precos/pecas/$SKU" -H "Authorization: Bearer $TOKEN"
+```
+
+A validação que a Execução faz ao concluir o diagnóstico devolve os códigos inexistentes ou inativos, na ordem pedida e sem repetição, e a lista vazia quando todos valem. Um código fora do formato é só mais um inválido, e não um 422:
+
+```bash
+curl -sk -X POST "$BASE_URL/api/v1/precos/validacao" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"servicos": ["SRV-FREIOS"], "pecas": ["PEC-VELA", "PEC-X"]}'
+```
+
+### Orçamento
+
+A consulta do atendente. O orçamento inteiro, com `ordem_id`, as linhas de preço congelado, o prazo e a decisão (quando há, `decidido_por` é o `sub` do atendente):
+
+```bash
+export ORCAMENTO_ID=$(curl -sk "$BASE_URL/api/v1/orcamentos?ordem_id=$ORDEM_ID" -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+curl -sk "$BASE_URL/api/v1/orcamentos/$ORCAMENTO_ID" -H "Authorization: Bearer $TOKEN"
+```
+
+A decisão em nome do cliente, pelo atendente. O orçamento aceita uma decisão só: já aprovado ou recusado (inclusive pelo link, abaixo) responde 409, e expirado ou com o prazo esgotado, 410:
+
+```bash
+curl -sk -X POST "$BASE_URL/api/v1/orcamentos/$ORCAMENTO_ID/decisao" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"decisao": "aprovar"}'
+```
+
+### Link público de decisão
+
+O cliente decide sem login. O token é o último trecho do `link_decisao` que o OS Service guarda no resumo do orçamento da OS. Ele é uma credencial: quem o tem decide o orçamento. A consulta mostra só o orçamento ainda pendente, e qualquer falha do token (adulterado, expirado, orçamento já decidido) é o mesmo 404:
+
+```bash
+export TOKEN_DO_LINK=$(curl -sk "https://localhost/os/api/v1/ordens-de-servico/$ORDEM_ID" -H "Authorization: Bearer $TOKEN" | jq -r '.orcamento.link_decisao | split("/") | last')
+curl -sk "$BASE_URL/api/v1/publico/orcamentos/$TOKEN_DO_LINK"
+curl -sk -X POST "$BASE_URL/api/v1/publico/orcamentos/$TOKEN_DO_LINK/decisao" \
+  -H 'Content-Type: application/json' -d '{"decisao": "aprovar"}'
+```
+
+### Pagamento
+
+Com o orçamento aprovado, a saga reserva as peças e manda o `SolicitarPagamento`; o `pagamento_id` está no resumo do pagamento da OS. A consulta do atendente devolve o pagamento inteiro: as tentativas que o provedor mostrou, as recusas contadas, os estornos automáticos e o `checkout_url`, que carrega o token do checkout simulado:
+
+```bash
+export PAGAMENTO_ID=$(curl -sk "https://localhost/os/api/v1/ordens-de-servico/$ORDEM_ID" -H "Authorization: Bearer $TOKEN" | jq -r .pagamento.pagamento_id)
+curl -sk "$BASE_URL/api/v1/pagamentos/$PAGAMENTO_ID" -H "Authorization: Bearer $TOKEN"
+```
+
+### Webhook do Mercado Pago
+
+O Mercado Pago avisa cada tentativa em `POST /api/v1/webhooks/mercadopago?data.id=<tentativa>&type=payment`, com o `x-signature` e o `x-request-id`. O corpo JSON é obrigatório, e só o `data.id` da query conta: o status vem da consulta ao provedor. A assinatura é o HMAC-SHA256, com o `MP_WEBHOOK_SECRET`, do manifesto `id:<data.id em minúsculas>;request-id:<x-request-id>;ts:<ts>;`; o bloco abaixo lê a chave da variável de ambiente, e não de um argumento, que ficaria na lista de processos. Sem a assinatura certa a resposta é 401, e sem o `MP_WEBHOOK_SECRET` no servidor, 503: no kind o Secret `billing-mercadopago` não existe, então a rota só responde 200 no compose, com a variável definida. Notificação sem `data.id` responde 200 com `{"processado": false}` antes de a assinatura ser conferida; a de outro tipo e a de pagamento que o provedor não conhece respondem o mesmo 200 só com a assinatura certa, e sem ela, 401:
+
+```bash
+export REFERENCIA=1234567890
+export TS=$(date +%s)
+export REQUISICAO=$(uuidgen | tr 'A-Z' 'a-z')
+export ASSINATURA=$(python3 -c 'import hashlib, hmac, os, sys; print(hmac.new(os.environ["MP_WEBHOOK_SECRET"].encode(), sys.argv[1].encode(), hashlib.sha256).hexdigest())' "id:$REFERENCIA;request-id:$REQUISICAO;ts:$TS;")
+curl -sk -X POST "$BASE_URL/api/v1/webhooks/mercadopago?data.id=$REFERENCIA&type=payment" \
+  -H "x-signature: ts=$TS,v1=$ASSINATURA" -H "x-request-id: $REQUISICAO" \
+  -H 'Content-Type: application/json' -d '{"type": "payment"}'
+```
+
+### Simulador do checkout
+
+Só com `MP_MODE=simulado` (o padrão do kind e do compose): faz o papel do cliente pagando na página do Mercado Pago. O token é o parâmetro `token` do `checkout_url`, que vale até o fim do prazo da cobrança; token ausente, inválido, expirado ou de outro pagamento é o mesmo 404. Recusar conta uma recusa do provedor (a terceira, por padrão, encerra a cobrança), aprovar confirma, e pagamento que já saiu de `SOLICITADO` responde 409:
+
+```bash
+export TOKEN_DO_CHECKOUT=$(curl -sk "$BASE_URL/api/v1/pagamentos/$PAGAMENTO_ID" -H "Authorization: Bearer $TOKEN" | jq -r '.checkout_url | split("token=") | last')
+curl -sk "$BASE_URL/simulador/checkout/$PAGAMENTO_ID?token=$TOKEN_DO_CHECKOUT"
+curl -sk -X POST "$BASE_URL/api/v1/simulador/pagamentos/$PAGAMENTO_ID/recusar?token=$TOKEN_DO_CHECKOUT"
+curl -sk -X POST "$BASE_URL/api/v1/simulador/pagamentos/$PAGAMENTO_ID/aprovar?token=$TOKEN_DO_CHECKOUT"
 ```
 
 ## Eventos
@@ -213,7 +353,9 @@ Os 13 eventos do catálogo do Billing (RFC-004, seção 5.3), no envelope da se�
 
 ## Observabilidade
 
-Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/043-observabilidade-distribuida.md). Os quatro processos (API, relay, consumidor e `prazos`) instalam o SDK do OpenTelemetry pela mesma função (`criar_provedor`) e exportam os traces por OTLP/gRPC para o Jaeger quando `OTEL_ENABLED=true`. As métricas são as do Prometheus, no `/metrics` que cada processo já serve (a API na porta 8000 e os outros três na 9100; nenhuma porta nova), com os rótulos que o Prometheus põe em todo alvo (`job`, `app`, `processo`, `namespace` e `pod`). Painéis e alertas ficam no `platform`, em `observabilidade/`.
+Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/adr/fase4/043-observabilidade-distribuida.md). Os quatro processos (API, relay, consumidor e `prazos`) instalam o SDK do OpenTelemetry pela mesma função (`criar_provedor`) e exportam os traces por OTLP/gRPC para o Jaeger quando `OTEL_ENABLED=true`. As métricas são as do Prometheus, no `/metrics` que cada processo já serve (a API na porta 8000 e os outros três na 9100; nenhuma porta nova), com os rótulos que o Prometheus põe em todo alvo (`job`, `app`, `processo`, `namespace` e `pod`).
+
+Os painéis, os alertas e o [catálogo das métricas dos três serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md#catálogo-de-métricas) ficam no `platform`, em `observabilidade/`; abaixo estão as séries, os spans e os logs deste serviço.
 
 ### Spans
 
@@ -275,6 +417,16 @@ Três ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas a
 - **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` de 10 s do Prometheus, o que deixaria o alvo da API em `up=0` (inferência a partir do tempo da resposta, não de uma raspagem observada). A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
 - O rótulo das reconexões é `componente` (`relay` ou `consumidor`). O Prometheus já põe `processo` em todo alvo, e um rótulo da métrica com o mesmo nome viraria `exported_processo`.
 
+### Logs
+
+Uma linha JSON por evento no stdout de cada processo, com o nome do evento em inglês (`http_request`, `command_ignored`, `mercadopago_request_rejected`, `audit_budget_decided_by_attendant`).
+
+- **Campos.** O `trace_id` e o `span_id` do span corrente, o `correlation_id` (a ordem de serviço) e, na API, o `request_id` (o `X-Request-ID` que o Kong gera, devolvido na resposta).
+- **Access log.** É o `http_request` do middleware, com método, caminho, status e duração; o do uvicorn fica desligado (`--no-access-log`).
+- **Mascaramento.** Antes de sair, toda linha passa pelo mascaramento de dados pessoais ([`logging.py`](src/compartilhado/infraestrutura/logging.py)). As chaves de nome sensível (`token`, `secret`, `senha`, `password`, `signature`, `authorization`, `api_key`, `checkout_url`, `link_decisao`, `telefone`, `celular`, `phone` e `contato`) viram `***`. CPF, CNPJ, e-mail, telefone, o token do link de decisão e do checkout e o token do Mercado Pago são mascarados dentro de qualquer texto.
+- **Texto do provedor.** O texto livre da recusa do Mercado Pago não entra em nenhum log (ver Mercado Pago, em [Arquitetura](#arquitetura)).
+- **Onde ver.** No cluster, o Promtail do `platform` leva o stdout dos pods ao Loki, que o Grafana consulta.
+
 ### Como ver
 
 ```bash
@@ -296,11 +448,13 @@ curl -s localhost:8002/metrics | grep '^pytstop_'
 ```bash
 make check
 make audit
+make docs-api
 ```
 
-O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit, o pytest com o gate de 95% e o `diff-cover` (90% no código que a branch muda em relação à `origin/main`); o `make audit` roda o pip-audit nas dependências de runtime.
+O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o mypy strict (`src` e `tests`), o bandit, o pytest com o gate de 95% e o `diff-cover` (90% no código que a branch muda em relação à `origin/main`); o `make audit` roda o pip-audit nas dependências de runtime, e o `make docs-api` escreve de novo o OpenAPI e a coleção Postman de `docs/api/` ([API](#api)).
 
 - **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração, OpenTelemetry (amostrador, hook da URL) e as séries que nascem com zero (cada caso sobe um interpretador novo e lê o `REGISTRY` antes de qualquer evento).
+- **Documentos** (`tests/unitarios/test_documentacao.py`): o `docs/api/openapi.json` é o `app.openapi()`; a coleção Postman tem uma requisição por rota e cumpre o que a seção [API](#api) promete dela; todo método e rota do OpenAPI tem um `curl` em [Exemplos da API](#exemplos-da-api), sem `curl` do Billing que não case com rota alguma, com a query, o `Authorization: Bearer` e o `Content-Type` que a rota pede e um corpo que o schema aceita; os links relativos do README e de [`docs/arquitetura.md`](docs/arquitetura.md) apontam arquivo e âncora que existem; e a arquitetura segue o código: os nomes dos campos e a coluna Validador das coleções, os índices, os estados dos agregados e, nas tabelas de comandos e eventos da mensageria, quais mensagens existem, a routing key, quem publica, quem consome e a fila (ficam sem teste o tipo dos campos, as marcas PK e UK do ER, as colunas Etapa esperada e Quando sai dos eventos e a Resposta dos comandos, da qual só se confere que o evento citado existe). As tabelas de [Cobertura](#cobertura) saem de `scripts/cobertura_resumo.py` e o teste reprova a que for editada à mão.
 - **Contrato** (`tests/contratos`): a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam.
 - **Integração** via testcontainers, com MongoDB 7.0.43 real em replica set e RabbitMQ 4.3.6 com as definitions da plataforma:
   - API e casos de uso: matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência e corridas reais entre decisão, webhook e expiração.
@@ -311,9 +465,14 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 
 ## Cobertura
 
-**100,00% no gate** (linhas e ramos somados): 4.506 linhas e 618 ramos, nenhuma perdida, com 1.540 testes (unitários e de integração com MongoDB e RabbitMQ reais). O gate é de 95% (`fail_under` no `.coveragerc`) e o código novo precisa de 90% (`make diff-cover`). Medido em 18/10/2026 com `make test`, no pull request #14; o CI publica a tabela no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)). Ficam fora da medição os `__init__.py` (todos vazios), o `if __name__ == "__main__"` de cada um dos cinco processos (`# pragma: no cover`) e os `Protocol` puros dos repositórios e da unidade de trabalho (`omit` do `.coveragerc`).
+O gate é de 95% no total, com linhas e ramos somados (`fail_under` no `.coveragerc`), e o código novo precisa de 90% (`make diff-cover`), como pede o ADR-041. Ficam fora da medição os `__init__.py` (todos vazios), o `if __name__ == "__main__"` de cada um dos cinco processos (`# pragma: no cover`) e os `Protocol` puros dos repositórios e da unidade de trabalho (`omit` do `.coveragerc`).
 
-| Pacote | Linhas | Cobertas | Cobertura |
+As tabelas abaixo, por contexto e camada, não são digitadas: o [`scripts/cobertura_resumo.py`](scripts/cobertura_resumo.py) as escreve entre os marcadores a partir do `coverage.xml` do `make test`, com o link do run do CI que tem o mesmo `src/`. O `make test` reprova o trecho editado à mão, com as contas erradas, com a taxa fora do formato, com um contexto que não existe ou com o link de outro repositório ([`test_documentacao.py`](tests/unitarios/test_documentacao.py)). O CI repete a medida, por pacote, no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)), com o `diff-cover` do pull request logo abaixo.
+
+<!-- cobertura:inicio -->
+**100,00% no gate** (linhas e ramos somados): 4.506 linhas, 4.506 cobertas (100,0%), e 618 ramos, 618 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 39105281152 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/39105281152). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
+
+| Contexto | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
 | `src` (processos) | 568 | 568 | 100,0% |
 | `src/compartilhado` | 1.547 | 1.547 | 100,0% |
@@ -322,7 +481,23 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 | `src/precos` | 437 | 437 | 100,0% |
 | **total** | 4.506 | 4.506 | 100,0% |
 
-Por camada: `dominio` 895 linhas, `aplicacao` 770, `infraestrutura` 1.632 e `interfaces` 641, todas em 100,0%. Para refazer: `make test` e `uv run python scripts/cobertura_resumo.py coverage.xml`; o CI repete a tabela por contexto e camada no summary do job `test` de cada run, e o `diff-cover` do pull request vem logo abaixo.
+| Camada | Linhas | Cobertas | Cobertura |
+|---|---:|---:|---:|
+| `dominio` | 895 | 895 | 100,0% |
+| `aplicacao` | 770 | 770 | 100,0% |
+| `infraestrutura` | 1.632 | 1.632 | 100,0% |
+| `interfaces` | 641 | 641 | 100,0% |
+
+<!-- cobertura:fim -->
+
+Para refazer as tabelas depois de mudar `src/`, com o número do run do CI em `RUN`:
+
+```bash
+make test
+uv run python scripts/cobertura_resumo.py coverage.xml --readme README.md --run "https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/$RUN"
+```
+
+O `make cobertura-readme RUN=<id>` faz o mesmo com o `coverage.xml` do artefato `relatorios-de-teste` desse run, que o `gh` baixa em `reports/`. Sem o `coverage.xml`, ou com os marcadores fora do lugar, o script sai com 1 e uma linha de erro, sem tocar no README.
 
 O `make diff-cover` lê o `coverage.xml` do `make test` e exige que ele exista e seja mais novo que o código de `src/`: com o XML ausente ou velho recusa e manda rodar o `make test` antes, em vez de passar sem medir nada. Mede também o arquivo novo que ainda não foi para o git (`--include-untracked`). O `make check` já roda os dois na ordem certa.
 
@@ -358,7 +533,9 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
   - corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`);
   - expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`);
   - leeway de 10 s do `exp` do JWT (J12): `test_leeway_de_10_segundos_no_exp` cerca o valor entre 9 e 12 s e `test_leeway_e_o_do_contrato_com_o_os_service` o fixa.
-- **Equivalentes:** o teto exato do `Dinheiro` (a checagem seguinte, depois do arredondamento, recusa do mesmo jeito) e `HS256` na lista de algoritmos do JWKS (o PyJWT recusa HS256 com uma chave RS256 do JWKS mesmo assim). Cada um traz o motivo no campo `equivalente` do `mutantes.toml`.
+- **Equivalentes**, cada um com a condição em que vale no campo `equivalente` do `mutantes.toml`:
+  - D01, o teto exato do `Dinheiro` (`>=` virando `>`): só para +10^10, que a checagem seguinte, depois do arredondamento, recusa com a mesma mensagem. Para -10^10 a recusa é a mesma exceção, mas a mensagem muda, de "acima de 10 dígitos inteiros" para "Valor nao pode ser negativo", e nenhum teste confere a mensagem desse caso.
+  - J01, `HS256` na lista de algoritmos do JWKS: equivale no resultado (o token segue dando 401, só muda o texto do erro do PyJWT, que a API não usa), e só enquanto valem duas condições: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o `decode` com um `PyJWK` recusa `Token algorithm 'HS256' does not match the key's algorithm 'RS256'`) e o validador passa um `PyJWK` ao `decode`. Sem elas, a lista `RS256` seria a única barreira, e nenhum teste a prende.
 - **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 65 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
 
 Para refazer:
@@ -377,11 +554,13 @@ Como o alvo se comporta:
 - O script lê o arquivo original de `src/` a cada mutante: não edite `src/` com a bateria rodando.
 - Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo), e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
 
-Códigos de saída:
+Códigos de saída do script (`scripts/mutacao_manual.py`):
 
 - `0`: nenhum mutante saiu `erro`. Sobrevivente e `nao rodado` não reprovam, porque não há gate (ADR-041).
 - `1`: algum mutante saiu `erro`, uma medida inválida, como o Docker fora.
 - `2`: um id de `MUTANTES` não existe (a mensagem lista os válidos) ou o `.toml` não bate com o código.
+
+Esses são os códigos do script, e o `make mutacao` não os repassa: com falha, ele mostra `Error 1` ou `Error 2` e sai sempre com 2 (medido com um id desconhecido, com `PY=false` e com um mutante em `erro`); sem falha, sai com 0.
 
 **Para outro serviço:** copie `scripts/mutacao_manual.py` e o alvo `mutacao` do Makefile para o repositório dele (o script é o mesmo nos três serviços). Troque a tabela `[config]` do `scripts/mutantes.toml` (o que vai para a cópia `mutants/`), os grupos de `[testes]` e os `[[mutante]]`. Antes de começar, o script recusa trecho ausente ou repetido.
 
@@ -392,13 +571,23 @@ O Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) abre pull requ
 - **Agenda:** uma vez por semana, às segundas às 06:00 (São Paulo), com no máximo 3 PRs abertos por ecossistema.
 - **Grupos:** patch e minor de cada ecossistema chegam juntos num PR. Major abre PR próprio, para ser lido com o changelog.
 - **Commit e rótulos:** prefixo `chore(deps)`, ou `ci` nas actions (como no OS). O arquivo não declara `labels`: os PRs levam os rótulos padrão do Dependabot (`dependencies` e o do ecossistema), que ele cria no repositório se faltarem. Com `labels` explícito, rótulo que não existe no repositório é ignorado e o Dependabot comenta isso em cada PR.
-- **OpenTelemetry:** as bibliotecas `opentelemetry-*` sobem juntas no grupo de patch e minor do uv. O SDK fixa `opentelemetry-api` e `opentelemetry-semantic-conventions` na mesma versão e cada instrumentação fixa a sua, então subir só uma parte não resolve. Um grupo só delas ficaria vazio, porque o Dependabot o trata como menos específico que o de patch e minor.
-- **Teto do OpenTelemetry:** a major da família fica fora, atrás do teto do `pyproject.toml`: `<1.46` no SDK e no exportador e `<0.67` nas instrumentações. O SDK tem teto porque `mensageria/telemetria.py` troca `_status` e `_events` de um span, atributos privados que um minor novo pode mudar.
+- **OpenTelemetry:** as bibliotecas `opentelemetry-*` entram no grupo de patch e minor do uv, e não num grupo só delas, que ficaria vazio porque o Dependabot o trata como menos específico que o de patch e minor. O SDK fixa `opentelemetry-api` e `opentelemetry-semantic-conventions` na mesma versão e cada instrumentação fixa a sua, então subir só uma parte não resolve: a família sobe junta.
+- **Teto do OpenTelemetry:** `<1.46` no SDK e no exportador e `<0.67` nas instrumentações (`pyproject.toml`) barram também a próxima minor, e não só a major. Pelo grupo só sobe patch (1.45.x e 0.66bN); uma minor nova só entra com os dois tetos subidos à mão, juntos, depois de ler o changelog. O SDK tem teto porque `mensageria/telemetria.py` troca `_status` e `_events` de um span, atributos privados que uma minor nova pode mudar. O que o Dependabot faz diante desse teto ainda não foi observado neste repositório.
 - **Docker:** o Dependabot só lê as linhas `FROM` do `Dockerfile`. O uv entra por `FROM ghcr.io/astral-sh/uv:... AS builder`, então sobe pelo bloco do Docker, junto da imagem do Python do runtime. Se o uv passasse a entrar por `COPY --from=<imagem>`, o Dependabot deixaria de vê-lo.
 - **Python:** no bloco do Docker, major e minor do Python ficam de fora. A versão sobe à mão, de uma vez, em `.python-version`, `UV_PYTHON` e `python-version` dos workflows, `requires-python` e `python_version` (mypy) do `pyproject.toml`, `sonar.python.version` do `sonar-project.properties` e nas duas imagens do `Dockerfile`. Sem isso, o 3.14 → 3.15 chegaria como "minor" e trocaria só a imagem do runtime. O patch não passa pelo Dependabot: vem do rebuild da tag móvel `python:3.14-slim-trixie`.
 - **Checks:** cada PR passa pelos mesmos 9 checks do CI e da varredura de segurança, inclusive o `pip-audit`, o trivy e o gate de cobertura.
 
-Depois do congelamento do código em 06/11/2026, o `open-pull-requests-limit` de cada bloco passa de 3 para 0 (o teste do `dependabot.yml`, em `tests/unitarios/test_scripts_ci.py`, muda junto). O 0 desliga só as atualizações de versão: os PRs de segurança do Dependabot, habilitados no repositório, não entram no limite e seguem abrindo. Sobem à mão, porque o Dependabot não os enxerga ou a versão está fixada de propósito: `mongo` e `percona/mongodb_exporter` (a cada release do serviço, junto da tabela do `platform`, seção [Implantação](#implantação)), o `mongo` e o RabbitMQ do compose e dos testes de integração, o SonarQube do `ci.yml` e o scanner de `scripts/sonar`, o trivy, o kubeconform, o gitleaks, o pip-audit e o diff-cover.
+Depois do congelamento do código em 06/11/2026:
+
+- **Limite:** o `open-pull-requests-limit` de cada bloco passa de 3 para 0, e o 3 do teste do `dependabot.yml` (`tests/unitarios/test_scripts_ci.py`) muda junto.
+- **O que o 0 desliga:** só as atualizações de versão. Os PRs de segurança do Dependabot, habilitados no repositório, não entram no limite e seguem abrindo.
+
+Sobem à mão, porque o Dependabot não os enxerga ou a versão está fixada de propósito:
+
+- `mongo` e `percona/mongodb_exporter`, a cada release do serviço, junto da tabela do `platform` (seção [Implantação](#implantação));
+- o `mongo` e o RabbitMQ do compose e dos testes de integração;
+- o SonarQube do `ci.yml` e o scanner de `scripts/sonar`;
+- o trivy, o kubeconform, o gitleaks, o pip-audit e o diff-cover.
 
 ## Implantação
 

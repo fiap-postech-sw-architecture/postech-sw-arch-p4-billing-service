@@ -8,7 +8,8 @@ GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
 .PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
-	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed
+	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed \
+	docs-api cobertura-readme
 
 install:
 	uv sync --frozen
@@ -82,6 +83,33 @@ MUTANTES ?=
 
 mutacao:
 	$(PY) python scripts/mutacao_manual.py --prazo $(MUTACAO_PRAZO) $(if $(MUTANTES),--so $(MUTANTES))
+
+# OpenAPI do app (o mesmo do /docs) e colecao Postman com um exemplo por rota,
+# gerados juntos em docs/api para nao divergirem. So monta o app: nao sobe
+# servidor nem banco. O make test reprova se os arquivos versionados ficarem
+# atras do codigo (tests/unitarios/test_documentacao.py).
+docs-api:
+	$(PY) python scripts/gerar_docs_api.py
+
+# A secao Cobertura do README sai do coverage.xml de um run do CI (o artefato
+# relatorios-de-teste do job test), com o link dele, e nunca e digitada: o make
+# test reprova a tabela editada a mao. RUN=<id do run> (gh run list --workflow
+# ci.yml); o gh baixa o artefato em reports/ci-<id>. O RUN vai ao shell pelo
+# ambiente ("$RUN" na receita), e nao colado no texto do comando: aspas ou crase
+# nele rodariam antes de o case recusar o valor (que tambem recusa a quebra de linha).
+# Uma funcao do make (RUN='$(shell ...)') rodaria ao exportar a variavel: o $(value)
+# a guarda como texto.
+CI_RUNS := https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs
+override RUN := $(value RUN)
+export RUN
+
+cobertura-readme:
+	@case "$$RUN" in ''|*[!0-9]*) \
+		echo "cobertura-readme: RUN=<CI run id, digits only> is required" >&2; exit 2;; esac
+	rm -rf "reports/ci-$$RUN"
+	gh run download "$$RUN" -n relatorios-de-teste -D "reports/ci-$$RUN"
+	$(PY) python scripts/cobertura_resumo.py "reports/ci-$$RUN/coverage.xml" \
+		--readme README.md --run "$(CI_RUNS)/$$RUN"
 
 check: lock-check lint lint-arch typecheck security test diff-cover
 	@echo "Todos os gates passaram"

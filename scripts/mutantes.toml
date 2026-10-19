@@ -2,8 +2,8 @@
 #
 # Cada [[mutante]] troca o trecho `de` (uma ocorrencia exata no arquivo) por
 # `para` e roda so os testes do grupo `testes`; o teste esperado e o que deveria
-# pegar o defeito. `equivalente` marca o mutante que nao muda o comportamento:
-# se sobreviver, nao conta contra a suite.
+# pegar o defeito. `equivalente` marca o mutante que nao muda o resultado e diz
+# em que condicao isso vale: se sobreviver, nao conta contra a suite.
 
 [config]
 # O que o script copia do repositorio para mutants/ (arquivos e pastas): tudo
@@ -33,7 +33,7 @@ arquivo = "src/compartilhado/dominio/dinheiro.py"
 testes = "dinheiro"
 de = "if abs(self.valor) >= _TETO:"
 para = "if abs(self.valor) > _TETO:"
-equivalente = "o teto exato e recusado de qualquer forma pela checagem seguinte, depois do arredondamento (`quantizado >= _TETO`)"
+equivalente = "so para +10^10: o teto exato positivo e recusado pela checagem seguinte, depois do arredondamento (`quantizado >= _TETO`), com a mesma mensagem. Para -10^10 a recusa e a mesma excecao, mas o `>` deixa passar a primeira checagem e quem recusa e a de negativo, e a mensagem muda de \"acima de 10 digitos inteiros\" para \"Valor nao pode ser negativo\"; nenhum teste confere a mensagem desse caso (um teste que confira a mensagem de Decimal(-10**10) mataria o mutante)"
 
 [[mutante]]
 id = "D02"
@@ -250,7 +250,7 @@ arquivo = "src/compartilhado/infraestrutura/jwks.py"
 testes = "jwt"
 de = "algorithms=[\"RS256\"],"
 para = "algorithms=[\"RS256\", \"HS256\"],"
-equivalente = "o PyJWT 2.15 recusa HS256 com uma chave RS256 do JWKS mesmo se HS256 estiver na lista (\"Token algorithm 'HS256' does not match the key's algorithm 'RS256'\"); a lista e a segunda barreira"
+equivalente = "no resultado, e so enquanto valem duas condicoes: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o decode com um PyJWK recusa \"Token algorithm 'HS256' does not match the key's algorithm 'RS256'\") e o validador passa um PyJWK ao decode. Com elas, HS256 na lista nao muda o desfecho (o token segue dando 401 token_invalido; so muda o texto do erro do PyJWT, que autenticacao.py nao usa) e test_troca_de_algoritmo_nao_e_aceita guarda o desfecho; sem elas, a lista RS256 e a unica barreira e nenhum teste a prende"
 
 [[mutante]]
 id = "J02"
