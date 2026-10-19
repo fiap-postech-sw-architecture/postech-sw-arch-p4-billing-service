@@ -12,6 +12,9 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Recent decisions
 
+- 2026-10-19 - O caller CD do Billing conserva CI e segurança locais e chama o reutilizável do Platform pelo SHA integrado `3f7cca2eb555a038b0d2780058ef0e692f93ee8a`, com serviço constante, quatro inputs e união mínima de permissões, sem herdar segredos. S fixa a definição; `sha_platform` seleciona os assets P. Primeiro CD main ainda pendente, depois do canário OS - .github/workflows/cd.yml; README, CD automatizado
+- 2026-10-19 - As cópias de AsyncAPI, exemplo e schema de EstornoDePagamentoFalhou e ORIGEM foram sincronizadas com o contrato canônico `15dd827b95a95d2dd717414fb5104ac9768b32ac`; os outros 39 arquivos copiados permaneceram byte a byte preservados. A descrição da mensagem fixa não altera versão nem validação - contratos/ORIGEM; contratos/schemas/EstornoDePagamentoFalhou.schema.json
+
 - 2026-10-19 - Restringe a entrada de 18/10 sobre o prazo do MongoDB: so na API a espera do provedor fica fora do prazo da transacao. No consumidor, processar_mensagem envolve o handler inteiro em pymongo.timeout(10), incluindo leitura e HTTP externo; o comportamento documentado em 07/10 permanece.
 
 - 2026-10-18 - Recusa de pagamento usa mensagem fixa na excecao, nos novos registros/eventos e na API; falha legada e protegida so na projecao, sem regravar dados. Contradiz a divida sobre texto livre nos tres destinos; ver README, Log da recusa do Mercado Pago. O alinhamento descritivo do contrato canonico e das copias depende de follow-up no platform, sem mudar formato ou versao.

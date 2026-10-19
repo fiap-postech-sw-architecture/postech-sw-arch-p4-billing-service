@@ -641,6 +641,25 @@ Manifests do Kubernetes em [`k8s/`](k8s): o `base` e um overlay por ambiente, va
 - **Recursos** (request e limit): API 100m e 500m de CPU, 256 e 512 Mi de memória; relay, consumidor e `prazos` 50m e 250m, 128 e 256 Mi; MongoDB 100m e 500m, 256 Mi e 1 Gi (cache do WiredTiger em 0,25 GB); exporter 10m e 100m, 32 e 64 Mi; Job 50m e 500m, 128 e 256 Mi.
 - **Borda:** no kind, o Kong publica o serviço em `https://localhost/billing`, com o certificado padrão dele (`curl -k`): `/billing/api/v1/*`, o Swagger em `/billing/docs` (a API sobe com `ROOT_PATH=/billing`), o link de decisão, o webhook e o simulador, os três com limite próprio; `/billing/metrics` e `/billing/api/v1/admin/*` respondem 404 sem chegar ao serviço.
 
+### CD automatizado
+
+O [caller CD](.github/workflows/cd.yml) mantém os gatilhos `push` na `main` e `workflow_dispatch`, a concorrência por repositório sem cancelar o run em curso e os nove checks locais de CI e segurança. O job `cd` depende de ambos os gates verdes e chama o [reutilizável do Platform](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/3f7cca2eb555a038b0d2780058ef0e692f93ee8a/.github/workflows/cd-servico.yml) pelo SHA integrado `3f7cca2eb555a038b0d2780058ef0e692f93ee8a`, com `servico: billing-service` e os quatro inputs de SHA. S fixa a definição do workflow; `sha_platform` seleciona separadamente os scripts e manifests usados no deploy (P). Não há `secrets: inherit`, credencial de provedor, `environment` ou OIDC no caller.
+
+O primeiro CD deste caller na `main` ainda está pendente; as validações locais não substituem a prova real de imagem, SBOM, digest, kind, smoke, E2E, varredura e `remote-skipped` nesse run.
+
+| Job chamado | Papel | Permissões |
+|---|---|---|
+| `image` | Só publica na `main`; constrói e publica uma imagem no GHCR com tag do commit, SBOM não vazio e proveniência mínima sem payload do evento; confere digest e salva o tar `linux/amd64` | `contents: read`, `packages: write` |
+| `deploy-kind` | Carrega essa imagem no kind efêmero do runner, constrói os vizinhos e valida smoke e E2E da saga; varre os relatórios antes do artefato `e2e-kind`, restrito a `reports/e2e/`, por 90 dias | `contents: read`, `actions: read` |
+| `deploy-remote` | Opcional e desligado; só na `main`, com `DEPLOY_REMOTO_HABILITADO=true`, implanta o mesmo digest aprovado no kind | `contents: read`, `packages: read` |
+| `remote-skipped` | Registra o aviso quando o remoto está desligado | nenhuma |
+
+O caller concede somente a união `contents: read`, `actions: read`, `packages: write`, reduzida pelos jobs chamados. A guarda do reutilizável confere `main` e o par serviço/repositório antes de checkout, login ou build. Os quatro SHAs entram como dados, e o serviço próprio permanece no commit do run; vizinhos usam o último CD verde de push na `main`, com fallback avisado se não houver run verde, sem esconder falhas de API.
+
+O [gancho remoto](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/3f7cca2eb555a038b0d2780058ef0e692f93ee8a/docs/operacao/nuvem-opcional.md) compara P com a `main` do Platform antes do checkout, aceitando somente `identical` ou `behind`. Faz checkout do Platform em `platform/` e do Billing no commit da imagem em `servico/`, sem persistir credenciais; executa `../platform/scripts/ci/deploy-remoto.sh` a partir de `servico/`, com contexto, overlay, `billing-service` e imagem por digest. Acesso ao cluster continua sem configuração. Habilitar o remoto exige alterar deliberadamente o reutilizável, seus testes e o pin S; o job caller com `uses` não admite steps extras.
+
+O [contrato local](tests/unitarios/test_cd.py) confere caminho literal e SHA completo, gates, inputs, permissões e concorrência; a [suíte compartilhada](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/3f7cca2eb555a038b0d2780058ef0e692f93ee8a/tests/test_cd_servico_workflow.py) protege uma única vez os passos Bash de imagem, seleção de commits, kind, varredura e remoto. CI, segurança, Dependabot, Dockerfile, manifests e aplicação continuam locais. O Dependabot `github-actions` já cobre a raiz; até a comprovação do primeiro bump reconhecido, a atualização do pin permanece supervisionada.
+
 ### No kind local
 
 Com o repositório `platform` clonado ao lado deste:
