@@ -357,6 +357,10 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 
 Os painéis, os alertas e o [catálogo das métricas dos três serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md#catálogo-de-métricas) ficam no `platform`, em `observabilidade/`; abaixo estão as séries, os spans e os logs deste serviço.
 
+Dashboards relacionados no Grafana: [Orçamentos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-negocio-orcamentos.json), [Pagamentos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-negocio-pagamentos.json), [Mensageria](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-mensageria.json), [Serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-servicos.json), [Bancos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-bancos.json). Consulte a documentação dos [painéis de negócio](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/negocio.md) e dos [técnicos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md).
+
+O Jaeger do platform usa `MEMORY_MAX_TRACES=250`: o trace mais antigo sai quando entra o 251º, sem TTL; reiniciar o pod apaga todos. Capture o trace logo após gerar o fluxo ([retenção e limites](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md#retenção-e-prazos)).
+
 ### Spans
 
 | Processo | Span | Filhos |
@@ -375,7 +379,7 @@ Os painéis, os alertas e o [catálogo das métricas dos três serviços](https:
 
 ### Amostragem e o que não vira trace
 
-- **Span de cliente sem pai é descartado** (`AmostradorDeRaiz` sob um `ParentBased`): o poll do relay, a consulta do coletor de métricas a cada raspagem e o ciclo ocioso do `prazos` são só consultas ao MongoDB. Cada uma abriria um trace de um span e encheria o Jaeger (cerca de 5.000 traces). Dentro de um trace (requisição, mensagem, transação que escreve) o span de cliente segue o pai.
+- **Span de cliente sem pai é descartado** (`AmostradorDeRaiz` sob um `ParentBased`): o poll do relay, a consulta do coletor de métricas a cada raspagem e o ciclo ocioso do `prazos` são só consultas ao MongoDB. Cada uma abriria um trace de um span e encheria o Jaeger (buffer limitado a 250 traces). Dentro de um trace (requisição, mensagem, transação que escreve) o span de cliente segue o pai.
 - **O `prazos` só abre o span quando a transação escreve.** Com o Mercado Pago real, cada ciclo consulta o provedor e reaplica a tentativa em andamento; só a primeira vez muda o registro. Sem escrita não há span, e as consultas, sem pai, caem no descarte acima: o ciclo ocioso não deixa trace, nem com o gateway de conciliação ligado. A consulta ao provedor em si não tem span.
 - `/metrics` e as sondas (`/api/v1/saude` e `/api/v1/saude/pronto`) ficam fora da instrumentação HTTP.
 - Os spans de cada `receive` e `send` do ASGI não são criados (o `SERVER` já leva o status), e o span nativo do FastAPI fica desligado, para não duplicar o `SERVER`.
@@ -388,7 +392,7 @@ Os painéis, os alertas e o [catálogo das métricas dos três serviços](https:
 | O documento do MongoDB | Os documentos levam o `link_decisao`, o `checkout_url` e o valor cobrado | `capture_statement` desligado |
 | Cabeçalhos e corpo de requisições e respostas, inclusive `Authorization` e `x-signature` | Segredo e dado do pagador | A instrumentação só os captura se configurada, e não é |
 | Texto de exceção e descrição do status de erro | Trazem o que o erro viu: o `Authorization` que o httpx recusou enviar, o CPF de uma requisição, o documento que o MongoDB rejeitou. O log passa pelo `scrub`; o span não passava | O processador do provider (o primeiro, antes do exportador) tira `exception.message`, `exception.stacktrace` e a descrição do status de todo span, do serviço ou da instrumentação. Ficam `exception.type` e `pytstop.falha`, só com o nome da classe |
-| `User-Agent` e endereço e porta do par da conexão | Texto livre sem limite e dado de rede de quem chamou, sem uso operacional; o Jaeger guarda 5.000 traces em memória, sem como apagar um titular | O hook grava `REDACTED` nos textos e `0` nas portas |
+| `User-Agent` e endereço e porta do par da conexão | Texto livre sem limite e dado de rede de quem chamou, sem uso operacional; o Jaeger guarda 250 traces em memória, sem como apagar um titular | O hook grava `REDACTED` nos textos e `0` nas portas |
 | `baggage` do chamador | O ADR-043 prevê só `traceparent` e `tracestate`; o padrão do SDK somaria o `baggage`, que a API aceitaria e o httpx repassaria ao Mercado Pago | O propagador global é só o `TraceContext` (`instalar_propagador`). O `tracestate` acima de 512 caracteres não vai para a outbox nem para o AMQP |
 
 Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). O `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada.
