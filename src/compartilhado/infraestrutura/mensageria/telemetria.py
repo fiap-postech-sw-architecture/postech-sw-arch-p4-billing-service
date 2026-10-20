@@ -24,7 +24,9 @@ instrumentacao do FastAPI, do PyMongo e do httpx:
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlsplit, urlunsplit
 
 from opentelemetry import trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
@@ -57,6 +59,22 @@ _TAMANHO_MAXIMO_TRACESTATE: Final = 512
 _TEXTO_DA_EXCECAO: Final = frozenset({"exception.message", "exception.stacktrace"})
 # Motivo da falha de um span: o nome da classe da excecao, nunca o texto dela.
 ATRIBUTO_FALHA: Final = "pytstop.falha"
+# Chamadas do gateway ao Mercado Pago, com o id no lugar do trecho variavel. O id
+# da preferencia compoe o link do checkout, o do pagamento e credencial (ADR-039)
+# e o ``external_reference`` da busca e o id do pagamento. A ordem importa: o
+# ``search`` vem antes do padrao que casa qualquer segmento depois de ``payments``.
+_ROTAS_DO_MERCADO_PAGO: Final = (
+    (re.compile(r"/checkout/preferences"), "/checkout/preferences"),
+    (re.compile(r"/checkout/preferences/[^/]+"), "/checkout/preferences/{id}"),
+    (re.compile(r"/v1/payments/search"), "/v1/payments/search"),
+    (re.compile(r"/v1/payments/[^/]+/refunds"), "/v1/payments/{id}/refunds"),
+    (re.compile(r"/v1/payments/[^/]+"), "/v1/payments/{id}"),
+)
+# Caminho fora da lista (uma rota nova do gateway): pode trazer um id, entao sai
+# um valor fixo, o mesmo ``nao_roteada`` do span SERVER.
+_ROTA_DESCONHECIDA: Final = "nao_roteada"
+# URL inteira: url.full (convencao nova) e http.url (antiga).
+_ATRIBUTOS_DE_URL: Final = ("url.full", "http.url")
 # Padroes do compose da plataforma (Jaeger por OTLP/gRPC).
 _ENDPOINT_PADRAO: Final = "http://jaeger:4317"
 _SERVICO_PADRAO: Final = "billing-service"
@@ -202,6 +220,36 @@ def criar_provedor(ambiente: Mapping[str, str], *, processo: str) -> TracerProvi
     return provedor
 
 
+def _url_do_template(url: str) -> str:
+    try:
+        partes = urlsplit(url)
+    except ValueError:  # URL malformada: nada a preservar
+        return _ROTA_DESCONHECIDA
+    rota = next(
+        (
+            template
+            for padrao, template in _ROTAS_DO_MERCADO_PAGO
+            if padrao.fullmatch(partes.path)
+        ),
+        _ROTA_DESCONHECIDA,
+    )
+    return urlunsplit(partes._replace(path=rota, query="", fragment=""))
+
+
+def trocar_url_do_cliente_pelo_template(span: Span, _requisicao: object) -> None:
+    """``request_hook`` do httpx: roda logo depois de a instrumentacao gravar a URL
+    no span, entao o que sobra nele e o template. A instrumentacao nao protege o
+    hook (o do FastAPI ela protege): um erro aqui derrubaria a chamada ao
+    provedor, e este nao levanta."""
+    if not isinstance(span, ReadableSpan) or not span.is_recording():
+        return
+    atributos = span.attributes or {}
+    for nome in _ATRIBUTOS_DE_URL:
+        url = atributos.get(nome)
+        if isinstance(url, str):
+            span.set_attribute(nome, _url_do_template(url))
+
+
 def instrumentar_clientes(provedor: TracerProvider) -> None:
     """Spans das consultas ao MongoDB e das chamadas httpx (Mercado Pago).
 
@@ -210,9 +258,14 @@ def instrumentar_clientes(provedor: TracerProvider) -> None:
     e o valor cobrado. O span guarda so o nome do comando e a colecao. O PyMongo
     registra o ouvinte ao criar o cliente, entao isto roda antes do
     ``criar_cliente`` do processo.
+
+    A URL do span do httpx leva o id da preferencia, o do pagamento e a query da
+    busca: o hook a troca pelo template da rota.
     """
     PymongoInstrumentor().instrument(tracer_provider=provedor, capture_statement=False)
-    HTTPXClientInstrumentor().instrument(tracer_provider=provedor)
+    HTTPXClientInstrumentor().instrument(
+        tracer_provider=provedor, request_hook=trocar_url_do_cliente_pelo_template
+    )
 
 
 def instalar_propagador() -> None:

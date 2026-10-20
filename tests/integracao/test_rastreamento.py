@@ -790,7 +790,7 @@ class TestHttpx:
         assert chamada.parent.span_id == pai.get_span_context().span_id
         assert chamada.attributes is not None
         assert chamada.attributes["http.url"] == (
-            "https://api.mercadopago.com/v1/payments/123"
+            "https://api.mercadopago.com/v1/payments/{id}"
         )
         # O segredo do provedor viaja no header, que o span nao captura.
         assert [
@@ -802,6 +802,56 @@ class TestHttpx:
         assert com_pai.split("-")[1] == format(pai.get_span_context().trace_id, "032x")
         assert int(com_pai.split("-")[3], 16) & 1 == 1
         assert int(sem_pai.split("-")[3], 16) & 1 == 0
+
+    def test_url_das_chamadas_ao_mercado_pago_sai_com_o_template(
+        self, rastreamento: Rastreamento
+    ) -> None:
+        """O id da preferencia compoe o link do checkout, o do pagamento e
+        credencial (ADR-039) e a busca leva o id do pagamento na query: a URL do
+        span de cada chamada do gateway e a rota com ``{id}``, sem query."""
+        preferencia = "1234567890-CANARY-PREFERENCIA"
+        pagamento = "98765432101"
+        externa = "CANARY-EXTERNAL-REFERENCE"
+        gateway = MercadoPagoGateway(
+            ConfiguracaoMercadoPago(
+                access_token="token-de-teste-do-mp",  # gitleaks:allow
+                notification_url="https://billing.teste/webhook",
+            )
+        )
+        with respx.mock(base_url="https://api.mercadopago.com") as mp:
+            mp.post("/checkout/preferences").respond(
+                201, json={"id": preferencia, "init_point": "https://mp.teste/c"}
+            )
+            mp.put(f"/checkout/preferences/{preferencia}").respond(200, json={})
+            mp.get(f"/v1/payments/{pagamento}").respond(404, json={"message": "x"})
+            mp.get("/v1/payments/search").respond(200, json={"results": []})
+            mp.post(f"/v1/payments/{pagamento}/refunds").respond(
+                200, json={"status": "approved"}
+            )
+            with trace.get_tracer("teste").start_as_current_span("requisicao"):
+                gateway.criar_cobranca(
+                    pagamento_id=uuid4(), itens=[], expira_em=agora_utc()
+                )
+                gateway.cancelar_cobranca(preferencia)
+                gateway.consultar_pagamento(pagamento)
+                gateway.buscar_por_referencia_externa(externa)
+                gateway.estornar(pagamento, chave_idempotencia="chave-1")
+        gateway.fechar()
+
+        chamadas = rastreamento.do_tipo(SpanKind.CLIENT)
+        assert [(c.name, (c.attributes or {})["http.url"]) for c in chamadas] == [
+            ("POST", "https://api.mercadopago.com/checkout/preferences"),
+            ("PUT", "https://api.mercadopago.com/checkout/preferences/{id}"),
+            ("GET", "https://api.mercadopago.com/v1/payments/{id}"),
+            ("GET", "https://api.mercadopago.com/v1/payments/search"),
+            ("POST", "https://api.mercadopago.com/v1/payments/{id}/refunds"),
+        ]
+        textos = tudo_que_os_spans_levam(rastreamento.spans)
+        assert [
+            t
+            for t in textos
+            if "CANARY" in t or pagamento in t or "external_reference" in t
+        ] == []
 
 
 def tipos_de_excecao(span: ReadableSpan) -> list[str]:
