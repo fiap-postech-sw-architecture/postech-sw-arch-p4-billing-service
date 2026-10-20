@@ -517,9 +517,9 @@ O `mutmut` não roda neste repositório. A versão 3.8.0 espera o pacote em `src
 AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
 ```
 
-(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 65 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
+(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 74 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
 
-**Resultado** em 18/10/2026: 63 mortos de 63 medidos (100%) em cerca de 4 min, conforme a carga da máquina, com 2 equivalentes de fora da conta.
+**Resultado** em 19/10/2026: 72 mortos de 72 medidos (100%) em 4,4 min (cerca de 5 min com a máquina carregada), com 2 equivalentes de fora da conta.
 
 | Área | Mutantes | Mortos | Equivalentes |
 |---|---:|---:|---:|
@@ -531,7 +531,8 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
 | Consumidor | 5 | 5 | 0 |
 | Relay | 9 | 9 | 0 |
 | Compensação da saga | 5 | 5 | 0 |
-| **total** | **65** | **63** | **2** |
+| Observabilidade | 9 | 9 | 0 |
+| **total** | **74** | **72** | **2** |
 
 - **Limites que só a mutação mostrou, hoje com teste:**
   - moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`);
@@ -542,7 +543,7 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
 - **Equivalentes**, cada um com a condição em que vale no campo `equivalente` do `mutantes.toml`:
   - D01, o teto exato do `Dinheiro` (`>=` virando `>`): só para +10^10, que a checagem seguinte, depois do arredondamento, recusa com a mesma mensagem. Para -10^10 a recusa é a mesma exceção, mas a mensagem muda, de "acima de 10 dígitos inteiros" para "Valor nao pode ser negativo", e nenhum teste confere a mensagem desse caso.
   - J01, `HS256` na lista de algoritmos do JWKS: equivale no resultado (o token segue dando 401, só muda o texto do erro do PyJWT, que a API não usa), e só enquanto valem duas condições: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o `decode` com um `PyJWK` recusa `Token algorithm 'HS256' does not match the key's algorithm 'RS256'`) e o validador passa um `PyJWK` ao `decode`. Sem elas, a lista `RS256` seria a única barreira, e nenhum teste a prende.
-- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 65 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
+- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 74 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
 
 Para refazer:
 
