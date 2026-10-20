@@ -7,7 +7,7 @@ GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 GIT_DATE := $(shell git show -s --format=%cI HEAD 2>/dev/null || echo unknown)
 COMPOSE := GIT_SHA=$(GIT_SHA) GIT_DATE=$(GIT_DATE) docker compose
 
-.PHONY: install lock-check lint format typecheck security lint-arch test test-unit \
+.PHONY: install lock-check lint format typecheck security lint-arch lint-workflows test test-unit \
 	diff-cover mutacao check audit smoke manifests print-trivy-version kind-deploy run compose-up compose-down compose-logs seed \
 	docs-api cobertura-readme
 
@@ -34,6 +34,16 @@ security:
 
 lint-arch:
 	$(PY) lint-imports
+
+# actionlint nos workflows, com o shellcheck que a imagem traz rodando nos
+# scripts dos `run:`. O digest fixa a imagem: a tag anda, e o job lint, que roda
+# isto, e check obrigatorio da main. O cd.yml so executa depois do merge, entao
+# e aqui que ele e conferido antes. Para subir: docker buildx imagetools
+# inspect rhysd/actionlint:<versao>.
+ACTIONLINT_IMAGE := rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+lint-workflows:
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(ACTIONLINT_IMAGE)
 
 # Suite completa (unitarios + integracao em MongoDB real) com o gate de
 # cobertura do .coveragerc; relatorios em coverage.xml, htmlcov/ e reports/.
@@ -112,7 +122,7 @@ cobertura-readme:
 	$(PY) python scripts/cobertura_resumo.py "reports/ci-$$RUN/coverage.xml" \
 		--readme README.md --run "$(CI_RUNS)/$$RUN"
 
-check: lock-check lint lint-arch typecheck security test diff-cover
+check: lock-check lint lint-arch lint-workflows typecheck security test diff-cover
 	@echo "Todos os gates passaram"
 
 # CVE nas dependencias de runtime: o mesmo conjunto do job pip-audit. O export

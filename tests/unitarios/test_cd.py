@@ -12,6 +12,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 WORKFLOWS = RAIZ / ".github" / "workflows"
 CD = WORKFLOWS / "cd.yml"
 SHA_PADRAO = re.compile(r"^[0-9a-f]{40}$")
+DIGEST = r"sha256:[0-9a-f]{64}"
 CD_REUTILIZAVEL = (
     "fiap-postech-sw-architecture/postech-sw-arch-p4-platform/"
     ".github/workflows/cd-servico.yml"
@@ -107,3 +108,27 @@ def test_concurrency_por_repositorio_sem_cancelar_o_run_em_curso() -> None:
         "group": "cd-${{ github.repository }}",
         "cancel-in-progress": False,
     }
+
+
+def test_imagem_do_actionlint_do_makefile_por_digest() -> None:
+    makefile = (RAIZ / "Makefile").read_text()
+
+    assert re.search(
+        rf"^ACTIONLINT_IMAGE := rhysd/actionlint:\d+\.\d+\.\d+@{DIGEST}$",
+        makefile,
+        re.MULTILINE,
+    )
+
+
+def test_actionlint_roda_no_make_check_e_no_job_lint_do_ci() -> None:
+    """O cd.yml so executa depois do merge: sem estes dois, nada o valida antes."""
+    makefile = (RAIZ / "Makefile").read_text()
+    [alvo] = re.findall(r"^lint-workflows:\n\t(.+)$", makefile, re.MULTILINE)
+    [prerequisitos] = re.findall(r"^check:(.+)$", makefile, re.MULTILINE)
+    passos = _carrega(WORKFLOWS / "ci.yml")["jobs"]["lint"]["steps"]
+
+    assert alvo.endswith("$(ACTIONLINT_IMAGE)")
+    assert "lint-workflows" in prerequisitos.split()
+    assert [p["run"] for p in passos if "lint-workflows" in p.get("run", "")] == [
+        "make lint-workflows"
+    ]
