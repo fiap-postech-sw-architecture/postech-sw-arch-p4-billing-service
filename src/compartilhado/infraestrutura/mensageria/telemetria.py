@@ -241,7 +241,7 @@ def trocar_url_do_cliente_pelo_template(span: Span, _requisicao: object) -> None
     no span, entao o que sobra nele e o template. A instrumentacao nao protege o
     hook (o do FastAPI ela protege): um erro aqui derrubaria a chamada ao
     provedor, e este nao levanta."""
-    if not isinstance(span, ReadableSpan) or not span.is_recording():
+    if not isinstance(span, ReadableSpan):
         return
     atributos = span.attributes or {}
     for nome in _ATRIBUTOS_DE_URL:

@@ -12,7 +12,7 @@ Consolidado em 2026-10-07: as 98 entradas anteriores estao em `MEMORY.archive.md
 
 ## Recent decisions
 
-- 2026-10-19 - Item 34(g) das sobras da verificacao do Billing (um `try/except` em `_SemTextoDeErro.on_end`, que troca `_status` e `_events` de um span) fica rejeitado: o teto `<1.46` do SDK e o `ignore` de minor do OpenTelemetry no Dependabot (PR #19) fecham o risco de uma versao nova mudar esses atributos, e o `try/except` esconderia a quebra em vez de acusa-la - PR #18
+- 2026-10-19 - A proposta de um `try/except` em `_SemTextoDeErro.on_end` (que troca `_status` e `_events` de um span) fica rejeitada: o teto `<1.46` do SDK e o `ignore` de minor do OpenTelemetry no Dependabot (PR #19) fecham o risco de uma versao nova mudar esses atributos, e o `try/except` esconderia a quebra em vez de acusa-la - PR #18
 - 2026-10-19 - Restringe a entrada de 18/10 sobre o prazo do MongoDB: so na API a espera do provedor fica fora do prazo da transacao. No consumidor, processar_mensagem envolve o handler inteiro em pymongo.timeout(10), incluindo leitura e HTTP externo; o comportamento documentado em 07/10 permanece.
 
 - 2026-10-18 - Recusa de pagamento usa mensagem fixa na excecao, nos novos registros/eventos e na API; falha legada e protegida so na projecao, sem regravar dados. Contradiz a divida sobre texto livre nos tres destinos; ver README, Log da recusa do Mercado Pago. O alinhamento descritivo do contrato canonico e das copias depende de follow-up no platform, sem mudar formato ou versao.
