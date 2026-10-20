@@ -37,14 +37,18 @@ updates:
       # semantic-conventions na mesma versao, e subir so uma parte nao
       # resolve, entao a familia sobe junta aqui. Um grupo so deles ficaria
       # vazio, mesmo antes deste no arquivo: o Dependabot o trata como menos
-      # especifico que este. O teto do pyproject.toml (<1.46 e <0.67) barra
-      # tambem a proxima minor, e nao so a major, entao pelo grupo so sobe
-      # patch: telemetria.py troca _status e _events de um span, atributos
-      # privados do SDK que uma minor nova pode mudar. Minor nova so entra com
-      # os dois tetos subidos a mao, juntos, depois de ler o changelog. O que o
-      # Dependabot faz diante do teto ainda nao foi observado neste repositorio.
+      # especifico que este. Pelo grupo so sobe patch (o `ignore` abaixo tira a
+      # minor e a major): telemetria.py troca _status e _events de um span,
+      # atributos privados do SDK que uma minor nova pode mudar.
       python-patch-e-minor:
         update-types: ["minor", "patch"]
+    # O teto do pyproject.toml (<1.46 e <0.67) nao segura o Dependabot: ele o
+    # alarga (no OS e na Execucao o sqlalchemy <2.1 virou <2.2, trouxe a 2.1 e
+    # quebrou o build). Minor nova dos opentelemetry-* so entra a mao, com os
+    # dois tetos subidos juntos, depois de ler o changelog.
+    ignore:
+      - dependency-name: "opentelemetry-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # Actions dos workflows (por tag, ou por SHA com a versao no comentario).
   - package-ecosystem: "github-actions"

@@ -324,11 +324,28 @@ def test_dependabot_tem_agenda_prefixo_grupos_e_ignore_de_cada_bloco() -> None:
             ],
         }
     ]
+    # O teto do pyproject.toml nao segura o Dependabot: ele o alarga (no OS e na
+    # Execucao o sqlalchemy <2.1 virou <2.2 e a minor nova quebrou o build). A
+    # minor dos opentelemetry-* (telemetria.py troca atributos privados do SDK)
+    # so entra a mao, com os dois tetos subidos juntos.
+    so_patch_do_opentelemetry = [
+        {
+            "dependency-name": "opentelemetry-*",
+            "update-types": [
+                "version-update:semver-major",
+                "version-update:semver-minor",
+            ],
+        }
+    ]
     # Um grupo por nome (o do OpenTelemetry) ficaria vazio: no job real os
     # opentelemetry-* sairam dele para o de update-types ("belongs to more
     # specific group"), entao cada bloco tem so o de patch e minor.
     esperado = {
-        "uv": ("chore(deps)", {"python-patch-e-minor": patch_e_minor}, []),
+        "uv": (
+            "chore(deps)",
+            {"python-patch-e-minor": patch_e_minor},
+            so_patch_do_opentelemetry,
+        ),
         "github-actions": ("ci", {"actions-patch-e-minor": patch_e_minor}, []),
         "docker": (
             "chore(deps)",
