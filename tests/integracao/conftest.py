@@ -119,6 +119,12 @@ def mongo_uri_do_coletor() -> Iterator[str]:
                 LogMessageWaitStrategy(re.compile(r"waiting for connections", re.I))
             )
         )
+        # So no loopback: o mongod sobe sem autenticacao e com os comandos de teste
+        # ligados (configureFailPoint), e a porta publicada em todas as interfaces
+        # ficaria ao alcance da rede local. O docker aceita (endereco, porta), que
+        # o tipo do testcontainers (so a porta) nao declara.
+        portas: dict[Any, Any] = container.ports
+        portas["27017"] = ("127.0.0.1", None)
         with container:
             host = container.get_container_host_ip()
             porta = container.get_exposed_port(27017)
