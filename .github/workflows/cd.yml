@@ -1,7 +1,8 @@
 name: CD
 
 # Gatilhos e gates locais; imagem, kind e gancho remoto compartilham a
-# implementacao do Platform (ADR-042/D118), fixada no commit integrado.
+# implementacao do Platform (ADR-042; cd-servico.yml no repositorio do
+# platform), fixada no commit integrado.
 on:
   push:
     branches: [main]

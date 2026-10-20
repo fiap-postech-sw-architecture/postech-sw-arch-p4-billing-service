@@ -11,7 +11,6 @@ import yaml
 RAIZ = Path(__file__).resolve().parents[2]
 WORKFLOWS = RAIZ / ".github" / "workflows"
 CD = WORKFLOWS / "cd.yml"
-SHA_PADRAO = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = r"sha256:[0-9a-f]{64}"
 CD_REUTILIZAVEL = (
     "fiap-postech-sw-architecture/postech-sw-arch-p4-platform/"
@@ -97,8 +96,12 @@ def test_gatilhos_sao_o_push_na_main_e_o_dispatch() -> None:
         "sha_billing_service",
         "sha_execution_service",
     ]
+    # Sem `default`: o reutilizavel resolve a entrada vazia para o ultimo CD
+    # verde, e um valor padrao (uma ref, um SHA) trocaria esse comportamento.
     assert all(
-        entrada["required"] is False and entrada["type"] == "string"
+        entrada["required"] is False
+        and entrada["type"] == "string"
+        and "default" not in entrada
         for entrada in entradas.values()
     )
 
