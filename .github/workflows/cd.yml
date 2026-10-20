@@ -1,0 +1,67 @@
+name: CD
+
+# Gatilhos e gates locais; imagem, kind e gancho remoto compartilham a
+# implementacao do Platform (ADR-042; cd-servico.yml no repositorio do
+# platform), fixada no commit integrado.
+on:
+  push:
+    branches: [main]
+  # Reexecuta uma combinacao de commits, sempre a partir da main (o job image
+  # reprova outra ref). O Billing Service e sempre o commit do run:
+  # sha_billing_service so aceita esse valor e mantem as mesmas entradas
+  # dos CDs dos outros servicos.
+  workflow_dispatch:
+    inputs:
+      sha_platform:
+        description: "Commit do platform (40 hexadecimais minusculos); vazio usa o do ultimo CD verde"
+        required: false
+        type: string
+      sha_os_service:
+        description: "Commit do OS Service (40 hexadecimais minusculos); vazio usa o do ultimo CD verde"
+        required: false
+        type: string
+      sha_billing_service:
+        description: "Vazio ou o commit deste run"
+        required: false
+        type: string
+      sha_execution_service:
+        description: "Commit do Execution Service (40 hexadecimais minusculos); vazio usa o do ultimo CD verde"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Um CD por vez no repositorio, sem cancelar o que esta em curso: dois pushes
+# seguidos nao implantam fora de ordem. O GitHub guarda um unico run pendente
+# por grupo, entao o push seguinte substitui o pendente e aquele commit fica
+# sem CD; o run que sobra testa o estado mais novo da main.
+concurrency:
+  group: cd-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  security-scan:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
+  cd:
+    needs: [ci, security-scan]
+    # S fixa a definicao reutilizavel; sha_platform escolhe os assets do deploy.
+    uses: fiap-postech-sw-architecture/postech-sw-arch-p4-platform/.github/workflows/cd-servico.yml@3f7cca2eb555a038b0d2780058ef0e692f93ee8a
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    with:
+      servico: billing-service
+      sha_platform: ${{ inputs.sha_platform }}
+      sha_os_service: ${{ inputs.sha_os_service }}
+      sha_billing_service: ${{ inputs.sha_billing_service }}
+      sha_execution_service: ${{ inputs.sha_execution_service }}

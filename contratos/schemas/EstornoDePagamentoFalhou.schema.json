@@ -16,7 +16,8 @@
       "$ref": "#/$defs/uuid"
     },
     "motivo": {
-      "$ref": "#/$defs/motivo"
+      "$ref": "#/$defs/motivo",
+      "description": "Mensagem fixa do Billing: Provedor de pagamento recusou a operacao. Não inclui o texto livre nem o corpo da resposta do provedor."
     }
   },
   "$defs": {

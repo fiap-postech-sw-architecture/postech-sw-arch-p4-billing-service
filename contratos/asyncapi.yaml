@@ -1910,6 +1910,7 @@ components:
       name: EstornoDePagamentoFalhou
       title: "Estorno de pagamento falhou"
       summary: "O provedor recusou o estorno; a saga vai para FALHA_NA_COMPENSACAO e pede intervenção manual."
+      description: "O campo dados.motivo recebe a mensagem fixa Provedor de pagamento recusou a operacao, sem texto livre ou corpo da resposta do provedor. O formato e a versão 1 do evento permanecem os mesmos."
       traits:
         - $ref: '#/components/messageTraits/envelope'
       payload:

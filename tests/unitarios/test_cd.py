@@ -1,0 +1,137 @@
+"""Contrato local do caller CD; imagem e deploy são testados no Platform."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+RAIZ = Path(__file__).resolve().parents[2]
+WORKFLOWS = RAIZ / ".github" / "workflows"
+CD = WORKFLOWS / "cd.yml"
+DIGEST = r"sha256:[0-9a-f]{64}"
+CD_REUTILIZAVEL = (
+    "fiap-postech-sw-architecture/postech-sw-arch-p4-platform/"
+    ".github/workflows/cd-servico.yml"
+)
+
+
+def _carrega(caminho: Path = CD) -> dict[Any, Any]:
+    carregado: dict[Any, Any] = yaml.safe_load(caminho.read_text())
+    return carregado
+
+
+def _gatilhos(workflow: dict[Any, Any]) -> dict[str, Any]:
+    # O YAML 1.1 do PyYAML le a chave `on` como o booleano True.
+    gatilhos: dict[str, Any] = workflow[True]
+    return gatilhos
+
+
+def _jobs() -> dict[str, dict[str, Any]]:
+    jobs: dict[str, dict[str, Any]] = _carrega()["jobs"]
+    return jobs
+
+
+def test_caller_preserva_gates_locais_antes_do_cd_reutilizavel() -> None:
+    jobs = _jobs()
+
+    assert list(jobs) == ["ci", "security-scan", "cd"]
+    assert jobs["ci"] == {
+        "uses": "./.github/workflows/ci.yml",
+        "permissions": {"contents": "read"},
+    }
+    assert jobs["security-scan"] == {
+        "uses": "./.github/workflows/security.yml",
+        "permissions": {"contents": "read"},
+    }
+    assert set(jobs["cd"]) == {"needs", "uses", "permissions", "with"}
+    assert jobs["cd"]["needs"] == ["ci", "security-scan"]
+    assert re.fullmatch(
+        re.escape(CD_REUTILIZAVEL) + r"@[0-9a-f]{40}", jobs["cd"]["uses"]
+    )
+
+
+def test_caller_encaminha_servico_e_os_quatro_inputs_sem_transformacao() -> None:
+    entradas = _gatilhos(_carrega())["workflow_dispatch"]["inputs"]
+
+    assert _jobs()["cd"]["with"] == {
+        "servico": "billing-service",
+        **{nome: "${{ inputs." + nome + " }}" for nome in entradas},
+    }
+    assert "env" not in _carrega()
+
+
+def test_caller_concede_so_a_uniao_das_permissoes_do_cd() -> None:
+    assert _carrega()["permissions"] == {"contents": "read"}
+    assert _jobs()["cd"]["permissions"] == {
+        "contents": "read",
+        "actions": "read",
+        "packages": "write",
+    }
+    # Sem secrets: inherit, environment ou passos locais com acesso a segredos.
+    assert set(_carrega()) == {"name", True, "permissions", "concurrency", "jobs"}
+
+
+def test_ci_e_seguranca_conservam_os_nove_checks_e_workflow_call() -> None:
+    for arquivo, checks in [
+        ("ci.yml", {"lint", "type-check", "security", "test", "sonarqube", "build"}),
+        ("security.yml", {"pip-audit", "gitleaks", "trivy"}),
+    ]:
+        workflow = _carrega(WORKFLOWS / arquivo)
+        assert set(workflow["jobs"]) == checks
+        assert "workflow_call" in _gatilhos(workflow)
+
+
+def test_gatilhos_sao_o_push_na_main_e_o_dispatch() -> None:
+    gatilhos = _gatilhos(_carrega())
+
+    assert set(gatilhos) == {"push", "workflow_dispatch"}
+    assert gatilhos["push"] == {"branches": ["main"]}
+    entradas = gatilhos["workflow_dispatch"]["inputs"]
+    assert list(entradas) == [
+        "sha_platform",
+        "sha_os_service",
+        "sha_billing_service",
+        "sha_execution_service",
+    ]
+    # Sem `default`: o reutilizavel resolve a entrada vazia para o ultimo CD
+    # verde, e um valor padrao (uma ref, um SHA) trocaria esse comportamento.
+    assert all(
+        entrada["required"] is False
+        and entrada["type"] == "string"
+        and "default" not in entrada
+        for entrada in entradas.values()
+    )
+
+
+def test_concurrency_por_repositorio_sem_cancelar_o_run_em_curso() -> None:
+    assert _carrega()["concurrency"] == {
+        "group": "cd-${{ github.repository }}",
+        "cancel-in-progress": False,
+    }
+
+
+def test_imagem_do_actionlint_do_makefile_por_digest() -> None:
+    makefile = (RAIZ / "Makefile").read_text()
+
+    assert re.search(
+        rf"^ACTIONLINT_IMAGE := rhysd/actionlint:\d+\.\d+\.\d+@{DIGEST}$",
+        makefile,
+        re.MULTILINE,
+    )
+
+
+def test_actionlint_roda_no_make_check_e_no_job_lint_do_ci() -> None:
+    """O cd.yml so executa depois do merge: sem estes dois, nada o valida antes."""
+    makefile = (RAIZ / "Makefile").read_text()
+    [alvo] = re.findall(r"^lint-workflows:\n\t(.+)$", makefile, re.MULTILINE)
+    [prerequisitos] = re.findall(r"^check:(.+)$", makefile, re.MULTILINE)
+    passos = _carrega(WORKFLOWS / "ci.yml")["jobs"]["lint"]["steps"]
+
+    assert alvo.endswith("$(ACTIONLINT_IMAGE)")
+    assert "lint-workflows" in prerequisitos.split()
+    assert [p["run"] for p in passos if "lint-workflows" in p.get("run", "")] == [
+        "make lint-workflows"
+    ]

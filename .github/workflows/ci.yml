@@ -43,6 +43,10 @@ jobs:
         run: make lint
       - name: Contratos de camada (import-linter)
         run: uv run lint-imports
+      # actionlint, com o shellcheck da imagem nos scripts dos run:, em todos
+      # os workflows (inclusive o cd.yml, que so roda depois do merge).
+      - name: Workflows (make lint-workflows)
+        run: make lint-workflows
 
   type-check:
     runs-on: ubuntu-24.04
