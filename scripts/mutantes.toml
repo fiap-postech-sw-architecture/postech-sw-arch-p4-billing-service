@@ -10,7 +10,8 @@
 # que os testes dos grupos abaixo importam ou leem. Os testes de integracao do
 # Billing sobem o MongoDB e o RabbitMQ por testcontainers (precisam de Docker);
 # com TEST_MONGODB_URI apontando para um replica set no ar, poupam o container
-# de cada mutante.
+# de cada mutante. Exceto OBS04 a OBS07 (coletor da outbox): TestPrazosDoColetor
+# sobe sempre o proprio mongod, com os comandos de teste, e ignora a variavel.
 copiar = ["scripts", "src", "tests", "contratos", "k8s", "pyproject.toml", ".coveragerc"]
 
 [testes]

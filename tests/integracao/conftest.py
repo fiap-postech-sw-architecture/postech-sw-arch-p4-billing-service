@@ -1,7 +1,9 @@
 """MongoDB real em replica set de um no (transacoes de verdade).
 
 Um container por sessao (testcontainers) ou ``TEST_MONGODB_URI`` apontando
-para um replica set ja existente; um banco novo por teste, apagado no fim.
+para um replica set ja existente; um banco novo por teste, apagado no fim. O
+coletor da outbox (``mongo_uri_do_coletor``) e a excecao: um mongod proprio, com
+os comandos de teste ligados, que nunca usa a ``TEST_MONGODB_URI``.
 """
 
 from __future__ import annotations
