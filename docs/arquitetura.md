@@ -741,7 +741,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 
 **Segredos e dados sensíveis:**
 
-- O token do link de decisão e o do checkout são credenciais: saem mascarados do log, do access log e do atributo de URL dos spans. O `link_decisao` e o `checkout_url` nunca vão para log nem para atributo de span.
+- O token do link de decisão e o do checkout são credenciais: saem mascarados do log, do access log e do atributo de URL dos spans. O `link_decisao` e o `checkout_url` nunca vão para log nem para atributo de span. O id da preferência (que compõe o link do checkout), o id do pagamento e a query da busca também não: o span de cliente do httpx leva o template da rota (`/v1/payments/{id}`), não a URL.
 - O `ORCAMENTO_LINK_SECRET` é obrigatório e forte fora de desenvolvimento (o valor de demonstração é recusado no boot); o `MP_ACCESS_TOKEN` e o `MP_WEBHOOK_SECRET` vêm de Secret, e o valor de cada um não está em nenhum arquivo do repositório. Como obtê-los no cluster está no README, em [Implantação](../README.md#implantação).
 - O texto livre da recusa do provedor (`message` e `description`) não entra em nenhum log. A exceção usa `Provedor de pagamento recusou a operacao`: novos `estornos_automaticos[].falha`, o `motivo` do `EstornoDePagamentoFalhou` e o corpo do 409 do webhook levam esse texto. A consulta apresenta falhas antigas com a mesma mensagem fixa, sem alterar o documento salvo, e mantém `falha: null` para sucesso.
 - Logs e erros passam por um mascaramento de CPF, CNPJ, e-mail, telefone e chaves sensíveis, inclusive o traceback; os spans não levam o texto das exceções nem o caminho cru da URL.

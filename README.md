@@ -357,7 +357,7 @@ Traces e métricas seguem o [ADR-043](https://github.com/fiap-postech-sw-archite
 
 Os painéis, os alertas e o [catálogo das métricas dos três serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md#catálogo-de-métricas) ficam no `platform`, em `observabilidade/`; abaixo estão as séries, os spans e os logs deste serviço.
 
-Dashboards relacionados no Grafana: [Orçamentos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-negocio-orcamentos.json), [Pagamentos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-negocio-pagamentos.json), [Mensageria](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-mensageria.json), [Serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-servicos.json), [Bancos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-bancos.json). Consulte a documentação dos [painéis de negócio](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/negocio.md) e dos [técnicos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md).
+Dashboards relacionados no Grafana: [Orçamentos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-negocio-orcamentos.json), [Pagamentos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-negocio-pagamentos.json), [Saga](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-saga.json) (o painel "Último ciclo do prazos" lê a série do processo `prazos`), [Mensageria](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-mensageria.json), [Serviços](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-servicos.json), [Bancos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/dashboards/pytstop-bancos.json). Consulte a documentação dos [painéis de negócio](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/negocio.md) e dos [técnicos](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md).
 
 O Jaeger do platform usa `MEMORY_MAX_TRACES=250`: o trace mais antigo sai quando entra o 251º, sem TTL; reiniciar o pod apaga todos. Capture o trace logo após gerar o fluxo ([retenção e limites](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/observabilidade/README.md#retenção-e-prazos)).
 
@@ -388,16 +388,16 @@ O Jaeger do platform usa `MEMORY_MAX_TRACES=250`: o trace mais antigo sai quando
 
 | Fica de fora | Por quê | Como |
 |---|---|---|
-| Token do link de decisão, id do pagamento e token do checkout, no caminho e na query | São credenciais (ADR-039): quem tem o link decide o orçamento e quem tem o checkout paga a cobrança | O hook `trocar_url_pelo_template` grava o template da rota em `http.target`, `http.url`, `url.path` e `url.full`, e `REDACTED` em `url.query`. Requisição que nenhuma rota casou, como o 404 do token com uma barra a mais, fica `nao_roteada`. Um `Host` malformado (`[`, `a]b`) não desfaz isso: o span sai só com o template |
+| Token do link de decisão, id do pagamento e token do checkout, no caminho e na query | São credenciais (ADR-039): quem tem o link decide o orçamento e quem tem o checkout paga a cobrança | O hook `trocar_url_pelo_template` grava o template da rota em `http.target` e `url.path`, `esquema://REDACTED<template>` em `http.url` e `url.full`, e `REDACTED` em `url.query`. Requisição que nenhuma rota casou, como o 404 do token com uma barra a mais, fica `nao_roteada`. Um `Host` malformado (`[`, `a]b`) não desfaz isso: o span sai só com o template |
+| Id da preferência, id do pagamento e `external_reference`, na URL do `CLIENT` do httpx ao Mercado Pago | O id da preferência compõe o link do checkout (`pref_id`), o do pagamento é credencial (ADR-039) e a busca leva o id do pagamento na query | O `request_hook` do httpx (`trocar_url_do_cliente_pelo_template`) grava o template em `http.url` e `url.full`: `/checkout/preferences/{id}`, `/v1/payments/{id}`, `/v1/payments/search` (sem a query) e `/v1/payments/{id}/refunds`. Caminho que a lista não conhece sai `nao_roteada`; no simulador não há chamada |
 | O documento do MongoDB | Os documentos levam o `link_decisao`, o `checkout_url` e o valor cobrado | `capture_statement` desligado |
 | Cabeçalhos e corpo de requisições e respostas, inclusive `Authorization` e `x-signature` | Segredo e dado do pagador | A instrumentação só os captura se configurada, e não é |
 | Texto de exceção e descrição do status de erro | Trazem o que o erro viu: o `Authorization` que o httpx recusou enviar, o CPF de uma requisição, o documento que o MongoDB rejeitou. O log passa pelo `scrub`; o span não passava | O processador do provider (o primeiro, antes do exportador) tira `exception.message`, `exception.stacktrace` e a descrição do status de todo span, do serviço ou da instrumentação. Ficam `exception.type` e `pytstop.falha`, só com o nome da classe |
+| `Host` e endereço do servidor | O `Host` é texto do chamador, sem limite: `http.server_name` e a autoridade do `http.url` (usuário, senha, host e porta) o repetem. `http.host`, `server.address` e as portas do servidor são o endereço do próprio pod, não o do chamador, e também não servem à operação | O hook grava `REDACTED` nos textos e `0` nas portas, quando existem no span, e `REDACTED` no lugar da autoridade da URL, que mantém o esquema e o template da rota |
 | `User-Agent` e endereço e porta do par da conexão | Texto livre sem limite e dado de rede de quem chamou, sem uso operacional; o Jaeger guarda 250 traces em memória, sem como apagar um titular | O hook grava `REDACTED` nos textos e `0` nas portas |
 | `baggage` do chamador | O ADR-043 prevê só `traceparent` e `tracestate`; o padrão do SDK somaria o `baggage`, que a API aceitaria e o httpx repassaria ao Mercado Pago | O propagador global é só o `TraceContext` (`instalar_propagador`). O `tracestate` acima de 512 caracteres não vai para a outbox nem para o AMQP |
 
-Duas ressalvas. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace). O `http.url` do `CLIENT` do httpx contra o Mercado Pago real leva `payments/<id do provedor>` e `external_reference=<uuid do pagamento>`, nunca o token do checkout; no simulador não há chamada.
-
-O hook do `SERVER` substitui toda a autoridade da URL (usuário, senha, host e porta) por `REDACTED`, mantendo o esquema e o template da rota. Os atributos textuais de Host e servidor recebem `REDACTED`, e as portas recebem `0`, quando existem no span; uma URL malformada fica só com o template. O parentesco e os spans de cliente seguem iguais.
+Uma ressalva. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao Mercado Pago (só ids aleatórios do trace).
 
 ### Métricas
 
@@ -420,7 +420,7 @@ O hook do `SERVER` substitui toda a autoridade da URL (usuário, senha, host e p
 - **Nasce com zero:** toda série de rótulo fechado existe no `/metrics` desde o boot do processo que a emite, exceto o disjuntor do Mercado Pago, que só existe com o gateway real. O `increase()` do Prometheus perde o primeiro evento de uma série que só aparece com ele, e no volume de uma demonstração o painel mostraria zero. O relay pré-inicializa os eventos que publica, o consumidor os comandos que consome e os dois o próprio `componente`.
 - **Dinheiro em centavos inteiros:** o Prometheus guarda `float64`, então a métrica soma `int(valor * 100)` do `Decimal` e o painel divide por 100.
 - **A raspagem da API e a do relay consultam o MongoDB:** duas contagens e a linha pendente mais antiga, que lê o índice `(status, criado_em)`. Com o relay parado a API segue exportando a idade, que mantém o alerta de outbox parada de pé. As três consultas dividem um prazo de 2 s (`PRAZO_DA_RASPAGEM_S`).
-- **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` de 10 s do Prometheus, o que deixaria o alvo da API em `up=0` (inferência a partir do tempo da resposta, não de uma raspagem observada). A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
+- **Banco fora ou travado:** o `/metrics` responde em cerca de 2 s sem essas três séries, que somem em vez de zerar, e o resto da raspagem segue. Cada raspagem que falha deixa um WARNING `outbox_metrics_unavailable` com a classe do erro do driver em `tipo_do_erro` (por exemplo `ExecutionTimeout` ou `NetworkTimeout`), nunca o texto dele. Sem o prazo eram 10,1 s, mais que o `scrape_timeout` de 10 s do Prometheus, o que deixaria o alvo da API em `up=0` (inferência a partir do tempo da resposta, não de uma raspagem observada). A consulta não vira trace (é um span de banco sem pai), e a API sobe sem esperar o MongoDB.
 - O rótulo das reconexões é `componente` (`relay` ou `consumidor`). O Prometheus já põe `processo` em todo alvo, e um rótulo da métrica com o mesmo nome viraria `exported_processo`.
 
 ### Logs
@@ -462,7 +462,7 @@ O `make check` confere o `uv.lock`, o ruff (lint e format), o import-linter, o m
 - **Unitários:** domínio, matrizes de transição dos agregados, link assinado, contrato do adapter do Mercado Pago com respx, circuit breaker, JWKS com chave RSA gerada no teste, contrato das mensagens, configuração, OpenTelemetry (amostrador, hook da URL) e as séries que nascem com zero (cada caso sobe um interpretador novo e lê o `REGISTRY` antes de qualquer evento).
 - **Documentos** (`tests/unitarios/test_documentacao.py`): o `docs/api/openapi.json` é o `app.openapi()`; a coleção Postman tem uma requisição por rota e cumpre o que a seção [API](#api) promete dela; todo método e rota do OpenAPI tem um `curl` em [Exemplos da API](#exemplos-da-api), sem `curl` do Billing que não case com rota alguma, com a query, o `Authorization: Bearer` e o `Content-Type` que a rota pede e um corpo que o schema aceita; os links relativos do README e de [`docs/arquitetura.md`](docs/arquitetura.md) apontam arquivo e âncora que existem; e a arquitetura segue o código: os nomes dos campos e a coluna Validador das coleções, os índices, os estados dos agregados e, nas tabelas de comandos e eventos da mensageria, quais mensagens existem, a routing key, quem publica, quem consome e a fila (ficam sem teste o tipo dos campos, as marcas PK e UK do ER, as colunas Etapa esperada e Quando sai dos eventos e a Resposta dos comandos, da qual só se confere que o evento citado existe). As tabelas de [Cobertura](#cobertura) saem de `scripts/cobertura_resumo.py` e o teste reprova a que for editada à mão.
 - **Contrato** (`tests/contratos`): a cópia confere com o `platform` no SHA de origem, que o teste baixa pelo GitHub, e os exemplos de lá validam.
-- **Integração** via testcontainers, com MongoDB 7.0.43 real em replica set e RabbitMQ 4.3.6 com as definitions da plataforma:
+- **Integração** via testcontainers, com MongoDB 7.0.43 real em replica set e RabbitMQ 4.3.6 com as definitions da plataforma. O prazo do coletor da outbox é a exceção: roda num `mongod` isolado, sem replica set, com os comandos de teste ligados (`failCommand`), publicado só em `127.0.0.1` e sem usar a `TEST_MONGODB_URI`:
   - API e casos de uso: matriz papel × rota gerada do OpenAPI, atomicidade da outbox, idempotência e corridas reais entre decisão, webhook e expiração.
   - Rastreamento (`tests/integracao/test_rastreamento.py`): o provider de produção, com o amostrador real, exporta para a memória. A requisição gera um `SERVER` com filhos de banco no mesmo trace; o ciclo ocioso do relay e do `prazos` e a raspagem do `/metrics` não exportam nenhum span; o link de decisão e o checkout do simulador (GET e POST) não deixam token nem id em atributo algum.
   - Mensageria: relays concorrentes e lease retomado; consumidor com origem, contrato, entrada hostil, retry por nível e DLQ; os quatro comandos com a causa de cada resposta; e o fluxo de ponta a ponta do comando publicado ao evento em `pytstop.eventos`, com o trace encadeado, a mensagem venenosa, a mensagem sem rota, o alarme de memória e o broker parado.
@@ -517,9 +517,9 @@ O `mutmut` não roda neste repositório. A versão 3.8.0 espera o pacote em `src
 AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
 ```
 
-(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 65 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
+(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 74 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
 
-**Resultado** em 18/10/2026: 63 mortos de 63 medidos (100%) em cerca de 4 min, conforme a carga da máquina, com 2 equivalentes de fora da conta.
+**Resultado** em 19/10/2026: 72 mortos de 72 medidos (100%) em 4,4 min (cerca de 5 min com a máquina carregada), com 2 equivalentes de fora da conta.
 
 | Área | Mutantes | Mortos | Equivalentes |
 |---|---:|---:|---:|
@@ -531,7 +531,8 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
 | Consumidor | 5 | 5 | 0 |
 | Relay | 9 | 9 | 0 |
 | Compensação da saga | 5 | 5 | 0 |
-| **total** | **65** | **63** | **2** |
+| Observabilidade | 9 | 9 | 0 |
+| **total** | **74** | **72** | **2** |
 
 - **Limites que só a mutação mostrou, hoje com teste:**
   - moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`);
@@ -542,7 +543,7 @@ AssertionError: Failed trampoline hit. Module name starts with `src.`, which is 
 - **Equivalentes**, cada um com a condição em que vale no campo `equivalente` do `mutantes.toml`:
   - D01, o teto exato do `Dinheiro` (`>=` virando `>`): só para +10^10, que a checagem seguinte, depois do arredondamento, recusa com a mesma mensagem. Para -10^10 a recusa é a mesma exceção, mas a mensagem muda, de "acima de 10 dígitos inteiros" para "Valor nao pode ser negativo", e nenhum teste confere a mensagem desse caso.
   - J01, `HS256` na lista de algoritmos do JWKS: equivale no resultado (o token segue dando 401, só muda o texto do erro do PyJWT, que a API não usa), e só enquanto valem duas condições: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o `decode` com um `PyJWK` recusa `Token algorithm 'HS256' does not match the key's algorithm 'RS256'`) e o validador passa um `PyJWK` ao `decode`. Sem elas, a lista `RS256` seria a única barreira, e nenhum teste a prende.
-- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 65 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
+- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 74 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
 
 Para refazer:
 
@@ -556,7 +557,7 @@ Como o alvo se comporta:
 - Para de iniciar mutantes depois de `MUTACAO_PRAZO` segundos (900); os que sobram saem `nao rodado`. A tabela vai para `reports/mutacao.md`.
 - Antes do primeiro mutante de cada grupo de testes, roda o grupo na cópia sem mutante. Se o grupo já reprova ou estoura o tempo, os mutantes dele saem `erro`: um teste que já falha mataria qualquer um.
 - Com `erro` ou `nao rodado`, o percentual vira `n/d`.
-- Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container.
+- Os testes de integração sobem um MongoDB cada; com `TEST_MONGODB_URI` apontando para um replica set no ar, poupam o container. A exceção são os mutantes OBS04 a OBS07 (o coletor da outbox): `TestPrazosDoColetor` sobe sempre um `mongod` próprio, com os comandos de teste ligados, e ignora a `TEST_MONGODB_URI`; sem Docker esses quatro saem `erro`.
 - O script lê o arquivo original de `src/` a cada mutante: não edite `src/` com a bateria rodando.
 - Um mutante novo entra com o trecho exato (`de`, uma ocorrência no arquivo), e `tests/unitarios/test_mutacao_manual.py` reprova se a lista envelhecer.
 
