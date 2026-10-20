@@ -219,6 +219,20 @@ def test_url_do_cliente_sai_com_o_template_da_rota(
     assert not any("CANARY" in t for t in tudo_que_o_span_leva(lido(span)))
 
 
+def test_url_do_cliente_sai_com_o_template_nos_dois_atributos_do_mesmo_span() -> None:
+    """Com ``OTEL_SEMCONV_STABILITY_OPT_IN=http/dup`` a instrumentacao grava a
+    URL nas duas convencoes no mesmo span: as duas saem com o template."""
+    url = MERCADO_PAGO + "/v1/payments/98765432101?q=CANARY-QUERY"
+    span = span_do_cliente({"http.url": url, "url.full": url})
+
+    telemetria.trocar_url_do_cliente_pelo_template(span, object())
+
+    assert atributos_do(span) == {
+        "http.url": MERCADO_PAGO + "/v1/payments/{id}",
+        "url.full": MERCADO_PAGO + "/v1/payments/{id}",
+    }
+
+
 @pytest.mark.parametrize(
     "caminho",
     [
