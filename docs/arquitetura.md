@@ -296,7 +296,7 @@ Um documento por pagamento. A cobrança (`orcamento_id`, `valor`, `provedor`, `r
 | `estornos_automaticos` | lista | opcional | devoluções feitas sem pedido da saga, uma por tentativa |
 | `estornos_automaticos[].referencia_pagamento` | texto | não declarado | a tentativa estornada |
 | `estornos_automaticos[].registrado_em` | data | não declarado | |
-| `estornos_automaticos[].falha` | texto | não declarado | preenchido quando o provedor recusou o estorno; texto dele, até 500 caracteres |
+| `estornos_automaticos[].falha` | texto | não declarado | preenchido quando o provedor recusou o estorno, com a mensagem fixa `Provedor de pagamento recusou a operacao`; documento antigo pode guardar o texto do provedor (até 500 caracteres), e a consulta o devolve com a mesma mensagem fixa |
 | `aberto_por` | objeto | opcional | gravado uma vez, na criação durante um comando |
 | `aberto_por.mensagem_id` | UUID | não declarado | `id` do `SolicitarPagamento` |
 | `aberto_por.traceparent` | texto | não declarado | contexto de trace do comando (W3C) |
