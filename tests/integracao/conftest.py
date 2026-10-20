@@ -1,7 +1,9 @@
 """MongoDB real em replica set de um no (transacoes de verdade).
 
 Um container por sessao (testcontainers) ou ``TEST_MONGODB_URI`` apontando
-para um replica set ja existente; um banco novo por teste, apagado no fim.
+para um replica set ja existente; um banco novo por teste, apagado no fim. O
+coletor da outbox (``mongo_uri_do_coletor``) e a excecao: um mongod proprio, com
+os comandos de teste ligados, que nunca usa a ``TEST_MONGODB_URI``.
 """
 
 from __future__ import annotations
@@ -101,6 +103,34 @@ def mongo_uri() -> Iterator[str]:
                 container
             )
             yield uri
+
+
+@pytest.fixture(scope="module")
+def mongo_uri_do_coletor() -> Iterator[str]:
+    """Mongo exclusivo dos failpoints de leitura; nunca usa a URI externa."""
+    from testcontainers.core.container import DockerContainer
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+
+    with pytest.MonkeyPatch.context() as ambiente:
+        _docker_do_colima(ambiente)
+        container = (
+            DockerContainer(IMAGEM_MONGO)
+            .with_command(["--bind_ip_all", "--setParameter", "enableTestCommands=1"])
+            .with_exposed_ports(27017)
+            .waiting_for(
+                LogMessageWaitStrategy(re.compile(r"waiting for connections", re.I))
+            )
+        )
+        # So no loopback: o mongod sobe sem autenticacao e com os comandos de teste
+        # ligados (configureFailPoint), e a porta publicada em todas as interfaces
+        # ficaria ao alcance da rede local. O docker aceita (endereco, porta), que
+        # o tipo do testcontainers (so a porta) nao declara.
+        portas: dict[Any, Any] = container.ports
+        portas["27017"] = ("127.0.0.1", None)
+        with container:
+            host = container.get_container_host_ip()
+            porta = container.get_exposed_port(27017)
+            yield f"mongodb://{host}:{porta}/?directConnection=true"
 
 
 # Como o StatefulSet: keyfile so do usuario do mongod (400) e o entrypoint da

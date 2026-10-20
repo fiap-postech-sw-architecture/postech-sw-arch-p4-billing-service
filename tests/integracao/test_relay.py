@@ -13,8 +13,10 @@ import logging
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import pika
@@ -24,7 +26,7 @@ from opentelemetry.trace import SpanKind, StatusCode
 from pika.exceptions import AMQPConnectionError, StreamLostError
 from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
 from pymongo import MongoClient
-from pymongo.errors import AutoReconnect
+from pymongo.errors import AutoReconnect, ExecutionTimeout, NetworkTimeout
 
 from src import relay as processo_relay
 from src.compartilhado.infraestrutura.logging import configurar_logging
@@ -49,6 +51,7 @@ from tests.factories import orcamento
 from tests.integracao.apoio import PublicadorFalso, RelogioFixo
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -692,6 +695,24 @@ class TestLacoDoProcesso:
         assert canal.esperas == 2
 
 
+def _banco_cujo_find_one_falha(erro: Exception) -> Any:
+    """Banco falso para o ``ColetorDaOutbox``: as contagens respondem e o
+    ``find_one`` levanta ``erro``."""
+
+    class Colecao:
+        def count_documents(self, *_args: Any, **_opcoes: Any) -> int:
+            return 1
+
+        def find_one(self, *_args: Any, **_opcoes: Any) -> None:
+            raise erro
+
+    class Banco:
+        def __getitem__(self, _nome: str) -> Colecao:
+            return Colecao()
+
+    return Banco()
+
+
 class TestMetricas:
     AGORA = RelogioFixo().agora
 
@@ -814,6 +835,40 @@ class TestMetricas:
         with pytest.raises(ValueError, match="Duplicated timeseries"):
             registro.register(ColetorDaOutbox("outbox", banco))
 
+    @pytest.mark.parametrize("erro", [ExecutionTimeout, NetworkTimeout])
+    def test_falha_do_coletor_registra_so_a_classe(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+        erro: type[Exception],
+    ) -> None:
+        coletor = ColetorDaOutbox(
+            "outbox", _banco_cujo_find_one_falha(erro("SENTINELA_DRIVER"))
+        )
+        with caplog.at_level(logging.WARNING):
+            assert list(coletor.collect()) == []
+
+        [registro] = [
+            r for r in caplog.records if r.getMessage() == "outbox_metrics_unavailable"
+        ]
+        assert getattr(registro, "tipo_do_erro", None) == erro.__name__
+        assert registro.exc_info is None
+        saida = capsys.readouterr()
+        assert "SENTINELA_DRIVER" not in repr(registro.__dict__) + saida.out + saida.err
+
+    def test_erro_de_programacao_do_coletor_nao_e_absorvido(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coletor = ColetorDaOutbox(
+            "outbox",
+            _banco_cujo_find_one_falha(RuntimeError("SENTINELA_PROGRAMACAO")),
+        )
+        with pytest.raises(RuntimeError, match="SENTINELA_PROGRAMACAO"):
+            list(coletor.collect())
+        assert not any(
+            r.getMessage() == "outbox_metrics_unavailable" for r in caplog.records
+        )
+
     def test_banco_fora_responde_no_prazo_e_sem_as_series(self) -> None:
         """Com o cliente de producao (5 s para achar o servidor, 10 s por
         operacao) a raspagem levava 10,1 s, mais que o ``scrape_timeout`` do
@@ -850,6 +905,125 @@ class TestMetricas:
 
         assert texto == ""
         assert duracao < 5
+
+
+@contextmanager
+def _coletor_com_mongo_proprio(
+    uri: str,
+) -> Iterator[tuple[CollectorRegistry, Banco, str]]:
+    appname = f"coletor-{uuid4().hex}"
+    partes = urlsplit(uri)
+    query = dict(parse_qsl(partes.query))
+    query["appName"] = appname
+    uri_do_coletor = urlunsplit(partes._replace(query=urlencode(query)))
+    nome = f"teste_coletor_{uuid4().hex}"
+    with criar_cliente(uri) as administrativo, criar_cliente(uri_do_coletor) as cliente:
+        banco = cliente[nome]
+        relogio = RelogioFixo()
+        banco["outbox"].insert_many(
+            [
+                {
+                    "status": "pendente",
+                    "criado_em": relogio.agora - timedelta(seconds=10),
+                },
+                {"status": "dead", "criado_em": relogio.agora},
+            ]
+        )
+        registro = CollectorRegistry()
+        registro.register(ColetorDaOutbox("outbox", banco, relogio=relogio))
+        try:
+            yield registro, administrativo.admin, appname
+        finally:
+            administrativo.admin.command(
+                "configureFailPoint", "failCommand", mode="off"
+            )
+            administrativo.drop_database(nome)
+
+
+def _confere_coletor_positivo(registro: CollectorRegistry) -> None:
+    assert {f.name: f.samples[0].value for f in registro.collect()} == {
+        "outbox_pendentes": 1,
+        "outbox_dead": 1,
+        "pytstop_outbox_mais_antiga_segundos": 10,
+    }
+
+
+# Codigo 50 do servidor (MaxTimeMSExpired): o driver o levanta como ExecutionTimeout.
+MAX_TIME_MS_EXPIRED = 50
+# O servidor segura o find alem do prazo da raspagem: quem encerra a chamada e o
+# relogio do cliente. O desligamento do fail point espera o bloqueio acabar, e e
+# ele que faz o teste durar isto.
+BLOQUEIO_DO_FIND_MS = 3000
+
+
+@contextmanager
+def _failpoint(admin: Banco, appname: str, **dados: Any) -> Iterator[None]:
+    """O ``find`` do cliente ``appname`` sofre ``dados`` uma vez. Ao sair, exige
+    que a falha tenha atingido a consulta (sem isso o teste passaria sem ter
+    exercitado nada) e a desliga."""
+    ativacao = admin.command(
+        "configureFailPoint",
+        "failCommand",
+        mode={"times": 1},
+        data={"failCommands": ["find"], "appName": appname, **dados},
+    )
+    try:
+        yield
+        admin.command(
+            "waitForFailPoint",
+            "failCommand",
+            timesEntered=ativacao["count"] + 1,
+            maxTimeMS=1000,
+        )
+    finally:
+        admin.command("configureFailPoint", "failCommand", mode="off")
+
+
+class TestPrazosDoColetor:
+    def test_find_one_lento_e_limitado_pelo_prazo_da_raspagem(
+        self, mongo_uri_do_coletor: str
+    ) -> None:
+        with _coletor_com_mongo_proprio(mongo_uri_do_coletor) as (
+            registro,
+            admin,
+            appname,
+        ):
+            _confere_coletor_positivo(registro)
+            with _failpoint(
+                admin, appname, blockConnection=True, blockTimeMS=BLOQUEIO_DO_FIND_MS
+            ):
+                inicio = time.monotonic()
+                texto = generate_latest(registro)
+                duracao = time.monotonic() - inicio
+            assert texto == b""
+            # O README promete "cerca de 2 s". Os limites sao literais de proposito
+            # (nao PRAZO_DA_RASPAGEM_S): o de baixo prova que a chamada esperou o
+            # prazo em vez de falhar logo, o de cima reprova prazo maior.
+            assert 1.8 < duracao < 2.8
+            _confere_coletor_positivo(registro)
+
+    def test_execution_timeout_no_find_omite_as_tres_series(
+        self, mongo_uri_do_coletor: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with _coletor_com_mongo_proprio(mongo_uri_do_coletor) as (
+            registro,
+            admin,
+            appname,
+        ):
+            _confere_coletor_positivo(registro)
+            with (
+                _failpoint(admin, appname, errorCode=MAX_TIME_MS_EXPIRED),
+                caplog.at_level(logging.WARNING),
+            ):
+                assert generate_latest(registro) == b""
+            [aviso] = [
+                r
+                for r in caplog.records
+                if r.getMessage() == "outbox_metrics_unavailable"
+            ]
+            assert getattr(aviso, "tipo_do_erro", None) == "ExecutionTimeout"
+            assert aviso.exc_info is None
+            _confere_coletor_positivo(registro)
 
 
 class TestCasosDeBorda:

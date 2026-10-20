@@ -10,10 +10,16 @@
 # que os testes dos grupos abaixo importam ou leem. Os testes de integracao do
 # Billing sobem o MongoDB e o RabbitMQ por testcontainers (precisam de Docker);
 # com TEST_MONGODB_URI apontando para um replica set no ar, poupam o container
-# de cada mutante.
-copiar = ["src", "tests", "contratos", "k8s", "pyproject.toml", ".coveragerc"]
+# de cada mutante. Exceto OBS04 a OBS07 (coletor da outbox): TestPrazosDoColetor
+# sobe sempre o proprio mongod, com os comandos de teste, e ignora a variavel.
+copiar = ["scripts", "src", "tests", "contratos", "k8s", "pyproject.toml", ".coveragerc"]
 
 [testes]
+observabilidade_host = ["tests/unitarios/test_rastreamento.py"]
+observabilidade_coletor = ["tests/integracao/test_relay.py::TestMetricas", "tests/integracao/test_relay.py::TestPrazosDoColetor"]
+observabilidade_smoke = ["tests/unitarios/test_smoke_metricas.py"]
+observabilidade_prazo = ["tests/integracao/test_relay.py::TestPrazosDoColetor::test_find_one_lento_e_limitado_pelo_prazo_da_raspagem"]
+observabilidade_execution_timeout = ["tests/integracao/test_relay.py::TestPrazosDoColetor::test_execution_timeout_no_find_omite_as_tres_series"]
 dinheiro = ["tests/unitarios/test_compartilhado_dominio.py"]
 orcamento = ["tests/unitarios/test_orcamento_dominio.py"]
 pagamento = ["tests/unitarios/test_pagamento_dominio.py", "tests/unitarios/test_historico.py"]
@@ -547,3 +553,84 @@ arquivo = "src/pagamento/aplicacao/use_cases.py"
 testes = "saga_pagamento"
 de = "if pagamento is None or not pagamento.vencido(agora):\n                return False"
 para = "if pagamento is None:\n                return False"
+
+
+[[mutante]]
+id = "OBS01"
+area = "Observabilidade"
+arquivo = "src/compartilhado/interfaces/rastreamento.py"
+testes = "observabilidade_host"
+de = "netloc=_REDIGIDO, path=rota"
+para = "netloc=partes.netloc, path=rota"
+
+
+[[mutante]]
+id = "OBS02"
+area = "Observabilidade"
+arquivo = "src/compartilhado/interfaces/rastreamento.py"
+testes = "observabilidade_host"
+de = "    \"http.server_name\",\n"
+para = ""
+
+
+[[mutante]]
+id = "OBS03"
+area = "Observabilidade"
+arquivo = "src/compartilhado/interfaces/rastreamento.py"
+testes = "observabilidade_host"
+de = "    \"server.port\",\n"
+para = ""
+
+
+[[mutante]]
+id = "OBS04"
+area = "Observabilidade"
+arquivo = "src/compartilhado/infraestrutura/mensageria/metricas.py"
+testes = "observabilidade_coletor"
+de = "type(exc).__name__"
+para = "str(exc)"
+
+
+[[mutante]]
+id = "OBS05"
+area = "Observabilidade"
+arquivo = "src/compartilhado/infraestrutura/mensageria/metricas.py"
+testes = "observabilidade_coletor"
+de = "extra={\"tipo_do_erro\": type(exc).__name__},"
+para = "extra={},"
+
+
+[[mutante]]
+id = "OBS06"
+area = "Observabilidade"
+arquivo = "src/compartilhado/infraestrutura/mensageria/metricas.py"
+testes = "observabilidade_prazo"
+de = "pymongo.timeout(PRAZO_DA_RASPAGEM_S)"
+para = "pymongo.timeout(10.0)"
+
+
+[[mutante]]
+id = "OBS07"
+area = "Observabilidade"
+arquivo = "src/compartilhado/infraestrutura/mensageria/metricas.py"
+testes = "observabilidade_execution_timeout"
+de = "except PyMongoError as exc:"
+para = "except RuntimeError as exc:"
+
+
+[[mutante]]
+id = "OBS08"
+area = "Observabilidade"
+arquivo = "scripts/smoke_metricas.py"
+testes = "observabilidade_smoke"
+de = "if sem_familia or sem_serie:"
+para = "if sem_serie:"
+
+
+[[mutante]]
+id = "OBS09"
+area = "Observabilidade"
+arquivo = "scripts/smoke_metricas.py"
+testes = "observabilidade_smoke"
+de = "if sem_familia or sem_serie:"
+para = "if sem_familia:"

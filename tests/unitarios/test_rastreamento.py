@@ -58,7 +58,7 @@ def test_convencao_antiga_troca_o_alvo_e_a_url_pelo_template() -> None:
         "http.route": ROTA,
         "http.method": "POST",
         "http.target": ROTA,
-        "http.url": f"http://billing.teste:8000{ROTA}",
+        "http.url": f"http://REDACTED{ROTA}",
     }
 
 
@@ -78,7 +78,7 @@ def test_convencao_nova_troca_caminho_url_e_query() -> None:
         "http.route": "/simulador/checkout/{pagamento_id}",
         "url.path": "/simulador/checkout/{pagamento_id}",
         "url.query": "REDACTED",
-        "url.full": "http://billing.teste/simulador/checkout/{pagamento_id}",
+        "url.full": "http://REDACTED/simulador/checkout/{pagamento_id}",
     }
 
 
@@ -99,9 +99,9 @@ def test_sem_rota_casada_nada_do_caminho_cru_fica_no_span() -> None:
     atributos = atributos_de(span)
     assert atributos == {
         "http.target": "nao_roteada",
-        "http.url": "http://billing.teste/nao_roteada",
+        "http.url": "http://REDACTED/nao_roteada",
         "url.path": "nao_roteada",
-        "url.full": "https://billing.teste/nao_roteada",
+        "url.full": "https://REDACTED/nao_roteada",
         "url.query": "REDACTED",
     }
     assert LINK_FICTICIO not in str(atributos)
@@ -249,3 +249,57 @@ def test_sondas_e_raspagem_ficam_fora_do_trace(url: str) -> None:
 )
 def test_demais_rotas_seguem_no_trace(url: str) -> None:
     assert not parse_excluded_urls(URLS_SEM_TRACE).url_disabled(url)
+
+
+@pytest.mark.parametrize(
+    "nome",
+    [
+        "http.host",
+        "http.server_name",
+        "server.address",
+        "net.host.name",
+        "net.host.ip",
+        "net.host.port",
+        "server.port",
+    ],
+)
+def test_host_e_servidor_viram_valor_fixo(nome: str) -> None:
+    valor = 54321 if nome.endswith("port") else "SENTINELA-HOST"
+    span = novo_span({"http.route": ROTA, nome: valor})
+
+    trocar_url_pelo_template(span, {})
+
+    assert atributos_de(span) == {
+        "http.route": ROTA,
+        nome: 0 if nome.endswith("port") else "REDACTED",
+    }
+    assert not any("SENTINELA" in t for t in tudo_que_o_span_leva(lido(span)))
+
+
+@pytest.mark.parametrize("atributo", ["http.url", "url.full"])
+@pytest.mark.parametrize("esquema", ["http", "https"])
+@pytest.mark.parametrize(
+    "autoridade",
+    [
+        "SENTINELA-HOST:8123",
+        "usuario:senha@SENTINELA-HOST:8123",
+        "[2001:db8::77]:8123",
+        "SENTINELA-" + "x" * 2000,
+    ],
+    ids=["host-porta", "userinfo", "ipv6", "extenso"],
+)
+def test_autoridade_inteira_da_url_e_redigida(
+    atributo: str, esquema: str, autoridade: str
+) -> None:
+    span = novo_span(
+        {
+            "http.route": ROTA,
+            atributo: f"{esquema}://{autoridade}{CAMINHO}?q=SENTINELA-QUERY",
+        }
+    )
+
+    trocar_url_pelo_template(span, {})
+
+    assert atributos_de(span)[atributo] == f"{esquema}://REDACTED{ROTA}"
+    textos = tudo_que_o_span_leva(lido(span))
+    assert not any("SENTINELA" in t or autoridade in t for t in textos)

@@ -44,15 +44,34 @@ _ATRIBUTOS_DE_CAMINHO: Final = ("url.path", "http.target")
 _ATRIBUTOS_DE_URL: Final = ("url.full", "http.url")
 _QUERY: Final = "url.query"
 _REDIGIDO: Final = "REDACTED"
-# Dado de quem chamou que a operacao nao usa: o User-Agent (texto livre, sem
-# limite) e o par da conexao (no cluster, o pod do Kong). Convencao antiga e nova.
-_TEXTOS_DO_CHAMADOR: Final = (
+# O que o span SERVER troca por valor fixo (convencao antiga e nova). Nada disso
+# serve a operacao, e o Jaeger guarda por contagem de traces, sem como apagar um
+# titular. ``http.server_name`` repete o ``Host`` que o chamador manda, e a
+# autoridade do ``http.url`` tambem (o ``_url_do_template`` a troca);
+# ``http.host``, ``server.address`` e as portas do servidor sao o soquete do
+# proprio pod, nao dado do chamador, e saem do span por escolha.
+_TEXTOS_REDIGIDOS: Final = (
+    # De quem chamou: o User-Agent (texto livre, sem limite) e o par da conexao
+    # (no cluster, o pod do Kong).
     "http.user_agent",
     "user_agent.original",
     "net.peer.ip",
     "client.address",
+    # O Host do chamador.
+    "http.server_name",
+    # O endereco do servidor.
+    "http.host",
+    "server.address",
+    # Esta versao da instrumentacao nao os grava; ficam por defesa.
+    "net.host.name",
+    "net.host.ip",
 )
-_PORTAS_DO_CHAMADOR: Final = ("net.peer.port", "client.port")
+_PORTAS_ZERADAS: Final = (
+    "net.peer.port",
+    "client.port",
+    "net.host.port",
+    "server.port",
+)
 
 
 def _substituicoes(rota: str) -> dict[str, str | int]:
@@ -62,8 +81,8 @@ def _substituicoes(rota: str) -> dict[str, str | int]:
     roda, e o span sai com o valor cru)."""
     return {
         _QUERY: _REDIGIDO,
-        **dict.fromkeys(_TEXTOS_DO_CHAMADOR, _REDIGIDO),
-        **dict.fromkeys(_PORTAS_DO_CHAMADOR, 0),
+        **dict.fromkeys(_TEXTOS_REDIGIDOS, _REDIGIDO),
+        **dict.fromkeys(_PORTAS_ZERADAS, 0),
         **dict.fromkeys(_ATRIBUTOS_DE_CAMINHO, rota),
     }
 
@@ -89,7 +108,9 @@ def _url_do_template(url: str, rota: str) -> str:
         partes = urlsplit(url)
     except ValueError:  # Host malformado (``[``, ``a]b``): nada a preservar
         return rota
-    return urlunsplit(partes._replace(path=rota, query="", fragment=""))
+    return urlunsplit(
+        partes._replace(netloc=_REDIGIDO, path=rota, query="", fragment="")
+    )
 
 
 def instrumentar_api(app: FastAPI, provedor: TracerProvider) -> None:

@@ -77,7 +77,9 @@ diff-cover:
 # um por vez numa copia do codigo (mutants/); o relatorio sai em
 # reports/mutacao.md. Para quando passa de MUTACAO_PRAZO segundos (15 min); os
 # testes de integracao sobem um MongoDB cada, a menos que TEST_MONGODB_URI aponte
-# para um replica set no ar. MUTANTES="D01 R03" roda so esses.
+# para um replica set no ar; nos mutantes OBS04 a OBS07 (coletor da outbox), a
+# classe TestPrazosDoColetor sobe sempre o proprio mongod e ignora essa variavel
+# (o resto do grupo usa o banco comum). MUTANTES="D01 R03" roda so esses.
 MUTACAO_PRAZO ?= 900
 MUTANTES ?=
 

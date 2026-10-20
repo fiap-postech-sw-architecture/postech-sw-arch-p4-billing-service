@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc import trace_exporter
-from opentelemetry.sdk.trace import TracerProvider, export
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider, export
 from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
     SpanExporter,
@@ -19,7 +19,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 from opentelemetry.sdk.trace.sampling import ParentBased
-from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace import (
+    NonRecordingSpan,
+    SpanContext,
+    SpanKind,
+    Status,
+    StatusCode,
+    TraceFlags,
+)
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from starlette.testclient import TestClient
 
@@ -143,9 +150,141 @@ def test_instrumenta_o_mongodb_sem_capturar_o_comando_e_o_httpx(
 
     assert chamadas == [
         ("db", {"tracer_provider": provedor, "capture_statement": False}),
-        ("http", {"tracer_provider": provedor}),
+        (
+            "http",
+            {
+                "tracer_provider": provedor,
+                "request_hook": telemetria.trocar_url_do_cliente_pelo_template,
+            },
+        ),
     ]
     provedor.shutdown()
+
+
+MERCADO_PAGO = "https://api.mercadopago.com"
+
+
+def span_do_cliente(atributos: dict[str, Any]) -> trace.Span:
+    """Span gravando, como o que a instrumentacao do httpx entrega ao hook."""
+    return TracerProvider().get_tracer("teste").start_span("GET", attributes=atributos)
+
+
+def lido(span: trace.Span) -> ReadableSpan:
+    assert isinstance(span, ReadableSpan)
+    return span
+
+
+def atributos_do(span: trace.Span) -> dict[str, Any]:
+    return dict(lido(span).attributes or {})
+
+
+@pytest.mark.parametrize("atributo", ["http.url", "url.full"])
+@pytest.mark.parametrize(
+    ("caminho", "template"),
+    [
+        ("/checkout/preferences", "/checkout/preferences"),
+        ("/checkout/preferences/1234567890-CANARY-ID", "/checkout/preferences/{id}"),
+        ("/v1/payments/98765432101", "/v1/payments/{id}"),
+        (
+            "/v1/payments/search?external_reference=CANARY-ID&sort=a",
+            "/v1/payments/search",
+        ),
+        ("/v1/payments/98765432101/refunds", "/v1/payments/{id}/refunds"),
+        ("/v1/payments/12%2F34", "/v1/payments/{id}"),
+        ("/v1/payments/98765432101#CANARY-FRAGMENTO", "/v1/payments/{id}"),
+    ],
+    ids=[
+        "criar",
+        "cancelar",
+        "consultar",
+        "buscar",
+        "estornar",
+        "id-com-barra-codificada",
+        "fragmento",
+    ],
+)
+def test_url_do_cliente_sai_com_o_template_da_rota(
+    atributo: str, caminho: str, template: str
+) -> None:
+    """O id da preferencia compoe o link do checkout, o do pagamento e
+    credencial (ADR-039) e a busca leva o id do pagamento na query."""
+    span = span_do_cliente({"http.method": "GET", atributo: MERCADO_PAGO + caminho})
+
+    telemetria.trocar_url_do_cliente_pelo_template(span, object())
+
+    assert atributos_do(span) == {
+        "http.method": "GET",
+        atributo: MERCADO_PAGO + template,
+    }
+    assert not any("CANARY" in t for t in tudo_que_o_span_leva(lido(span)))
+
+
+def test_url_do_cliente_sai_com_o_template_nos_dois_atributos_do_mesmo_span() -> None:
+    """Com ``OTEL_SEMCONV_STABILITY_OPT_IN=http/dup`` a instrumentacao grava a
+    URL nas duas convencoes no mesmo span: as duas saem com o template."""
+    url = MERCADO_PAGO + "/v1/payments/98765432101?q=CANARY-QUERY"
+    span = span_do_cliente({"http.url": url, "url.full": url})
+
+    telemetria.trocar_url_do_cliente_pelo_template(span, object())
+
+    assert atributos_do(span) == {
+        "http.url": MERCADO_PAGO + "/v1/payments/{id}",
+        "url.full": MERCADO_PAGO + "/v1/payments/{id}",
+    }
+
+
+@pytest.mark.parametrize(
+    "caminho",
+    [
+        "/v1/payments/98765432101/",
+        "/v1/payments/98765432101/refunds/CANARY-ID",
+        "/v1/chargebacks/CANARY-ID",
+        "/checkout/preferences/CANARY-ID/itens",
+        "",
+    ],
+)
+def test_caminho_fora_da_lista_do_gateway_nao_deixa_o_id_no_span(caminho: str) -> None:
+    """Uma rota nova do gateway pode trazer um id: sai um valor fixo ate ela
+    entrar na lista."""
+    span = span_do_cliente({"http.url": f"{MERCADO_PAGO}{caminho}?q=CANARY-QUERY"})
+
+    telemetria.trocar_url_do_cliente_pelo_template(span, object())
+
+    assert atributos_do(span) == {"http.url": f"{MERCADO_PAGO}/nao_roteada"}
+
+
+@pytest.mark.parametrize("url", ["http://[/v1/payments/CANARY-ID", "http://a]b/x"])
+def test_url_malformada_nao_levanta_e_nao_deixa_o_id(url: str) -> None:
+    """A instrumentacao do httpx nao protege o hook: levantar derrubaria a
+    chamada ao provedor."""
+    span = span_do_cliente({"http.url": url})
+
+    telemetria.trocar_url_do_cliente_pelo_template(span, object())
+
+    assert atributos_do(span) == {"http.url": "nao_roteada"}
+
+
+def test_hook_do_cliente_so_troca_a_url_que_existe_e_e_texto() -> None:
+    sem_url = span_do_cliente({"http.method": "GET"})
+    nao_texto = span_do_cliente({"http.url": 42})
+
+    telemetria.trocar_url_do_cliente_pelo_template(sem_url, object())
+    telemetria.trocar_url_do_cliente_pelo_template(nao_texto, object())
+
+    assert atributos_do(sem_url) == {"http.method": "GET"}
+    assert atributos_do(nao_texto) == {"http.url": 42}
+
+
+def test_hook_do_cliente_ignora_span_que_nao_grava() -> None:
+    """Span descartado pelo amostrador (cliente sem pai) e span de outro SDK."""
+
+    class SpanDeOutroSdk(NonRecordingSpan):
+        def is_recording(self) -> bool:
+            return True
+
+    contexto = SpanContext(1, 1, is_remote=False, trace_flags=TraceFlags(1))
+    telemetria.trocar_url_do_cliente_pelo_template(NonRecordingSpan(contexto), object())
+    telemetria.trocar_url_do_cliente_pelo_template(SpanDeOutroSdk(contexto), object())
 
 
 class TestAmostrador:
