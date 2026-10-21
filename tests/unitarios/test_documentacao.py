@@ -1611,7 +1611,7 @@ def test_secao_de_cobertura_do_readme_e_a_que_o_script_gera(
     # Ponto fixo: os numeros que a secao mostra, passados de novo pelo script,
     # devolvem a secao inteira. Uma linha editada a mao (percentual, total,
     # formato) ou o link de outro repositorio nao passam.
-    assert f"\n{cobertura.secao_do_readme(medida, run['url'])}\n" == secao, (
+    assert secao == f"\n{cobertura.secao_do_readme(medida, run['url'])}\n", (
         "secao Cobertura editada a mao: rode o comando de Para refazer, no README"
     )
 

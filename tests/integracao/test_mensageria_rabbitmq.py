@@ -299,7 +299,10 @@ class TestPontaAPonta:
 
         assert banco["orcamentos"].count_documents({}) == 1
         assert banco["mensagens_processadas"].count_documents({}) == 1
-        assert [primeiro["tipo"], segundo["tipo"]] == ["OrcamentoGerado"] * 2
+        assert [primeiro["tipo"], segundo["tipo"]] == [
+            "OrcamentoGerado",
+            "OrcamentoGerado",
+        ]
         assert primeiro["dados"]["orcamento_id"] == segundo["dados"]["orcamento_id"]
 
     def test_lapide_descarta_o_atrasado_e_reenvio_republica_pelo_broker(
