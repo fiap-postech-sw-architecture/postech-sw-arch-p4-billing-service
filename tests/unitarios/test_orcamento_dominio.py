@@ -99,13 +99,14 @@ class TestLinhaOrcamento:
         assert linha(**{campo: "A" * (tamanho - 1)})  # type: ignore[arg-type]
 
     def test_tipo_fora_do_enum_e_invalido(self) -> None:
+        preco = dinheiro("1.00")
         with pytest.raises(ValorInvalidoError, match="servico ou peca"):
             LinhaOrcamento(
                 tipo="x",  # type: ignore[arg-type]
                 codigo="SRV-X",
                 descricao="X",
                 quantidade=1,
-                preco_unitario=dinheiro("1.00"),
+                preco_unitario=preco,
             )
 
     def test_subtotal_acima_do_teto_do_dinheiro(self) -> None:
@@ -260,24 +261,29 @@ class TestGeracao:
             quantidade=1,
             preco_unitario=Dinheiro(Decimal("1.00"), moeda="USD"),
         )
+        reais = linha()
         with pytest.raises(ValorInvalidoError, match="mesma moeda"):
-            orcamento(linhas=[linha(), dolar])
+            orcamento(linhas=[reais, dolar])
 
     def test_datas_sem_timezone_sao_invalidas(self) -> None:
+        sem_fuso = datetime(2026, 10, 6, 12, 0)
         with pytest.raises(ValorInvalidoError, match="timezone"):
-            orcamento(criado_em=datetime(2026, 10, 6, 12, 0))
+            orcamento(criado_em=sem_fuso)
 
     def test_validade_deve_ser_posterior_a_criacao(self) -> None:
+        validade_zero = timedelta(0)
         with pytest.raises(ValorInvalidoError, match="posterior"):
-            orcamento(validade=timedelta(0))
+            orcamento(validade=validade_zero)
 
     def test_validade_em_segundo_cheio_como_o_exp_do_link(self) -> None:
+        linhas = tuple(linhas_padrao())
+        valido_ate = AGORA + timedelta(hours=1, milliseconds=1)
         with pytest.raises(ValorInvalidoError, match="segundo cheio"):
             Orcamento(
                 _ordem_id=uuid4(),
-                _linhas=tuple(linhas_padrao()),
+                _linhas=linhas,
                 _criado_em=AGORA,
-                _valido_ate=AGORA + timedelta(hours=1, milliseconds=1),
+                _valido_ate=valido_ate,
             )
 
     @pytest.mark.parametrize(
@@ -290,10 +296,11 @@ class TestGeracao:
     def test_cada_data_exige_timezone(
         self, criado_em: datetime, valido_ate: datetime
     ) -> None:
+        linhas = tuple(linhas_padrao())
         with pytest.raises(ValorInvalidoError, match="timezone"):
             Orcamento(
                 _ordem_id=uuid4(),
-                _linhas=tuple(linhas_padrao()),
+                _linhas=linhas,
                 _criado_em=criado_em,
                 _valido_ate=valido_ate,
             )
@@ -424,8 +431,9 @@ class TestDecisao:
         assert gerado.status is StatusOrcamento.PENDENTE
 
     def test_decisao_exige_timezone(self) -> None:
+        sem_fuso = datetime(2026, 10, 6, 13, 0)
         with pytest.raises(ValorInvalidoError, match="timezone"):
-            Decisao(CanalDecisao.LINK, datetime(2026, 10, 6, 13, 0))
+            Decisao(CanalDecisao.LINK, sem_fuso)
 
     def test_recusar_registra_decisao_e_evento(self) -> None:
         gerado = orcamento()
@@ -495,8 +503,9 @@ class TestExpiracao:
         ]
 
     def test_expirar_dentro_do_prazo_e_rejeitado(self) -> None:
+        gerado = orcamento()
         with pytest.raises(TransicaoStatusInvalidaError, match="prazo"):
-            orcamento().expirar(agora=DENTRO_DO_PRAZO)
+            gerado.expirar(agora=DENTRO_DO_PRAZO)
 
 
 class TestCancelamento:
@@ -542,8 +551,9 @@ class TestCancelamento:
         assert gerado.coletar_eventos() == []
 
     def test_motivo_obrigatorio(self) -> None:
+        gerado = orcamento()
         with pytest.raises(ValorInvalidoError, match="Motivo"):
-            orcamento().cancelar(motivo=" ")
+            gerado.cancelar(motivo=" ")
 
 
 def test_tipos_de_item_seguem_o_catalogo() -> None:

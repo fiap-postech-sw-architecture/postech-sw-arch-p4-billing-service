@@ -72,10 +72,9 @@ class TestPrecoServico:
             PrecoServico.cadastrar(**dados)  # type: ignore[arg-type]
 
     def test_preco_zero_e_rejeitado(self) -> None:
+        zero = dinheiro("0")
         with pytest.raises(ValorInvalidoError, match="maior que zero"):
-            PrecoServico.cadastrar(
-                codigo="SRV-X", nome="N", descricao="D", preco=dinheiro("0")
-            )
+            PrecoServico.cadastrar(codigo="SRV-X", nome="N", descricao="D", preco=zero)
 
     def test_atualizar_reaplica_invariantes_e_reativa(self) -> None:
         preco = servico(ativo=False)
@@ -88,8 +87,9 @@ class TestPrecoServico:
             dinheiro("130.00"),
             True,
         )
+        zero = dinheiro("0")
         with pytest.raises(ValorInvalidoError, match="maior que zero"):
-            preco.atualizar(nome="T", descricao="D", preco=dinheiro("0"), ativo=True)
+            preco.atualizar(nome="T", descricao="D", preco=zero, ativo=True)
 
     def test_desativar_e_idempotente(self) -> None:
         preco = servico()
@@ -120,8 +120,9 @@ class TestPrecoPeca:
             peca("pec oleo")
 
     def test_nome_vazio_e_rejeitado(self) -> None:
+        um_real = dinheiro("1.00")
         with pytest.raises(ValorInvalidoError, match="Nome da peca"):
-            PrecoPeca.cadastrar(sku="PEC-X", nome="", preco=dinheiro("1.00"))
+            PrecoPeca.cadastrar(sku="PEC-X", nome="", preco=um_real)
 
 
 class TestValidacaoDeItens:

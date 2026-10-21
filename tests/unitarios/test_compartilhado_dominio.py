@@ -36,8 +36,9 @@ class TestDinheiro:
 
     @pytest.mark.parametrize("valor", ["Infinity", "NaN"])
     def test_valor_nao_finito_e_rejeitado(self, valor: str) -> None:
+        nao_finito = Decimal(valor)
         with pytest.raises(ValorInvalidoError, match="finito"):
-            Dinheiro(Decimal(valor))
+            Dinheiro(nao_finito)
 
     @pytest.mark.parametrize(
         "valor",
@@ -47,19 +48,22 @@ class TestDinheiro:
     def test_acima_de_10_digitos_inteiros_e_rejeitado(self, valor: str) -> None:
         # Teto do dinheiro nos contratos de mensagem; o expoente gigante nao
         # pode escapar como decimal.InvalidOperation (viraria 500).
+        acima_do_teto = Decimal(valor)
         with pytest.raises(ValorInvalidoError, match="10 digitos inteiros"):
-            Dinheiro(Decimal(valor))
+            Dinheiro(acima_do_teto)
 
     def test_teto_exato_e_aceito(self) -> None:
         assert Dinheiro(Decimal("9999999999.99")).valor == Decimal("9999999999.99")
 
     def test_multiplicacao_que_estoura_o_teto_e_valor_invalido(self) -> None:
+        perto_do_teto = Dinheiro(Decimal("99999999.99"))
         with pytest.raises(ValorInvalidoError, match="10 digitos inteiros"):
-            _ = Dinheiro(Decimal("99999999.99")) * 10**19
+            _ = perto_do_teto * 10**19
 
     def test_valor_negativo_e_rejeitado(self) -> None:
+        negativo = Decimal("-0.01")
         with pytest.raises(ValorInvalidoError, match="negativo"):
-            Dinheiro(Decimal("-0.01"))
+            Dinheiro(negativo)
 
     def test_zero_negativo_vira_zero(self) -> None:
         assert str(Dinheiro(Decimal("-0.001")).valor) == "0.00"
@@ -70,8 +74,9 @@ class TestDinheiro:
         ids=["minusculas", "duas-letras", "quatro-letras", "com-digito", "com-acento"],
     )
     def test_moeda_fora_do_iso_4217_e_rejeitada(self, moeda: str) -> None:
+        um = Decimal("1")
         with pytest.raises(ValorInvalidoError, match="maiusculas"):
-            Dinheiro(Decimal("1"), moeda=moeda)
+            Dinheiro(um, moeda=moeda)
 
     def test_soma_e_multiplicacao_por_inteiro(self) -> None:
         assert Dinheiro(Decimal("10.50")) + Dinheiro(Decimal("0.25")) == Dinheiro(
@@ -102,8 +107,10 @@ class TestDinheiro:
         assert type(resultado) is int
 
     def test_soma_de_moedas_diferentes_e_rejeitada(self) -> None:
+        reais = Dinheiro(Decimal("1"))
+        dolares = Dinheiro(Decimal("1"), moeda="USD")
         with pytest.raises(ValorInvalidoError, match="Moedas diferentes"):
-            _ = Dinheiro(Decimal("1")) + Dinheiro(Decimal("1"), moeda="USD")
+            _ = reais + dolares
 
     def test_operandos_de_outro_tipo_devolvem_not_implemented(self) -> None:
         d = Dinheiro(Decimal("1"))
