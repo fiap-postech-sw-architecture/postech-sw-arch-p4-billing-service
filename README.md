@@ -480,22 +480,22 @@ O gate é de 95% no total, com linhas e ramos somados (`fail_under` no `.coverag
 As tabelas abaixo, por contexto e camada, não são digitadas: o [`scripts/cobertura_resumo.py`](scripts/cobertura_resumo.py) as escreve entre os marcadores a partir do `coverage.xml` do `make test`, com o link do run do CI que tem o mesmo `src/`. O `make test` reprova o trecho editado à mão, com as contas erradas, com a taxa fora do formato, com um contexto que não existe ou com o link de outro repositório ([`test_documentacao.py`](tests/unitarios/test_documentacao.py)). O CI repete a medida, por pacote, no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)), com o `diff-cover` do pull request logo abaixo.
 
 <!-- cobertura:inicio -->
-**100,00% no gate** (linhas e ramos somados): 4.536 linhas, 4.536 cobertas (100,0%), e 624 ramos, 624 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 39353965791 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/39353965791). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
+**100,00% no gate** (linhas e ramos somados): 4.547 linhas, 4.547 cobertas (100,0%), e 624 ramos, 624 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 39529545384 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/39529545384). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
 
 | Contexto | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
-| `src` (processos) | 568 | 568 | 100,0% |
-| `src/compartilhado` | 1.574 | 1.574 | 100,0% |
+| `src` (processos) | 570 | 570 | 100,0% |
+| `src/compartilhado` | 1.576 | 1.576 | 100,0% |
 | `src/orcamento` | 672 | 672 | 100,0% |
-| `src/pagamento` | 1.285 | 1.285 | 100,0% |
+| `src/pagamento` | 1.292 | 1.292 | 100,0% |
 | `src/precos` | 437 | 437 | 100,0% |
-| **total** | 4.536 | 4.536 | 100,0% |
+| **total** | 4.547 | 4.547 | 100,0% |
 
 | Camada | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
 | `dominio` | 895 | 895 | 100,0% |
 | `aplicacao` | 773 | 773 | 100,0% |
-| `infraestrutura` | 1.652 | 1.652 | 100,0% |
+| `infraestrutura` | 1.661 | 1.661 | 100,0% |
 | `interfaces` | 648 | 648 | 100,0% |
 
 <!-- cobertura:fim -->
