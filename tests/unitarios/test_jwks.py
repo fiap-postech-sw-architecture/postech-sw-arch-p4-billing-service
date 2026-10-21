@@ -122,8 +122,9 @@ class TestClaims:
         self, validador: ValidadorDeTokenJWKS, emitir_token: Callable[..., str]
     ) -> None:
         assert validador.validar(emitir_token("admin", iat=int(time.time()) + 5))
+        adiantado = emitir_token("admin", iat=int(time.time()) + 20)
         with pytest.raises(TokenInvalidoError):
-            validador.validar(emitir_token("admin", iat=int(time.time()) + 20))
+            validador.validar(adiantado)
 
     @pytest.mark.parametrize(
         "claims",
@@ -160,17 +161,19 @@ class TestClaims:
         claims = validador.validar(emitir_token("admin"))
 
         assert (claims["iss"], claims["aud"]) == ("pytstop-os-service", "pytstop")
+        de_outro_emissor = emitir_token(
+            "admin", iss="outro-emissor", aud="outra-audiencia"
+        )
         with pytest.raises(TokenInvalidoError):
-            validador.validar(
-                emitir_token("admin", iss="outro-emissor", aud="outra-audiencia")
-            )
+            validador.validar(de_outro_emissor)
 
     def test_assinatura_de_outra_chave_com_o_mesmo_kid(
         self, validador: ValidadorDeTokenJWKS, emitir_token: Callable[..., str]
     ) -> None:
         impostora = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        assinado_pela_impostora = emitir_token("admin", chave=impostora)
         with pytest.raises(TokenInvalidoError):
-            validador.validar(emitir_token("admin", chave=impostora))
+            validador.validar(assinado_pela_impostora)
 
     @pytest.mark.parametrize("algoritmo", ["HS256", "none"])
     def test_troca_de_algoritmo_nao_e_aceita(
@@ -263,8 +266,9 @@ class TestCacheDoJwks:
     ) -> None:
         jwks_falso.erro = fora_do_ar()
         antes = REGISTRY.get_sample_value("pytstop_jwks_falhas_total") or 0.0
+        token = emitir_token("admin")
         with pytest.raises(JwksIndisponivelError) as erro:
-            validador.validar(emitir_token("admin"))
+            validador.validar(token)
         assert erro.value.retry_after == 5
         assert REGISTRY.get_sample_value("pytstop_jwks_falhas_total") == antes + 1
 
@@ -283,8 +287,9 @@ class TestCacheDoJwks:
         corpo: object,
     ) -> None:
         jwks_falso.corpo = corpo
+        token = emitir_token("admin")
         with pytest.raises(JwksIndisponivelError):
-            validador.validar(emitir_token("admin"))
+            validador.validar(token)
 
     def test_corpo_que_nao_e_json_e_indisponivel(
         self,
@@ -293,8 +298,9 @@ class TestCacheDoJwks:
         emitir_token: Callable[..., str],
     ) -> None:
         jwks_falso.erro = json.JSONDecodeError("Expecting value", "<html>", 0)
+        token = emitir_token("admin")
         with pytest.raises(JwksIndisponivelError):
-            validador.validar(emitir_token("admin"))
+            validador.validar(token)
 
     def test_copia_velha_vale_ate_1_hora_quando_a_renovacao_falha(
         self,

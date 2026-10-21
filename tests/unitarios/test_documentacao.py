@@ -1551,8 +1551,9 @@ def test_mensagem_nova_sem_linha_na_tabela_da_arquitetura_reprova() -> None:
     assert set(_celulas(sem_a_linha)) == contratos.eventos_publicados() - {
         "PagamentoCancelado"
     }
+    com_a_linha_repetida = secao + secao.splitlines()[-1] + "\n"
     with pytest.raises(AssertionError, match="linha repetida"):
-        _celulas(secao + secao.splitlines()[-1] + "\n")
+        _celulas(com_a_linha_repetida)
 
 
 # A secao Cobertura do README: gerada pelo script, nunca digitada.
@@ -1655,8 +1656,9 @@ def test_link_de_outro_repositorio_na_secao_de_cobertura_e_apontado(
         "postech-sw-arch-p4-billing-service/actions", "outro/actions"
     )
 
+    com_o_link_de_outro = texto.replace(secao, de_outro)
     with pytest.raises(AssertionError, match="sem o link do run do CI"):
-        _secao_de_cobertura(cobertura, texto.replace(secao, de_outro))
+        _secao_de_cobertura(cobertura, com_o_link_de_outro)
 
 
 @pytest.mark.parametrize(

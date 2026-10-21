@@ -240,13 +240,12 @@ class TestCriarCobranca:
     def test_nao_repete_porque_criar_preferencia_nao_e_idempotente(
         self, gateway: MercadoPagoGateway, esperas: Esperas
     ) -> None:
+        itens = [ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))]
         with respx.mock(base_url=API) as mp:
             rota = mp.post("/checkout/preferences").respond(503)
             with pytest.raises(GatewayPagamentoIndisponivelError):
                 gateway.criar_cobranca(
-                    pagamento_id=uuid4(),
-                    itens=[ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))],
-                    expira_em=AGORA,
+                    pagamento_id=uuid4(), itens=itens, expira_em=AGORA
                 )
         assert rota.call_count == 1
         assert esperas == []
@@ -254,6 +253,7 @@ class TestCriarCobranca:
     def test_erro_400_vira_recusa_com_mensagem_fixa(
         self, gateway: MercadoPagoGateway
     ) -> None:
+        itens = [ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))]
         with respx.mock(base_url=API) as mp:
             mp.post("/checkout/preferences").mock(
                 return_value=erro_mp(400, "unit_price invalid")
@@ -263,9 +263,7 @@ class TestCriarCobranca:
                 match="Provedor de pagamento recusou a operacao",
             ):
                 gateway.criar_cobranca(
-                    pagamento_id=uuid4(),
-                    itens=[ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))],
-                    expira_em=AGORA,
+                    pagamento_id=uuid4(), itens=itens, expira_em=AGORA
                 )
 
 
@@ -706,13 +704,12 @@ class TestRespostaForaDoContrato:
         self, gateway: MercadoPagoGateway, corpo: dict[str, object]
     ) -> None:
         antes = contador("criar_cobranca", "resposta_invalida")
+        itens = [ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))]
         with respx.mock(base_url=API) as mp:
             rota = mp.post("/checkout/preferences").respond(201, json=corpo)
             with pytest.raises(GatewayPagamentoIndisponivelError):
                 gateway.criar_cobranca(
-                    pagamento_id=uuid4(),
-                    itens=[ItemCobranca("SRV-X", "X", 1, dinheiro("1.00"))],
-                    expira_em=AGORA,
+                    pagamento_id=uuid4(), itens=itens, expira_em=AGORA
                 )
         assert rota.call_count == 1
         assert contador("criar_cobranca", "resposta_invalida") == antes + 1
@@ -1464,8 +1461,9 @@ class TestCircuitBreaker:
 
 def test_numero_json_recusa_valor_sem_representacao_exata() -> None:
     assert repr(numero_json(Decimal("120.35"))) == "120.35"
+    inexato = Decimal("12345678901234567.89")
     with pytest.raises(ValueError, match="exata"):
-        numero_json(Decimal("12345678901234567.89"))
+        numero_json(inexato)
 
 
 class TestAssinaturaDoWebhook:
