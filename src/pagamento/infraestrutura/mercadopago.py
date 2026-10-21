@@ -21,7 +21,7 @@ dentro da chamada protegida: resposta fora do contrato (3xx, corpo que nao e
 JSON, campo faltando ou invalido) e falha transitoria como um 5xx, conta no
 disjuntor e aparece como ``resultado="resposta_invalida"`` na metrica.
 
-Recusa (4xx, menos 429): ``_enviar`` registra o WARNING
+Recusa (4xx, menos 429): ``_levantar_recusa`` registra o WARNING
 ``mercadopago_request_rejected`` com ``operacao``, ``status_http``, ``erro`` (o
 ``error`` do corpo) e ``causas`` (os ``cause[].code``), so quando casam com o
 vocabulario curto e fixo do provedor. O texto livre (``message``,
@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from decimal import Decimal
 from itertools import product
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NoReturn
 
 import httpx
 import structlog
@@ -367,22 +367,13 @@ class MercadoPagoGateway:
                 MERCADOPAGO_REQUISICOES.labels(operacao, exc.resultado).inc()
                 if tentativa >= tentativas:
                     raise GatewayPagamentoIndisponivelError from None
-                self._dormir(
-                    _BACKOFF_BASE_SEGUNDOS * 2 ** (tentativa - 1)
-                    + _aleatorio.uniform(0, _JITTER_MAXIMO_SEGUNDOS)
-                )
+                self._dormir(_espera_do_retry(tentativa))
                 tentativa += 1
                 continue
             if isinstance(resultado, _Recusa):
-                if resultado.status == _NAO_ENCONTRADO:
-                    MERCADOPAGO_REQUISICOES.labels(operacao, "nao_encontrado").inc()
-                    # Na consulta o 404 e a resposta "nao e nosso": nao e recusa.
-                    if not nao_encontrado_esperado:
-                        _registrar_recusa(operacao, resultado)
-                    raise _PagamentoNaoEncontradoError(resultado.mensagem)
-                MERCADOPAGO_REQUISICOES.labels(operacao, "recusado").inc()
-                _registrar_recusa(operacao, resultado)
-                raise GatewayPagamentoRecusouError(resultado.mensagem)
+                _levantar_recusa(
+                    operacao, resultado, nao_encontrado_esperado=nao_encontrado_esperado
+                )
             MERCADOPAGO_REQUISICOES.labels(operacao, "sucesso").inc()
             return resultado
 
@@ -408,6 +399,12 @@ class MercadoPagoGateway:
             return ler(resposta)
         except _CORPO_FORA_DO_CONTRATO as exc:
             raise _RespostaInvalidaError(type(exc).__name__) from exc
+
+
+def _espera_do_retry(tentativa: int) -> float:
+    """Backoff exponencial com jitter depois da falha de numero ``tentativa``."""
+    exponencial: float = _BACKOFF_BASE_SEGUNDOS * 2 ** (tentativa - 1)
+    return exponencial + _aleatorio.uniform(0, _JITTER_MAXIMO_SEGUNDOS)
 
 
 def _ler_cobranca(resposta: httpx.Response) -> CobrancaCriada:
@@ -556,3 +553,19 @@ def _registrar_recusa(operacao: str, recusa: _Recusa) -> None:
     if recusa.erro is not None:
         campos["erro"] = recusa.erro
     _log.warning("mercadopago_request_rejected", **campos, causas=list(recusa.causas))
+
+
+def _levantar_recusa(
+    operacao: str, recusa: _Recusa, *, nao_encontrado_esperado: bool
+) -> NoReturn:
+    """Conta a recusa do provedor e levanta a excecao dela: 404 vira
+    ``_PagamentoNaoEncontradoError``, e os outros 4xx, a recusa."""
+    if recusa.status == _NAO_ENCONTRADO:
+        MERCADOPAGO_REQUISICOES.labels(operacao, "nao_encontrado").inc()
+        # Na consulta o 404 e a resposta "nao e nosso": nao e recusa.
+        if not nao_encontrado_esperado:
+            _registrar_recusa(operacao, recusa)
+        raise _PagamentoNaoEncontradoError(recusa.mensagem)
+    MERCADOPAGO_REQUISICOES.labels(operacao, "recusado").inc()
+    _registrar_recusa(operacao, recusa)
+    raise GatewayPagamentoRecusouError(recusa.mensagem)
