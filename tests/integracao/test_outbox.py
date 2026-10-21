@@ -188,8 +188,9 @@ class TestComandoEmProcessamento:
                 UnidadeDaMensagem, "_gravar_mensagem_processada", defeito
             )
 
+        comando = _comando()
         with pytest.raises(RuntimeError, match="falha depois do efeito"):
-            processar_mensagem(banco, _comando(), handler)
+            processar_mensagem(banco, comando, handler)
 
         assert banco["orcamentos"].count_documents({}) == 0
         assert eventos_do_outbox(banco) == []
@@ -293,8 +294,9 @@ class TestTransacaoDaMensagem:
 
             uow.executar(falha)
 
+        comando = _comando()
         with pytest.raises(RuntimeError, match="depois de outro gravado"):
-            processar_mensagem(banco, _comando(), handler)
+            processar_mensagem(banco, comando, handler)
 
         assert banco["orcamentos"].count_documents({}) == 0
         assert banco["mensagens_processadas"].count_documents({}) == 0
@@ -311,8 +313,9 @@ class TestTransacaoDaMensagem:
 
             uow.executar(falha)
 
+        comando = _comando()
         with pytest.raises(RuntimeError, match="depois de outro gravado"):
-            processar_mensagem(banco, _comando(), handler)
+            processar_mensagem(banco, comando, handler)
 
         assert eventos_do_outbox(banco) == []
         assert banco["mensagens_processadas"].count_documents({}) == 0
@@ -323,8 +326,9 @@ class TestTransacaoDaMensagem:
         def handler(uow: UnidadeDaMensagem) -> None:
             uow.executar(lambda: uow.executar(lambda: None))
 
+        comando = _comando()
         with pytest.raises(RuntimeError, match="aninhada"):
-            processar_mensagem(banco, _comando(), handler)
+            processar_mensagem(banco, comando, handler)
 
         assert banco["mensagens_processadas"].count_documents({}) == 0
 

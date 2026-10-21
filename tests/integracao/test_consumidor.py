@@ -664,9 +664,10 @@ class TestHandlerForaDaConexao:
             relogio=relogio,
         )
         canal = CanalQueCai()
+        envelope = _cancelar()
         try:
             with pytest.raises(StreamLostError):
-                entregar(consumidor, canal, _cancelar())
+                entregar(consumidor, canal, envelope)
         finally:
             liberar.set()
             consumidor.fechar()
@@ -808,9 +809,11 @@ class TestRastreamento:
         """A conexao cai com o handler rodando: o consumidor devolve o erro ao laco
         que reconecta, e o span fica com o tipo, nao com o texto do pika."""
         handler.erro = AMQPConnectionError("conexao recusada: SEGREDO-DO-BROKER")
+        canal = CanalDeTeste()
+        envelope = _cancelar()
 
         with pytest.raises(AMQPConnectionError):
-            entregar(consumidor, CanalDeTeste(), _cancelar())
+            entregar(consumidor, canal, envelope)
 
         [consumo] = [
             s for s in spans.get_finished_spans() if s.kind is SpanKind.CONSUMER

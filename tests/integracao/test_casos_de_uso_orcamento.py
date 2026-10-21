@@ -339,10 +339,9 @@ class TestDecidirOrcamento:
         decidir(banco, relogio).por_atendente(
             dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
         )
+        caso = decidir(banco, relogio)
         with pytest.raises(TransicaoStatusInvalidaError):
-            decidir(banco, relogio).por_atendente(
-                dto.id, aprovar=False, decidido_por=ATENDENTE_SUB
-            )
+            caso.por_atendente(dto.id, aprovar=False, decidido_por=ATENDENTE_SUB)
         assert len(eventos_do_outbox(banco)) == 2  # gerado + aprovado
 
     def test_decisao_depois_do_prazo_mesmo_sem_job(
@@ -350,10 +349,9 @@ class TestDecidirOrcamento:
     ) -> None:
         dto = gerado(banco, relogio)
         relogio.avancar(hours=72, seconds=1)
+        caso = decidir(banco, relogio)
         with pytest.raises(OrcamentoVencidoError):
-            decidir(banco, relogio).por_atendente(
-                dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
-            )
+            caso.por_atendente(dto.id, aprovar=True, decidido_por=ATENDENTE_SUB)
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
 
     def test_link_invalido_expirado_inexistente_ou_decidido_e_o_mesmo_erro(
@@ -365,6 +363,7 @@ class TestDecidirOrcamento:
             token_do_link(decidido.id, decidido.valido_ate), aprovar=False
         )
         caso = decidir(banco, relogio)
+        consulta = consultar(banco, relogio)
         tokens = [
             "adulterado.1.x",
             token_do_link(uuid4(), dto.valido_ate),
@@ -374,10 +373,11 @@ class TestDecidirOrcamento:
             with pytest.raises(LinkDeDecisaoInvalidoError):
                 caso.por_link(emitido, aprovar=True)
             with pytest.raises(LinkDeDecisaoInvalidoError):
-                consultar(banco, relogio).por_link(emitido)
+                consulta.por_link(emitido)
         relogio.avancar(hours=73)
+        expirado = token_do_link(dto.id, dto.valido_ate)
         with pytest.raises(LinkDeDecisaoInvalidoError):
-            caso.por_link(token_do_link(dto.id, dto.valido_ate), aprovar=True)
+            caso.por_link(expirado, aprovar=True)
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
         assert len(eventos_do_outbox(banco, "OrcamentoRecusado")) == 1
 
@@ -445,10 +445,9 @@ class TestTempoAteADecisao:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(MongoUnitOfWork, "_gravar_outbox", falhar)
+        caso = decidir(banco, relogio, metricas)
         with pytest.raises(RuntimeError, match="outbox"):
-            decidir(banco, relogio, metricas).por_atendente(
-                dto.id, aprovar=True, decidido_por=ATENDENTE_SUB
-            )
+            caso.por_atendente(dto.id, aprovar=True, decidido_por=ATENDENTE_SUB)
 
         assert metricas.decisoes == []
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
@@ -519,10 +518,9 @@ class TestExpirarECancelar:
         self, banco: Banco, relogio: RelogioFixo
     ) -> None:
         dto = gerado(banco, relogio)
+        caso = cancelamento(banco, relogio)
         with pytest.raises(OrcamentoNaoEncontradoError, match="nao pertence"):
-            cancelamento(banco, relogio).executar(
-                ordem_id=dto.ordem_id, orcamento_id=uuid4(), motivo="x"
-            )
+            caso.executar(ordem_id=dto.ordem_id, orcamento_id=uuid4(), motivo="x")
         assert consultar(banco, relogio).por_id(dto.id).status == "PENDENTE"
 
     @pytest.mark.parametrize("encerramento", ["recusa", "expiracao"])

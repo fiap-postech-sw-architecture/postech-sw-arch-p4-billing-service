@@ -1312,8 +1312,9 @@ class TestFiacaoDosProcessos:
 
     def test_boot_que_falha_fecha_o_que_ja_abriu(self, ambiente: ServidorFalso) -> None:
         # Sem o init do banco (a fixture banco limpa a marca de versao).
+        parar = threading.Event()
         with pytest.raises(BancoNaoPreparadoError):
-            processo_relay.main(threading.Event())
+            processo_relay.main(parar)
 
         assert ambiente.desligado
 
@@ -1336,9 +1337,10 @@ class TestFiacaoDosProcessos:
         monkeypatch.setattr(processo_prazos, "start_http_server", nao_pode_subir)
         monkeypatch.setenv("CONTRATOS_DIR", str(tmp_path))
         contratos._validadores.cache_clear()
+        parar = threading.Event()
         try:
             with pytest.raises(contratos.ContratosAusentesError):
-                processo.main(threading.Event())
+                processo.main(parar)
         finally:
             monkeypatch.delenv("CONTRATOS_DIR")
             contratos._validadores.cache_clear()

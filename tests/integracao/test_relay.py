@@ -831,9 +831,10 @@ class TestMetricas:
         """Duas raspagens iguais na mesma resposta repetiriam a serie."""
         registro = CollectorRegistry()
         registro.register(ColetorDaOutbox("outbox", banco))
+        segundo = ColetorDaOutbox("outbox", banco)
 
         with pytest.raises(ValueError, match="Duplicated timeseries"):
-            registro.register(ColetorDaOutbox("outbox", banco))
+            registro.register(segundo)
 
     @pytest.mark.parametrize("erro", [ExecutionTimeout, NetworkTimeout])
     def test_falha_do_coletor_registra_so_a_classe(

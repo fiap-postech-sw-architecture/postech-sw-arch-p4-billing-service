@@ -53,7 +53,7 @@ from tests.factories import (
 from tests.integracao.apoio import cliente_espiado, eventos_do_outbox
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from pymongo.database import Database
 
@@ -134,14 +134,14 @@ class TestUnidadeDeTrabalho:
     def test_escrita_fora_da_transacao_e_recusada(self, banco: Banco) -> None:
         uow = MongoUnitOfWork(banco)
         gerado = orcamento()
+        repo = MongoOrcamentoRepository(uow)
+        falhou = GeracaoDeOrcamentoFalhouEvent(
+            ordem_id=uuid4(), motivo="x", codigos_invalidos=()
+        )
         with pytest.raises(RuntimeError, match="fora de uma transacao"):
-            MongoOrcamentoRepository(uow).salvar(gerado)
+            repo.salvar(gerado)
         with pytest.raises(RuntimeError, match="fora de uma transacao"):
-            uow.registrar_evento(
-                GeracaoDeOrcamentoFalhouEvent(
-                    ordem_id=uuid4(), motivo="x", codigos_invalidos=()
-                )
-            )
+            uow.registrar_evento(falhou)
         assert banco["orcamentos"].count_documents({}) == 0
 
     def test_salvar_duas_vezes_na_transacao_grava_os_eventos_uma_vez(
@@ -239,15 +239,20 @@ class TestUnidadeDeTrabalho:
                 details={"errorLabels": ["TransientTransactionError"]},
             )
 
+        tentar: Callable[[], object]
+        if caminho == "api":
+            tentar = partial(MongoUnitOfWork(banco).executar, conflito)
+        else:
+            comando = MensagemRecebida(
+                id=uuid4(), tipo="GerarOrcamento", correlation_id=uuid4()
+            )
+            tentar = partial(
+                processar_mensagem, banco, comando, lambda uow: uow.executar(conflito)
+            )
+
         inicio = time.monotonic()
         with pytest.raises(ExecutionTimeout):
-            if caminho == "api":
-                MongoUnitOfWork(banco).executar(conflito)
-            else:
-                comando = MensagemRecebida(
-                    id=uuid4(), tipo="GerarOrcamento", correlation_id=uuid4()
-                )
-                processar_mensagem(banco, comando, lambda uow: uow.executar(conflito))
+            tentar()
 
         # Repetiu, mas so ate o teto: sem ele o with_transaction iria a 120 s.
         assert len(chamadas) > 1

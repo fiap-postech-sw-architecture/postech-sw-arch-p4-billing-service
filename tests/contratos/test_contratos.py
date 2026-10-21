@@ -319,8 +319,10 @@ def test_sem_os_schemas_a_api_nao_sobe(
     # Os schemas ficam em cache: limpa para recarregar do diretorio novo.
     contratos._validadores.cache_clear()
     try:
+        config = configuracao()
+        provedor = provedor_descartavel()
         with pytest.raises(contratos.ContratosAusentesError, match="CONTRATOS_DIR"):
-            criar_app(configuracao(), provedor=provedor_descartavel())
+            criar_app(config, provedor=provedor)
     finally:
         monkeypatch.delenv("CONTRATOS_DIR")
         contratos._validadores.cache_clear()

@@ -415,10 +415,12 @@ class TestSpanDoPrazo:
         self, rastreamento: Rastreamento
     ) -> None:
         uow = _UnidadeDoPrazo(rastreamento.banco)
+        repositorio = MongoOrcamentoRepository(uow)
+        gerado = orcamento()
 
         rastreamento.exportador.clear()
         with pytest.raises(RuntimeError, match="fora de uma transacao"):
-            MongoOrcamentoRepository(uow).salvar(orcamento())
+            repositorio.salvar(gerado)
 
         assert rastreamento.spans == ()
 
