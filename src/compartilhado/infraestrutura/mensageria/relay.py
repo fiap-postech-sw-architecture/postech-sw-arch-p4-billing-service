@@ -97,6 +97,11 @@ class _Linha:
         }
 
 
+def _liberando(mudanca: Documento) -> Documento:
+    """``mudanca`` mais o fim da reivindicacao: toda marcacao solta o claim."""
+    return {"$set": mudanca, "$unset": {"reivindicacao": ""}}
+
+
 class RelayDaOutbox:
     """Entrega as linhas pendentes da outbox, uma de cada vez, em ordem."""
 
@@ -224,10 +229,7 @@ class RelayDaOutbox:
     def _marcar_entregue(self, linha: _Linha) -> bool:
         resultado = self._outbox.update_one(
             self._da_reivindicacao(linha),
-            {
-                "$set": {"status": "entregue", "entregue_em": self._relogio()},
-                "$unset": {"reivindicacao": ""},
-            },
+            _liberando({"status": "entregue", "entregue_em": self._relogio()}),
         )
         return resultado.modified_count == 1
 
@@ -244,8 +246,7 @@ class RelayDaOutbox:
                 "proxima_tentativa_em": self._relogio() + atraso,
             }
         resultado = self._outbox.update_one(
-            self._da_reivindicacao(linha),
-            {"$set": mudanca, "$unset": {"reivindicacao": ""}},
+            self._da_reivindicacao(linha), _liberando(mudanca)
         )
         contexto = {**linha.rotulos, "tentativas": tentativas, "erro": erro}
         if resultado.modified_count == 0:
@@ -260,13 +261,9 @@ class RelayDaOutbox:
         try:
             self._outbox.update_one(
                 self._da_reivindicacao(linha),
-                {
-                    "$set": {
-                        "status": "pendente",
-                        "proxima_tentativa_em": self._relogio(),
-                    },
-                    "$unset": {"reivindicacao": ""},
-                },
+                _liberando(
+                    {"status": "pendente", "proxima_tentativa_em": self._relogio()}
+                ),
             )
         except PyMongoError:
             # Sem o banco, o lease devolve a linha sozinho quando vencer.
