@@ -351,7 +351,7 @@ class MercadoPagoGateway:
         ler: Callable[[httpx.Response], T],
         repetir: bool,
         nao_encontrado_esperado: bool = False,
-        **opcoes: Any,  # noqa: ANN401 - repassadas ao httpx (json, headers)
+        **opcoes: Any,  # noqa: ANN401 - repassadas ao httpx (json e headers)
     ) -> T:
         tentativas = self._config.tentativas if repetir else 1
         tentativa = 1
@@ -536,7 +536,7 @@ def _codigos_das_causas(causas: object) -> tuple[str, ...]:
 
 
 def _texto_no_formato(
-    dados: Any,  # noqa: ANN401 - item do JSON do provedor, de qualquer tipo
+    dados: Any,  # noqa: ANN401 - item do JSON do provedor de qualquer tipo
     campo: str,
     formato: re.Pattern[str],
 ) -> str | None:

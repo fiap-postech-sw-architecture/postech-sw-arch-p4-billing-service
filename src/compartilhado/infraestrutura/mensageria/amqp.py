@@ -226,7 +226,7 @@ class CanalAmqp:
                 conexao.close()
 
 
-def manter_conectado(  # noqa: PLR0913 - laco dos dois processos, ajustavel nos testes
+def manter_conectado(  # noqa: PLR0913 - laco dos dois processos e ajustavel nos testes
     canal: CanalAmqp,
     trabalho: Callable[[], None],
     *,

@@ -163,7 +163,7 @@ class ConsumidorDeComandos:
             tipo = self._tipo_conhecido(envelope)
             self._conferir_origem(propriedades.user_id, tentativa)
             contratos.validar(envelope)
-        except Exception as exc:  # noqa: BLE001 - entrada fora da regra, por qualquer motivo, vai para a DLQ
+        except Exception as exc:  # noqa: BLE001 - entrada fora da regra por qualquer motivo vai para a DLQ
             resultado = self._descartar(canal, tag, exc, **_identificacao(propriedades))
         else:
             entrega = _Entrega(tag, propriedades, cabecalhos, corpo, tentativa, tipo)
