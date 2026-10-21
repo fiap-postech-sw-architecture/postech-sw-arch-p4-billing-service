@@ -32,8 +32,9 @@ def test_vale_ate_a_validade_do_orcamento(link: LinkDeDecisao) -> None:
     orcamento_id = uuid4()
     emitido = link.gerar(orcamento_id, EXPIRA_EM).removeprefix(f"{BASE}/")
     assert link.validar(emitido, agora=EXPIRA_EM) == orcamento_id
+    um_segundo_depois = EXPIRA_EM + timedelta(seconds=1)
     with pytest.raises(LinkDeDecisaoInvalidoError):
-        link.validar(emitido, agora=EXPIRA_EM + timedelta(seconds=1))
+        link.validar(emitido, agora=um_segundo_depois)
 
 
 @pytest.mark.parametrize(
@@ -60,8 +61,9 @@ def test_token_de_outro_uso_do_mesmo_segredo_nao_vale(link: LinkDeDecisao) -> No
     with pytest.raises(LinkDeDecisaoInvalidoError):
         link.validar(do_checkout, agora=AGORA)
     sem_dominio = TokenAssinado(segredo=SEGREDO, dominio="outro")
+    de_outro_dominio = sem_dominio.emitir(pagamento_id, EXPIRA_EM)
     with pytest.raises(LinkDeDecisaoInvalidoError):
-        link.validar(sem_dominio.emitir(pagamento_id, EXPIRA_EM), agora=AGORA)
+        link.validar(de_outro_dominio, agora=AGORA)
 
 
 def test_segredo_vazio_e_recusado() -> None:

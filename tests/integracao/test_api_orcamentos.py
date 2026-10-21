@@ -127,7 +127,8 @@ class TestMetricaDoTempoAteADecisao:
         )
 
         assert resposta.status_code == 410
-        assert (decisoes("aprovado"), decisoes("recusado")) == antes
+        depois = (decisoes("aprovado"), decisoes("recusado"))
+        assert depois == antes
 
     def test_segunda_decisao_e_link_invalido_nao_contam(
         self, api: TestClient, app: FastAPI
@@ -142,7 +143,8 @@ class TestMetricaDoTempoAteADecisao:
         )
 
         assert (segunda.status_code, invalido.status_code) == (404, 404)
-        assert (decisoes("aprovado"), decisoes("recusado")) == antes
+        depois = (decisoes("aprovado"), decisoes("recusado"))
+        assert depois == antes
 
 
 class TestApiInterna:

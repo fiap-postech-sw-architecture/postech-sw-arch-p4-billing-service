@@ -58,8 +58,9 @@ class TestRelay:
         ids=["ausente", "esquema", "sem-host", "sem-usuario"],
     )
     def test_rabbitmq_url_invalida_derruba_o_boot(self, url: str, erro: str) -> None:
+        env = _env(RABBITMQ_URL=url)
         with pytest.raises(ValueError, match=erro):
-            ConfiguracaoDoRelay.do_ambiente(_env(RABBITMQ_URL=url))
+            ConfiguracaoDoRelay.do_ambiente(env)
 
     def test_usuario_com_caracter_escapado(self) -> None:
         config = ConfiguracaoDoRelay.do_ambiente(
@@ -84,15 +85,14 @@ class TestConsumidor:
         assert "senha-de-teste" not in repr(config)
 
     def test_producao_exige_segredo_do_link_proprio(self) -> None:
+        env = _env(
+            ENVIRONMENT="production",
+            SIMULADOR_PERMITIDO="true",
+            BILLING_PUBLIC_URL="https://billing.teste",
+            MONGODB_URI="mongodb://mongo:27017",
+        )
         with pytest.raises(ValueError, match="ORCAMENTO_LINK_SECRET"):
-            ConfiguracaoDoConsumidor.do_ambiente(
-                _env(
-                    ENVIRONMENT="production",
-                    SIMULADOR_PERMITIDO="true",
-                    BILLING_PUBLIC_URL="https://billing.teste",
-                    MONGODB_URI="mongodb://mongo:27017",
-                )
-            )
+            ConfiguracaoDoConsumidor.do_ambiente(env)
 
 
 def test_api_e_consumidor_leem_os_comandos_igual() -> None:
@@ -126,6 +126,7 @@ def test_processos_da_mensageria_nao_carregam_a_pilha_http() -> None:
 
 def test_erro_de_rabbitmq_url_nao_ecoa_a_senha() -> None:
     url = "http://billing:SENHA-DO-BROKER@rabbitmq:5672/"  # gitleaks:allow (teste)
+    env = _env(RABBITMQ_URL=url)
     with pytest.raises(ValueError, match="amqp") as erro:
-        ConfiguracaoDoRelay.do_ambiente(_env(RABBITMQ_URL=url))
+        ConfiguracaoDoRelay.do_ambiente(env)
     assert "SENHA-DO-BROKER" not in str(erro.value)

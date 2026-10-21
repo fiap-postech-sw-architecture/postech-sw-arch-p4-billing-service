@@ -275,8 +275,9 @@ def test_float_nunca_entra_no_envelope() -> None:
     class ValorEmFloatEvent(IntegrationEvent):
         valor: float
 
+    evento = ValorEmFloatEvent(ordem_id=uuid4(), valor=1.5)
     with pytest.raises(TypeError, match="float"):
-        _envelope(ValorEmFloatEvent(ordem_id=uuid4(), valor=1.5))
+        _envelope(evento)
 
 
 def test_decimal_preserva_a_escala() -> None:

@@ -30,7 +30,7 @@ from src.pagamento.dominio.events import (
     PagamentoRecusadoEvent,
     PagamentoSolicitadoEvent,
 )
-from src.pagamento.dominio.historico import EstornoAutomatico
+from src.pagamento.dominio.historico import EstornoAutomatico, HistoricoDoProvedor
 from src.pagamento.dominio.pagamento import (
     MOTIVO_PRAZO_ESGOTADO,
     TAMANHO_MAXIMO_MOTIVO,
@@ -81,8 +81,7 @@ def reconstituir(**campos: object) -> Pagamento:
         "motivo": None,
         "estornado_em": None,
         "motivo_estorno": None,
-        "notificacoes": (),
-        "estornos_automaticos": (),
+        "historico": HistoricoDoProvedor(),
     }
     return Pagamento.reconstituir(**(padrao | campos))  # type: ignore[arg-type]
 
@@ -175,32 +174,28 @@ class TestSolicitacao:
         with pytest.raises(ValorInvalidoError, match="vazio"):
             Cobranca(**dados)  # type: ignore[arg-type]
 
-    @pytest.mark.parametrize(
-        ("criado_em", "validade"),
-        [
-            pytest.param(datetime(2026, 10, 6, 12, 0), None, id="criado-em-sem-tz"),
-            pytest.param(AGORA, "naive", id="expira-em-sem-tz"),
-        ],
-    )
-    def test_datas_com_timezone(
-        self, criado_em: datetime, validade: str | None
-    ) -> None:
+    def test_criado_em_sem_timezone_e_invalido(self) -> None:
+        sem_fuso = datetime(2026, 10, 6, 12, 0)
         with pytest.raises(ValorInvalidoError, match="timezone"):
-            if validade is None:
-                pagamento(criado_em=criado_em)
-            else:
-                Cobranca(
-                    orcamento_id=uuid4(),
-                    valor=dinheiro("1.00"),
-                    provedor="simulado",
-                    referencia_preferencia="pref",
-                    checkout_url="http://x",
-                    expira_em=datetime(2026, 10, 6, 13, 0),
-                )
+            pagamento(criado_em=sem_fuso)
+
+    def test_expira_em_sem_timezone_e_invalido(self) -> None:
+        valor = dinheiro("1.00")
+        sem_fuso = datetime(2026, 10, 6, 13, 0)
+        with pytest.raises(ValorInvalidoError, match="timezone"):
+            Cobranca(
+                orcamento_id=uuid4(),
+                valor=valor,
+                provedor="simulado",
+                referencia_preferencia="pref",
+                checkout_url="http://x",
+                expira_em=sem_fuso,
+            )
 
     def test_expiracao_deve_ser_posterior_a_criacao(self) -> None:
+        validade_zero = timedelta(0)
         with pytest.raises(ValorInvalidoError, match="posterior"):
-            pagamento(validade=timedelta(0))
+            pagamento(validade=validade_zero)
 
 
 class TestLapide:
@@ -565,8 +560,9 @@ class TestCompensacao:
         "estado", [StatusPagamento.SOLICITADO, StatusPagamento.CONFIRMADO]
     )
     def test_sem_desfecho_ainda(self, estado: StatusPagamento) -> None:
+        p = ESTADOS[estado]()
         with pytest.raises(TransicaoStatusInvalidaError, match="desfecho"):
-            ESTADOS[estado]().desfecho_da_compensacao()
+            p.desfecho_da_compensacao()
 
     def test_cancelado_responde_com_o_instante_do_encerramento(self) -> None:
         p = expirado()
@@ -575,8 +571,9 @@ class TestCompensacao:
         )
 
     def test_motivo_obrigatorio(self) -> None:
+        p = solicitado()
         with pytest.raises(ValorInvalidoError, match="Motivo"):
-            solicitado().concluir_compensacao(agora=AGORA, motivo=" ")
+            p.concluir_compensacao(agora=AGORA, motivo=" ")
 
     def test_falha_de_estorno_registra_evento_sem_mudar_status(self) -> None:
         p = confirmado()
@@ -587,8 +584,9 @@ class TestCompensacao:
         assert len(evento.motivo) == TAMANHO_MAXIMO_MOTIVO
 
     def test_falha_de_estorno_so_com_pagamento_confirmado(self) -> None:
+        p = solicitado()
         with pytest.raises(TransicaoStatusInvalidaError):
-            solicitado().registrar_falha_de_estorno("x")
+            p.registrar_falha_de_estorno("x")
 
 
 class TestExpiracao:
@@ -618,9 +616,10 @@ class TestExpiracao:
     )
     def test_so_solicitado_vence(self, estado: StatusPagamento) -> None:
         p = ESTADOS[estado]()
-        assert not p.vencido(DEPOIS_DO_PRAZO + timedelta(days=1))
+        muito_depois = DEPOIS_DO_PRAZO + timedelta(days=1)
+        assert not p.vencido(muito_depois)
         with pytest.raises(TransicaoStatusInvalidaError):
-            p.expirar(agora=DEPOIS_DO_PRAZO + timedelta(days=1))
+            p.expirar(agora=muito_depois)
 
 
 class TestReidratacao:
@@ -641,11 +640,12 @@ class TestReidratacao:
             reconstituir(status=status)
 
     def test_datas_dos_eventos_com_timezone(self) -> None:
+        sem_fuso = datetime(2026, 10, 6, 12, 5)
         with pytest.raises(ValorInvalidoError, match="timezone"):
             reconstituir(
                 status=StatusPagamento.CONFIRMADO,
                 referencia_pagamento="1",
-                confirmado_em=datetime(2026, 10, 6, 12, 5),
+                confirmado_em=sem_fuso,
             )
 
     @pytest.mark.parametrize("recusas", [-1, True], ids=["negativa", "bool"])
@@ -655,8 +655,9 @@ class TestReidratacao:
 
     @pytest.mark.parametrize("maximo", [0, -1, True], ids=["zero", "negativo", "bool"])
     def test_max_recusas_inteiro_positivo(self, maximo: int) -> None:
+        p = solicitado()
         with pytest.raises(ValorInvalidoError, match="max_recusas"):
-            aplicar(solicitado(), StatusNoProvedor.RECUSADO, max_recusas=maximo)
+            aplicar(p, StatusNoProvedor.RECUSADO, max_recusas=maximo)
 
     @pytest.mark.parametrize(
         ("referencia", "bruto"),

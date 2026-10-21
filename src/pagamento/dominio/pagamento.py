@@ -43,7 +43,6 @@ from src.pagamento.dominio.historico import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from datetime import datetime
     from uuid import UUID
 
@@ -161,8 +160,7 @@ class Pagamento(AggregateRoot):
         motivo: str | None,
         estornado_em: datetime | None,
         motivo_estorno: MotivoEstorno | None,
-        notificacoes: Sequence[NotificacaoRecebida],
-        estornos_automaticos: Sequence[EstornoAutomatico],
+        historico: HistoricoDoProvedor,
     ) -> Pagamento:
         """Reidrata do armazenamento: as invariantes (inclusive a coerencia
         status x campos) valem de novo, sem evento."""
@@ -179,7 +177,7 @@ class Pagamento(AggregateRoot):
             _motivo=motivo,
             _estornado_em=estornado_em,
             _motivo_estorno=motivo_estorno,
-            _historico=HistoricoDoProvedor(notificacoes, estornos_automaticos),
+            _historico=historico,
         )
 
     @property

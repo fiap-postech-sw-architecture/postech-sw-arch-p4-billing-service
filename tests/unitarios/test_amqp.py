@@ -305,9 +305,10 @@ def test_erro_de_disco_ao_tocar_o_arquivo_depois_da_abertura_falha_derruba_o_pro
             raise socket.gaierror(socket.EAI_NONAME, msg)
 
     parar = EsperaAnotada(ate=3)
+    canal = SomeODiretorio()
 
     with pytest.raises(FileNotFoundError):
-        _rodar(SomeODiretorio(), lambda: None, parar, pasta / "hb")
+        _rodar(canal, lambda: None, parar, pasta / "hb")
 
     assert parar.esperas == []
 
@@ -513,11 +514,10 @@ def test_nack_do_broker_e_recusa_da_mensagem_e_nao_queda_da_conexao() -> None:
 
     canal = CanalSemBroker()
     canal._publicacao = CanalQueNacka()
+    propriedades = pika.BasicProperties()
 
     with pytest.raises(amqp.MensagemRecusadaError, match="NackError"):
-        canal.publicar(
-            "pytstop.eventos", "evento.billing.x", b"{}", pika.BasicProperties()
-        )
+        canal.publicar("pytstop.eventos", "evento.billing.x", b"{}", propriedades)
 
 
 def test_logs_de_queda_do_broker_nao_levam_o_texto_da_excecao(

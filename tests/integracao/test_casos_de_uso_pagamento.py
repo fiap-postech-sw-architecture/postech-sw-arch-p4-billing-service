@@ -333,10 +333,9 @@ class TestSolicitarPagamento:
         uow = MongoUnitOfWork(banco)
         uow.executar(lambda: MongoOrcamentoRepository(uow).salvar(o))
 
+        caso = solicitar(banco, gateway, relogio)
         with pytest.raises(OrcamentoNaoAprovadoError):
-            solicitar(banco, gateway, relogio).executar(
-                ordem_id=o.ordem_id, orcamento_id=o.id
-            )
+            caso.executar(ordem_id=o.ordem_id, orcamento_id=o.id)
         assert gateway.cobrancas == []
         assert banco["pagamentos"].count_documents({}) == 0
 
@@ -355,10 +354,9 @@ class TestSolicitarPagamento:
     ) -> None:
         o = salvar_aprovado(banco, relogio)
         gateway.erro_na_cobranca = GatewayPagamentoIndisponivelError()
+        caso = solicitar(banco, gateway, relogio)
         with pytest.raises(GatewayPagamentoIndisponivelError):
-            solicitar(banco, gateway, relogio).executar(
-                ordem_id=o.ordem_id, orcamento_id=o.id
-            )
+            caso.executar(ordem_id=o.ordem_id, orcamento_id=o.id)
         assert banco["pagamentos"].count_documents({}) == 0
         assert eventos_do_outbox(banco, "PagamentoSolicitado") == []
 
@@ -589,8 +587,9 @@ class TestNotificacao:
         dto = confirmado(banco, gateway, relogio)
         gateway.respostas["999"] = tentativa(dto.id)
         gateway.erro_no_estorno = GatewayPagamentoIndisponivelError()
+        caso = processar(banco, gateway, relogio)
         with pytest.raises(GatewayPagamentoIndisponivelError):
-            processar(banco, gateway, relogio).executar("999")
+            caso.executar("999")
         # A notificacao ficou registrada, o estorno nao: o reenvio o repete.
         depois = consultar(banco, dto.id)
         assert len(depois.notificacoes) == 2
@@ -695,10 +694,9 @@ class TestSimulador:
             processar(banco, esquecido, relogio),
             relogio,
         )
+        token = token_do_checkout(dto.checkout_url)
         with pytest.raises(PagamentoNaoEncontradoError):
-            caso.executar(
-                dto.id, token=token_do_checkout(dto.checkout_url), aprovar=True
-            )
+            caso.executar(dto.id, token=token, aprovar=True)
 
 
 class TestExpirarPagamentos:
@@ -981,10 +979,9 @@ class TestEstornarPagamento:
     ) -> None:
         pago = confirmado(banco, gateway, relogio)
         gateway.erro_no_estorno = EstornoEmProcessamentoError()
+        caso = estornar(banco, gateway, relogio)
         with pytest.raises(EstornoEmProcessamentoError):
-            estornar(banco, gateway, relogio).executar(
-                ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x"
-            )
+            caso.executar(ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x")
         assert consultar(banco, pago.id).status == "CONFIRMADO"
         assert eventos_do_outbox(banco, "PagamentoEstornado") == []
 
@@ -1053,10 +1050,9 @@ class TestEstornarPagamento:
         pago = confirmado(banco, gateway, relogio)
         gateway.erro_no_estorno = GatewayPagamentoIndisponivelError()
         antes = len(eventos_do_outbox(banco))
+        caso = estornar(banco, gateway, relogio)
         with pytest.raises(GatewayPagamentoIndisponivelError):
-            estornar(banco, gateway, relogio).executar(
-                ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x"
-            )
+            caso.executar(ordem_id=pago.ordem_id, pagamento_id=pago.id, motivo="x")
         assert consultar(banco, pago.id).status == "CONFIRMADO"
         assert len(eventos_do_outbox(banco)) == antes
 
@@ -1155,8 +1151,9 @@ class TestEstornarPagamento:
     ) -> None:
         pendente = solicitado(banco, gateway, relogio)
         gateway.erro_no_cancelamento = GatewayPagamentoIndisponivelError()
+        caso = estornar(banco, gateway, relogio)
         with pytest.raises(GatewayPagamentoIndisponivelError):
-            estornar(banco, gateway, relogio).executar(
+            caso.executar(
                 ordem_id=pendente.ordem_id, pagamento_id=pendente.id, motivo="x"
             )
         assert consultar(banco, pendente.id).status == "SOLICITADO"
@@ -1175,10 +1172,9 @@ class TestEstornarPagamento:
         self, banco: Banco, gateway: GatewayRoteirizado, relogio: RelogioFixo
     ) -> None:
         pago = confirmado(banco, gateway, relogio)
+        caso = estornar(banco, gateway, relogio)
         with pytest.raises(PagamentoNaoEncontradoError, match="nao pertence"):
-            estornar(banco, gateway, relogio).executar(
-                ordem_id=pago.ordem_id, pagamento_id=uuid4(), motivo="x"
-            )
+            caso.executar(ordem_id=pago.ordem_id, pagamento_id=uuid4(), motivo="x")
         assert gateway.estornos == []
 
     def test_compensacao_antes_da_solicitacao_grava_lapide(
@@ -1392,8 +1388,9 @@ class TestValorDoPagamento:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(MongoUnitOfWork, "_gravar_outbox", falhar)
+        caso = processar(banco, gateway, relogio, metricas)
         with pytest.raises(RuntimeError, match="outbox"):
-            processar(banco, gateway, relogio, metricas).executar("999")
+            caso.executar("999")
 
         assert metricas.valores == []
         assert consultar(banco, dto.id).status == "SOLICITADO"

@@ -309,8 +309,9 @@ def test_gerar_orcamento_que_perde_no_indice_unico_devolve_o_existente(
     assert segundo == primeiro
     assert len(eventos_do_outbox(banco, "OrcamentoGerado")) == 2
     # Se nem a releitura acha o orcamento, o erro do indice sobe.
+    sem_releitura = gerar_com_leitura_atrasada(banco, 3)
     with pytest.raises(OrcamentoJaGeradoError):
-        gerar_com_leitura_atrasada(banco, 3).executar(ordem_id=ordem_id, itens=itens)
+        sem_releitura.executar(ordem_id=ordem_id, itens=itens)
 
 
 def test_solicitacao_sem_o_pagamento_na_releitura_propaga_o_erro(

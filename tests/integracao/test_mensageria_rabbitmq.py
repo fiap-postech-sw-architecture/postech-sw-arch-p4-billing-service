@@ -299,7 +299,10 @@ class TestPontaAPonta:
 
         assert banco["orcamentos"].count_documents({}) == 1
         assert banco["mensagens_processadas"].count_documents({}) == 1
-        assert [primeiro["tipo"], segundo["tipo"]] == ["OrcamentoGerado"] * 2
+        assert [primeiro["tipo"], segundo["tipo"]] == [
+            "OrcamentoGerado",
+            "OrcamentoGerado",
+        ]
         assert primeiro["dados"]["orcamento_id"] == segundo["dados"]["orcamento_id"]
 
     def test_lapide_descarta_o_atrasado_e_reenvio_republica_pelo_broker(
@@ -1309,8 +1312,9 @@ class TestFiacaoDosProcessos:
 
     def test_boot_que_falha_fecha_o_que_ja_abriu(self, ambiente: ServidorFalso) -> None:
         # Sem o init do banco (a fixture banco limpa a marca de versao).
+        parar = threading.Event()
         with pytest.raises(BancoNaoPreparadoError):
-            processo_relay.main(threading.Event())
+            processo_relay.main(parar)
 
         assert ambiente.desligado
 
@@ -1333,9 +1337,10 @@ class TestFiacaoDosProcessos:
         monkeypatch.setattr(processo_prazos, "start_http_server", nao_pode_subir)
         monkeypatch.setenv("CONTRATOS_DIR", str(tmp_path))
         contratos._validadores.cache_clear()
+        parar = threading.Event()
         try:
             with pytest.raises(contratos.ContratosAusentesError):
-                processo.main(threading.Event())
+                processo.main(parar)
         finally:
             monkeypatch.delenv("CONTRATOS_DIR")
             contratos._validadores.cache_clear()

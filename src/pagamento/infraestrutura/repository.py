@@ -16,7 +16,11 @@ from src.compartilhado.infraestrutura.mongo import (
 from src.pagamento.dominio.cobranca import Cobranca
 from src.pagamento.dominio.estados import MotivoEstorno, StatusPagamento
 from src.pagamento.dominio.exceptions import PagamentoJaSolicitadoError
-from src.pagamento.dominio.historico import EstornoAutomatico, NotificacaoRecebida
+from src.pagamento.dominio.historico import (
+    EstornoAutomatico,
+    HistoricoDoProvedor,
+    NotificacaoRecebida,
+)
 from src.pagamento.dominio.pagamento import Pagamento
 
 if TYPE_CHECKING:
@@ -171,22 +175,24 @@ def _de_documento(doc: Documento) -> Pagamento:
         motivo=doc.get("motivo"),
         estornado_em=doc.get("estornado_em"),
         motivo_estorno=MotivoEstorno(motivo_estorno) if motivo_estorno else None,
-        notificacoes=[
-            NotificacaoRecebida(
-                recebida_em=n["recebida_em"],
-                referencia_pagamento=n["referencia_pagamento"],
-                status_provedor=n["status_provedor"],
-            )
-            for n in doc.get("notificacoes", [])
-        ],
-        estornos_automaticos=[
-            EstornoAutomatico(
-                referencia_pagamento=e["referencia_pagamento"],
-                registrado_em=e["registrado_em"],
-                falha=e.get("falha"),
-            )
-            for e in doc.get("estornos_automaticos", [])
-        ],
+        historico=HistoricoDoProvedor(
+            notificacoes=[
+                NotificacaoRecebida(
+                    recebida_em=n["recebida_em"],
+                    referencia_pagamento=n["referencia_pagamento"],
+                    status_provedor=n["status_provedor"],
+                )
+                for n in doc.get("notificacoes", [])
+            ],
+            estornos_automaticos=[
+                EstornoAutomatico(
+                    referencia_pagamento=e["referencia_pagamento"],
+                    registrado_em=e["registrado_em"],
+                    falha=e.get("falha"),
+                )
+                for e in doc.get("estornos_automaticos", [])
+            ],
+        ),
     )
 
 

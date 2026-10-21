@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from opentelemetry.sdk.trace import TracerProvider
+    from pymongo import MongoClient
     from pymongo.database import Database
 
     from src.compartilhado.dominio.relogio import Relogio
@@ -102,12 +103,7 @@ def criar_app(
             yield
         finally:
             REGISTRY.unregister(coletor)
-            if cliente is not None:
-                cliente.close()
-            if isinstance(gateway, MercadoPagoGateway):
-                gateway.fechar()
-            if dono_do_provedor:
-                provedor.shutdown()
+            _encerrar(cliente, gateway, provedor if dono_do_provedor else None)
 
     app = FastAPI(
         title="PytStop Billing Service",
@@ -136,6 +132,20 @@ def criar_app(
     # Por ultimo: o middleware de metricas fica o mais externo e mede tudo.
     configurar_metricas(app)
     return app
+
+
+def _encerrar(
+    cliente: MongoClient[Documento] | None,
+    gateway: GatewayPagamento,
+    provedor: TracerProvider | None,
+) -> None:
+    """Fecha o que o lifespan abriu; ``provedor`` so vem quando a API e dona dele."""
+    if cliente is not None:
+        cliente.close()
+    if isinstance(gateway, MercadoPagoGateway):
+        gateway.fechar()
+    if provedor is not None:
+        provedor.shutdown()
 
 
 def _montar_estado(

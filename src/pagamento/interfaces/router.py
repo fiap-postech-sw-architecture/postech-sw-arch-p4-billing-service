@@ -73,7 +73,7 @@ def obter_pagamento(
         },
     },
 )
-def receber_notificacao(  # noqa: PLR0913 - corpo, dependencias e metadados HTTP
+def receber_notificacao(  # noqa: PLR0913 - corpo mais dependencias e metadados HTTP
     request: Request,
     corpo: NotificacaoMercadoPagoRequest,
     processar: Annotated[
