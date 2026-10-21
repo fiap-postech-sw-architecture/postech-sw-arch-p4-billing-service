@@ -66,6 +66,7 @@ class GatewayPagamentoSimulado:
         itens: Sequence[ItemCobranca],
         expira_em: datetime,
     ) -> CobrancaCriada:
+        del itens  # contrato do port; o checkout simulado nao detalha os itens
         assinado = self._token.emitir(pagamento_id, expira_em)
         return CobrancaCriada(
             referencia=f"{_PREFIXO_PREFERENCIA}{pagamento_id}",
@@ -99,6 +100,7 @@ class GatewayPagamentoSimulado:
             ]
 
     def estornar(self, referencia: str, *, chave_idempotencia: str) -> None:
+        del chave_idempotencia  # contrato do port; o estorno simulado e idempotente
         with self._trava:
             situacao = self._pagamentos.get(referencia)
             if situacao is None or situacao.status is StatusNoProvedor.ESTORNADO:
