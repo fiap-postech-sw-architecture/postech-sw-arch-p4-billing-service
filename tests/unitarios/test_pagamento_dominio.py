@@ -30,7 +30,7 @@ from src.pagamento.dominio.events import (
     PagamentoRecusadoEvent,
     PagamentoSolicitadoEvent,
 )
-from src.pagamento.dominio.historico import EstornoAutomatico
+from src.pagamento.dominio.historico import EstornoAutomatico, HistoricoDoProvedor
 from src.pagamento.dominio.pagamento import (
     MOTIVO_PRAZO_ESGOTADO,
     TAMANHO_MAXIMO_MOTIVO,
@@ -81,8 +81,7 @@ def reconstituir(**campos: object) -> Pagamento:
         "motivo": None,
         "estornado_em": None,
         "motivo_estorno": None,
-        "notificacoes": (),
-        "estornos_automaticos": (),
+        "historico": HistoricoDoProvedor(),
     }
     return Pagamento.reconstituir(**(padrao | campos))  # type: ignore[arg-type]
 

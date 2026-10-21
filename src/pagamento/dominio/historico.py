@@ -1,10 +1,11 @@
 """Historico do provedor: as tentativas que ele mostrou e os estornos automaticos.
 
-Parte interna do agregado ``Pagamento``: so ele cria e muda um historico. A
-consulta ao provedor (webhook ou conciliacao) pode repetir a mesma tentativa
-quantas vezes quiser, entao o historico guarda cada par (tentativa, status do
-provedor) uma vez e cada estorno automatico uma vez por tentativa; a decisao do
-que isso muda no pagamento fica no agregado.
+Parte interna do agregado ``Pagamento``: so ele muda um historico, e o
+repositorio so o monta ao reidratar. A consulta ao provedor (webhook ou
+conciliacao) pode repetir a mesma tentativa quantas vezes quiser, entao o
+historico guarda cada par (tentativa, status do provedor) uma vez e cada
+estorno automatico uma vez por tentativa; a decisao do que isso muda no
+pagamento fica no agregado.
 """
 
 from __future__ import annotations
