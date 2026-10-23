@@ -24,6 +24,7 @@ dinheiro = ["tests/unitarios/test_compartilhado_dominio.py"]
 orcamento = ["tests/unitarios/test_orcamento_dominio.py"]
 pagamento = ["tests/unitarios/test_pagamento_dominio.py", "tests/unitarios/test_historico.py"]
 jwt = ["tests/unitarios/test_jwks.py", "tests/unitarios/test_autenticacao.py"]
+disjuntor = ["tests/unitarios/test_circuit_breaker.py"]
 mercadopago = ["tests/unitarios/test_mercadopago.py"]
 consumidor = ["tests/integracao/test_consumidor.py"]
 relay = ["tests/integracao/test_relay.py"]
@@ -345,6 +346,22 @@ arquivo = "src/compartilhado/infraestrutura/jwks.py"
 testes = "jwt"
 de = "LEEWAY_SEGUNDOS: Final = 10"
 para = "LEEWAY_SEGUNDOS: Final = 11"
+
+[[mutante]]
+id = "J13"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/jwks.py"
+testes = "jwt"
+de = "retry_after=max(1, math.ceil(espera))"
+para = "retry_after=max(1, math.floor(espera))"
+
+[[mutante]]
+id = "J14"
+area = "Validacao do JWT"
+arquivo = "src/compartilhado/infraestrutura/circuit_breaker.py"
+testes = "disjuntor"
+de = "return max(0, math.ceil(self._aberto_ate - self._relogio()))"
+para = "return max(0, math.floor(self._aberto_ate - self._relogio()))"
 
 [[mutante]]
 id = "I01"

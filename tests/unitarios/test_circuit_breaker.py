@@ -128,3 +128,24 @@ def test_erro_que_nao_e_falha_da_dependencia_nao_conta(
         with pytest.raises(ValueError, match="negocio"):
             breaker.chamar(recusar)
     assert not breaker.aberto
+
+
+@pytest.mark.parametrize(
+    ("passou", "esperado"),
+    [
+        pytest.param(0.25, 30, id="faltam-29-75-s"),
+        pytest.param(12.75, 18, id="faltam-17-25-s"),
+        pytest.param(29.5, 1, id="falta-meio-segundo"),
+    ],
+)
+def test_segundos_para_nova_tentativa_arredonda_para_cima(
+    breaker: CircuitBreaker, relogio: Relogio, passou: float, esperado: int
+) -> None:
+    for _ in range(3):
+        with pytest.raises(FalhaDeRedeError):
+            breaker.chamar(falhar)
+
+    relogio.agora += passou
+
+    # Para baixo, o cliente que espera esse tempo voltaria antes da prova.
+    assert breaker.segundos_para_nova_tentativa() == esperado
