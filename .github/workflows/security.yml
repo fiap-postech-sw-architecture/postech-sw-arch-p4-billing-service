@@ -102,6 +102,6 @@ jobs:
       # (pull recusado, tag removida, banco do trivy fora) reprovam: a falha
       # vira aviso no summary (scripts/ci/relatorio-trivy-terceiros.sh, com
       # teste em tests/unitarios/test_scripts_ci.py). O risco aceito e a
-      # politica de subir a versao estao no README, em Implantacao.
+      # politica de subir a versao estao em docs/implantacao.md.
       - name: trivy das imagens de terceiros dos manifests (relatorio)
         run: scripts/ci/relatorio-trivy-terceiros.sh

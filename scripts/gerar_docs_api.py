@@ -56,7 +56,8 @@ DESCRICAO = (
     "cadastro de servico e de peca, e orcamento_id pela consulta do orcamento por "
     "ordem (o script de teste de cada uma o grava). O webhook so responde com "
     "MP_WEBHOOK_SECRET no servidor, e o x-signature do exemplo e um molde: o "
-    "HMAC-SHA256 do manifesto esta no README, em Exemplos da API. Gerada por "
+    "HMAC-SHA256 do manifesto esta em docs/api/exemplos.md, em Webhook do "
+    "Mercado Pago. Gerada por "
     "scripts/gerar_docs_api.py (make docs-api); o OpenAPI esta em "
     "docs/api/openapi.json."
 )
@@ -231,10 +232,11 @@ _PAGINA_DO_CHECKOUT = """<!doctype html>
     token=quote(VARIAVEIS["token_do_checkout"], safe=""),
 )
 
-# Ordem dos fluxos do README; as chaves sao as do OpenAPI (metodo, rota). Cada
-# exemplo tem `status` e, quando a rota os tem, `corpo`, `query`, `cabecalhos`
-# (alem do Content-Type), `resposta` (JSON) ou `html` (a pagina do checkout) e
-# `guarda` (variavel -> acesso ao campo da resposta que o script de teste grava).
+# Ordem dos fluxos de docs/api/exemplos.md; as chaves sao as do OpenAPI (metodo,
+# rota). Cada exemplo tem `status` e, quando a rota os tem, `corpo`, `query`,
+# `cabecalhos` (alem do Content-Type), `resposta` (JSON) ou `html` (a pagina do
+# checkout) e `guarda` (variavel -> acesso ao campo da resposta que o script de
+# teste grava).
 EXEMPLOS: dict[tuple[str, str], dict[str, Any]] = {
     ("get", "/api/v1/saude"): {
         "status": 200,

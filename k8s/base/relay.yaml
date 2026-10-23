@@ -1,6 +1,6 @@
 # Relay da outbox (MongoDB -> RabbitMQ). Uma replica: o fencing por token da
 # reivindicacao deixa dois relays seguros no rolling update, mas um basta.
-# Sondas pelo arquivo de vida (README, Mensageria > Saude): a idade dele e a
+# Sondas pelo arquivo de vida (docs/mensageria.md, Saude): a idade dele e a
 # liveness (90 s, com margem sobre a espera do backoff e a resolucao do DNS),
 # e o conteudo "pronto", a readiness. A startup confere a idade, nao o
 # "pronto": com o broker fora no boot o processo fica fora da prontidao e
