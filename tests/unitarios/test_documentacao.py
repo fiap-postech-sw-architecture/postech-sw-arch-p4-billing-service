@@ -1,9 +1,10 @@
-"""Documentos do servico: README, docs/arquitetura.md e docs/api.
+"""Documentos do servico: README, docs/arquitetura.md, docs/api e os demais de docs/.
 
-- Os comandos dos blocos ``bash`` do README rodam colados no terminal.
+- Os comandos dos blocos ``bash`` do README e dos documentos de ``docs/`` rodam
+  colados no terminal.
 - ``docs/api`` (OpenAPI e colecao Postman) acompanha o app (``make docs-api``), e
-  a colecao cumpre o que o README promete dela.
-- Toda rota do OpenAPI tem um ``curl`` na secao Exemplos da API do README, e cada
+  a colecao cumpre o que ``docs/api/README.md`` promete dela.
+- Toda rota do OpenAPI tem um ``curl`` em ``docs/api/exemplos.md``, e cada
   ``curl`` do Billing casa com uma rota e traz a query, o corpo no schema e os
   cabecalhos que a operacao pede (``Authorization: Bearer``, ``Content-Type``).
 - ``docs/arquitetura.md`` segue o codigo: os nomes dos campos e a coluna
@@ -11,7 +12,8 @@
   eventos, quais existem, a routing key, quem publica, quem consome e a fila. Ficam
   de fora o tipo dos campos, as marcas PK e UK do ER e as colunas Resposta (so se
   confere que o evento existe), Etapa esperada (do OS Service) e Quando sai.
-- Os links relativos do README e da arquitetura caem em arquivo e secao reais.
+- Os links relativos do README e de cada documento de ``docs/`` caem em arquivo e
+  secao reais, e o README aponta cada um deles.
 - A secao Cobertura do README sai de ``scripts/cobertura_resumo.py``.
 """
 
@@ -82,7 +84,12 @@ if TYPE_CHECKING:
 
 RAIZ = Path(__file__).resolve().parents[2]
 README = RAIZ / "README.md"
-ARQUITETURA = RAIZ / "docs" / "arquitetura.md"
+DOCS = RAIZ / "docs"
+ARQUITETURA = DOCS / "arquitetura.md"
+EXEMPLOS = DOCS / "api" / "exemplos.md"
+# O README e cada documento de docs/: o que vale para um (blocos de comando, curl,
+# links) vale para os outros.
+DOCUMENTOS = [README, *sorted(DOCS.rglob("*.md"))]
 OPENAPI = RAIZ / "docs" / "api" / "openapi.json"
 COLECAO = RAIZ / "docs" / "api" / "billing.postman_collection.json"
 # A cerca pode vir indentada: os passos numerados do README levam o bloco recuado.
@@ -105,10 +112,14 @@ def _linhas_com_comentario(texto: str) -> list[str]:
 
 
 def test_blocos_de_comando_nao_levam_comentario() -> None:
-    texto = README.read_text(encoding="utf-8")
+    textos = {d: d.read_text(encoding="utf-8") for d in DOCUMENTOS}
 
-    assert len(_BLOCO.findall(texto)) > 10
-    assert _linhas_com_comentario(texto) == []
+    assert sum(len(_BLOCO.findall(texto)) for texto in textos.values()) > 10
+    assert {
+        str(d.relative_to(RAIZ)): linhas
+        for d, texto in textos.items()
+        if (linhas := _linhas_com_comentario(texto))
+    } == {}
 
 
 def test_bloco_indentado_de_passo_numerado_tambem_e_conferido() -> None:
@@ -248,7 +259,7 @@ _TOKEN_DA_COLECAO = {
 }
 _CORPO_JSON = {"key": "Content-Type", "value": "application/json"}
 # O que a API do Billing nao devolve em resposta nenhuma: a descricao da colecao
-# diz de onde cada um vem (README, Exemplos da API).
+# diz de onde cada um vem (docs/api/exemplos.md).
 _DE_FORA = ("token", "ordem_id", "pagamento_id", "token_do_link", "token_do_checkout")
 _GUARDA = re.compile(
     r"if \(pm\.response\.code === (\d+)( && pm\.response\.json\(\)\.length)?\) "
@@ -295,7 +306,7 @@ def _guardadas(colecao: dict[str, Any]) -> tuple[set[str], list[str]]:
 
 
 def _promessas_quebradas(openapi: dict[str, Any], colecao: dict[str, Any]) -> list[str]:
-    """O que o README promete da colecao e ela nao cumpre.
+    """O que docs/api/README.md promete da colecao e ela nao cumpre.
 
     O token da colecao como bearer, herdado pelas rotas com JWT, e ``noauth`` nas
     outras (sondas, link publico, webhook e simulador); ``Content-Type`` em todo
@@ -345,6 +356,16 @@ def test_colecao_versionada_e_a_do_script_cumprem_o_que_o_readme_promete(
 ) -> None:
     assert _promessas_quebradas(openapi, json.loads(COLECAO.read_text("utf-8"))) == []
     assert _promessas_quebradas(openapi, gerador.colecao(openapi)) == []
+
+
+def test_descricao_da_colecao_so_cita_arquivo_de_docs_que_existe(
+    openapi: dict[str, Any], gerador: ModuleType
+) -> None:
+    for colecao in (json.loads(COLECAO.read_text("utf-8")), gerador.colecao(openapi)):
+        citados = re.findall(r"docs/[\w./-]*\w", colecao["info"]["description"])
+
+        assert "docs/api/exemplos.md" in citados
+        assert [c for c in citados if not (RAIZ / c).is_file()] == []
 
 
 def test_colecao_que_quebra_cada_promessa_e_apontada(openapi: dict[str, Any]) -> None:
@@ -625,7 +646,7 @@ def test_main_com_rota_sem_exemplo_reprova_sem_gravar(
     assert "faltam [('get', '/api/v1/saude')]" in capsys.readouterr().err
 
 
-# README: um curl por rota do OpenAPI.
+# docs/api/exemplos.md: um curl por rota do OpenAPI.
 
 # Opcoes do curl que levam valor; as demais (-s, -k, -f...) sao flags.
 _DADOS = frozenset({"-d", "--data", "--data-raw", "--data-binary", "--json"})
@@ -773,27 +794,15 @@ def _secao(texto: str, titulo: str) -> str:
     return re.split(rf"\n#{{1,{nivel}}} ", resto, maxsplit=1)[0]
 
 
-def test_toda_rota_do_openapi_tem_um_curl_na_secao_exemplos_da_api(
+def test_toda_rota_do_openapi_tem_um_curl_em_exemplos_da_api(
     openapi: dict[str, Any],
 ) -> None:
-    exemplos = _secao(README.read_text(encoding="utf-8"), "## Exemplos da API")
+    exemplos = EXEMPLOS.read_text(encoding="utf-8")
     cobertas = {_rota(openapi, curl) for curl in _curls(exemplos)}
 
     faltam = [par for par in _pares(openapi) if par not in cobertas]
 
-    assert faltam == [], "rota do OpenAPI sem curl no README (secao Exemplos da API)"
-
-
-def test_curl_fora_da_secao_exemplos_da_api_nao_conta(openapi: dict[str, Any]) -> None:
-    texto = (
-        "## Como rodar\n\n```bash\ncurl localhost:8002/api/v1/saude\n```\n\n"
-        "## Exemplos da API\n\nsem curl\n\n## Outra\n"
-    )
-
-    exemplos = _secao(texto, "## Exemplos da API")
-
-    assert _curls(exemplos) == []
-    assert _curls(texto) == [Curl("GET", "/api/v1/saude", None)]
+    assert faltam == [], "rota do OpenAPI sem curl em docs/api/exemplos.md"
 
 
 # O curl cujo caminho comeca assim e do Billing (o do OS Service passa por /os/ e o
@@ -862,10 +871,14 @@ def _erros_do_curl(openapi: dict[str, Any], curl: Curl) -> list[str]:
     return erros
 
 
-def test_curl_do_readme_tem_o_token_o_corpo_e_o_content_type_que_a_rota_pede(
+def test_curl_dos_documentos_tem_o_token_o_corpo_e_o_content_type_que_a_rota_pede(
     openapi: dict[str, Any],
 ) -> None:
-    curls = _curls(README.read_text(encoding="utf-8"))
+    curls = [
+        curl
+        for documento in DOCUMENTOS
+        for curl in _curls(documento.read_text(encoding="utf-8"))
+    ]
 
     erros = [erro for curl in curls for erro in _erros_do_curl(openapi, curl)]
 
@@ -1018,6 +1031,7 @@ def test_readme_aponta_a_arquitetura_e_os_documentos_da_api() -> None:
     assert ARQUITETURA.is_file()
     assert "](docs/arquitetura.md)" in texto
     assert "](docs/api/)" in texto
+    assert "](docs/api/exemplos.md)" in texto
 
 
 def _ancoras(texto: str) -> set[str]:
@@ -1069,13 +1083,34 @@ def _quebrados(links: list[tuple[str, Path, str]]) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "documento", [README, ARQUITETURA], ids=["README", "arquitetura"]
+    "documento", DOCUMENTOS, ids=[str(d.relative_to(RAIZ)) for d in DOCUMENTOS]
 )
 def test_links_relativos_apontam_arquivo_e_secao_que_existem(documento: Path) -> None:
-    links = _links_relativos(documento)
+    assert _quebrados(_links_relativos(documento)) == [], (
+        "link para arquivo ou secao que nao existe"
+    )
 
-    assert len(links) > 15
-    assert _quebrados(links) == [], "link para arquivo ou secao que nao existe"
+
+def test_links_dos_documentos_sao_lidos_de_verdade() -> None:
+    # Sem isto, uma regex que nao acha link deixaria o teste acima passar em branco.
+    assert len(_links_relativos(README)) > 15
+    assert len(_links_relativos(ARQUITETURA)) > 15
+    assert sum(len(_links_relativos(d)) for d in DOCUMENTOS) > 100
+
+
+def test_readme_aponta_cada_documento_de_docs() -> None:
+    # docs/api/ tem o README.md dela: o link da pasta (docs/api/) basta.
+    apontados = {destino.resolve() for _, destino, _ in _links_relativos(README)}
+    sem_link = [
+        str(documento.relative_to(RAIZ))
+        for documento in DOCUMENTOS[1:]
+        if documento.resolve() not in apontados
+        and not (
+            documento.name == "README.md" and documento.parent.resolve() in apontados
+        )
+    ]
+
+    assert sem_link == [], "documento de docs/ que o README nao aponta"
 
 
 def test_link_para_arquivo_ou_secao_que_nao_existe_reprova(tmp_path: Path) -> None:
@@ -1613,7 +1648,8 @@ def test_secao_de_cobertura_do_readme_e_a_que_o_script_gera(
     # devolvem a secao inteira. Uma linha editada a mao (percentual, total,
     # formato) ou o link de outro repositorio nao passam.
     assert secao == f"\n{cobertura.secao_do_readme(medida, run['url'])}\n", (
-        "secao Cobertura editada a mao: rode o comando de Para refazer, no README"
+        "secao Cobertura editada a mao: rode o make cobertura-readme, "
+        "descrito em docs/cobertura.md"
     )
 
 
