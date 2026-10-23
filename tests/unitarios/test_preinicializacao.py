@@ -211,10 +211,10 @@ manter_conectado(
         )
 
 
-class TestConsumidor:
-    def test_consumidas_por_tipo_e_resultado_e_reconexoes_nascem_em_zero(self) -> None:
-        amostras = boot(
-            """
+@pytest.fixture(scope="module")
+def boot_do_consumidor() -> Amostras:
+    return boot(
+        """
 import tempfile
 import threading
 from pathlib import Path
@@ -245,10 +245,15 @@ manter_conectado(
     processo="consumidor",
 )
 """
-        )
+    )
 
+
+class TestConsumidor:
+    def test_consumidas_por_tipo_e_resultado_e_reconexoes_nascem_em_zero(
+        self, boot_do_consumidor: Amostras
+    ) -> None:
         assert_zeradas(
-            amostras,
+            boot_do_consumidor,
             "pytstop_mensagens_consumidas_total",
             *(
                 {"tipo": tipo, "resultado": resultado}
@@ -258,5 +263,27 @@ manter_conectado(
             {"tipo": "desconhecido", "resultado": "dlq"},
         )
         assert_zeradas(
-            amostras, "pytstop_reconexoes_ao_broker_total", {"componente": "consumidor"}
+            boot_do_consumidor,
+            "pytstop_reconexoes_ao_broker_total",
+            {"componente": "consumidor"},
+        )
+
+    def test_estornos_e_valor_estornado_nascem_em_zero_no_processo_que_os_conta(
+        self, boot_do_consumidor: Amostras
+    ) -> None:
+        """O ``EstornarPagamento`` roda aqui: o estorno da compensacao e o valor
+        devolvido sao contados neste processo. Sem a serie em zero no boot, o
+        ``increase()`` perderia o primeiro estorno do pod, e quem a cria e so o
+        import de ``src.pagamento.infraestrutura.metricas``."""
+        assert_zeradas(
+            boot_do_consumidor,
+            "pytstop_pagamentos_estornados_total",
+            {"motivo": "compensacao"},
+            {"motivo": "pagamento_apos_encerramento"},
+        )
+        assert_zeradas(
+            boot_do_consumidor,
+            "pytstop_pagamentos_valor_centavos_total",
+            {"estado": "confirmado"},
+            {"estado": "estornado"},
         )
