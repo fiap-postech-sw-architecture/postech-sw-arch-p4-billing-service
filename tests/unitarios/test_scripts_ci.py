@@ -327,15 +327,13 @@ def test_dependabot_tem_agenda_prefixo_grupos_e_ignore_de_cada_bloco() -> None:
     # O teto do pyproject.toml nao segura o Dependabot: ele o alarga (no OS e na
     # Execucao o sqlalchemy <2.1 virou <2.2 e a minor nova quebrou o build). A
     # minor dos opentelemetry-* (telemetria.py troca atributos privados do SDK)
-    # so entra a mao, com os dois tetos subidos juntos.
-    so_patch_do_opentelemetry = [
-        {
-            "dependency-name": "opentelemetry-*",
-            "update-types": [
-                "version-update:semver-major",
-                "version-update:semver-minor",
-            ],
-        }
+    # so entra a mao, com os dois tetos subidos juntos. A do fastapi (0.x: a minor
+    # traz mudanca incompativel) fica segurada ate a entrega da fase 4, em
+    # 17/11/2026: o patch sobe pelo grupo, e o pydantic nao tem ignore.
+    sem_minor = ["version-update:semver-major", "version-update:semver-minor"]
+    ignore_do_uv = [
+        {"dependency-name": "opentelemetry-*", "update-types": sem_minor},
+        {"dependency-name": "fastapi", "update-types": sem_minor},
     ]
     # Um grupo por nome (o do OpenTelemetry) ficaria vazio: no job real os
     # opentelemetry-* sairam dele para o de update-types ("belongs to more
@@ -344,7 +342,7 @@ def test_dependabot_tem_agenda_prefixo_grupos_e_ignore_de_cada_bloco() -> None:
         "uv": (
             "chore(deps)",
             {"python-patch-e-minor": patch_e_minor},
-            so_patch_do_opentelemetry,
+            ignore_do_uv,
         ),
         "github-actions": ("ci", {"actions-patch-e-minor": patch_e_minor}, []),
         "docker": (

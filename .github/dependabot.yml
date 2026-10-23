@@ -49,6 +49,14 @@ updates:
     ignore:
       - dependency-name: "opentelemetry-*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Segurado ate a entrega da fase 4 (17/11/2026); reavaliar depois. O
+      # FastAPI e 0.x e traz mudanca incompativel em minor: 8 das 13 minors
+      # entre a 0.144 e a 0.156 tem Breaking Changes nas notas de release (a
+      # 0.151 passou a distinguir null de campo omitido no corpo JSON), e os
+      # tres servicos ficam na mesma versao ate la. O patch segue pelo grupo,
+      # e o pydantic nao entra aqui: a minor dele segue pelo grupo e pelo CI.
+      - dependency-name: "fastapi"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # Actions dos workflows (por tag, ou por SHA com a versao no comentario).
   - package-ecosystem: "github-actions"
