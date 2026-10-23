@@ -1,5 +1,7 @@
 """Documentos do servico: README, docs/arquitetura.md, docs/api e os demais de docs/.
 
+- O README segue o esqueleto comum dos servicos e guarda as ancoras que o
+  platform cita.
 - Os comandos dos blocos ``bash`` do README e dos documentos de ``docs/`` rodam
   colados no terminal.
 - ``docs/api`` (OpenAPI e colecao Postman) acompanha o app (``make docs-api``), e
@@ -1055,6 +1057,41 @@ def test_ancora_gerada_como_a_do_github() -> None:
     texto = "# Ação (LGPD)\n```bash\n# nao e titulo\n```\n## Testes\n### Testes\n"
 
     assert _ancoras(texto) == {"ação-lgpd", "testes", "testes-1"}
+
+
+# Os titulos do README que o platform cita por ancora (entrega da fase 4, matriz
+# de rastreabilidade e o README dele). Renomear um deles quebra o link do outro
+# lado sem aviso.
+ANCORAS_CITADAS_NO_README = frozenset(
+    {"cobertura", "mutação", "troca-de-senhas-e-chaves"}
+)
+# Os titulos de nivel 2, na ordem: o esqueleto que os tres servicos repetem. O
+# sumario sao duas linhas de links, sem titulo proprio.
+ESQUELETO_DO_README = [
+    "Como rodar",
+    "Como testar",
+    "Cobertura",
+    "API",
+    "Mensageria",
+    "Arquitetura",
+    "Observabilidade",
+    "CI/CD",
+    "Segurança",
+    "Decisões e rastreabilidade",
+]
+
+
+def test_readme_guarda_as_ancoras_que_o_platform_cita() -> None:
+    assert _ancoras(README.read_text(encoding="utf-8")) >= ANCORAS_CITADAS_NO_README
+    # O platform cita tambem docs/arquitetura.md#3-modelo-de-dados.
+    assert "3-modelo-de-dados" in _ancoras(ARQUITETURA.read_text(encoding="utf-8"))
+
+
+def test_readme_segue_o_esqueleto_comum_dos_servicos() -> None:
+    texto = _CERCA.sub("", README.read_text(encoding="utf-8"))
+
+    assert re.findall(r"^## (.+)$", texto, re.MULTILINE) == ESQUELETO_DO_README
+    assert re.search(r"^\*\*Sumário\*\*: ", texto, re.MULTILINE) is not None
 
 
 def _links_relativos(origem: Path) -> list[tuple[str, Path, str]]:
