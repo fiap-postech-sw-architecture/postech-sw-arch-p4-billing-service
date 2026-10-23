@@ -163,6 +163,8 @@ A arquitetura global da fase 4 está na [RFC-004 e nos ADRs 034 a 043](https://g
 
 As decisões deste serviço que não estão nos ADRs ficam na [seção 8 de docs/arquitetura.md](docs/arquitetura.md#8-decisões). A [matriz de rastreabilidade](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/entrega/matriz-de-rastreabilidade.md) do `platform` liga cada requisito aos pull requests e às evidências.
 
+Parte do código vem do PytStop da fase 3: o `src/compartilhado` é um recorte do [`postech-sw-arch-p3` no commit `08dcffe`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p3/tree/08dcffe6365ece594f438cdbc4c5eef1d88ebfb1), e o `catalogo_servicos` virou a tabela de preços. O que veio, o que foi reescrito para o MongoDB e o RabbitMQ e o que ficou de fora estão em [docs/regras-do-servico.md](docs/regras-do-servico.md#proveniência).
+
 ### Repositórios da fase 4
 
 | Repositório | Papel |
