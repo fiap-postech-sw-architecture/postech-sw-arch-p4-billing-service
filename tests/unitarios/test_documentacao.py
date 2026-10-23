@@ -27,6 +27,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -1830,6 +1831,43 @@ def test_gate_do_readme_e_o_do_coveragerc_e_o_do_makefile() -> None:
     assert novo is not None
     assert diff_cover is not None
     assert novo[1] == diff_cover[1]
+
+
+# O resultado da mutacao aparece no README e em docs/mutacao.md (a frase e o total
+# da tabela): os tres e o scripts/mutantes.toml dizem o mesmo.
+_MUTACAO_NO_README = re.compile(
+    r"(?P<mortos>\d+) de (?P<medidos>\d+) medidos foram mortos em (?P<data>[\d/]+), "
+    r"com (?P<equivalentes>\d+) equivalentes"
+)
+_MUTACAO_NO_DOC = re.compile(
+    r"\*\*Resultado\*\* em (?P<data>[\d/]+): (?P<mortos>\d+) mortos de "
+    r"(?P<medidos>\d+) medidos .*?com (?P<equivalentes>\d+) equivalentes"
+)
+_TOTAL_DA_TABELA = re.compile(
+    r"^\| \*\*total\*\* \| \*\*(\d+)\*\* \| \*\*(\d+)\*\* \| \*\*(\d+)\*\* \|$",
+    re.MULTILINE,
+)
+
+
+def test_resultado_da_mutacao_do_readme_e_o_do_documento_e_o_da_lista() -> None:
+    doc = (DOCS / "mutacao.md").read_text(encoding="utf-8")
+    do_readme = _MUTACAO_NO_README.search(README.read_text(encoding="utf-8"))
+    da_frase = _MUTACAO_NO_DOC.search(doc)
+    da_tabela = _TOTAL_DA_TABELA.search(doc)
+    lista = tomllib.loads((RAIZ / "scripts" / "mutantes.toml").read_text("utf-8"))
+
+    assert do_readme is not None
+    assert da_frase is not None
+    assert da_tabela is not None
+    assert do_readme.groupdict() == da_frase.groupdict()
+    listados, mortos, equivalentes = (int(n) for n in da_tabela.groups())
+    assert listados == len(lista["mutante"])
+    assert equivalentes == sum("equivalente" in m for m in lista["mutante"])
+    assert (mortos, equivalentes) == (
+        int(da_frase["mortos"]),
+        int(da_frase["equivalentes"]),
+    )
+    assert listados == int(da_frase["medidos"]) + equivalentes
 
 
 def test_saude_tem_descricao_publica_e_query_type_documentada(
