@@ -11,13 +11,33 @@ from src.orcamento.dominio.orcamento import StatusOrcamento
 
 _log = logging.getLogger(__name__)
 
-# De 1 minuto a 3 dias: o orcamento vale 72 h e quem nao decide expira.
+# De 100 ms a 3 dias: a demonstracao decide em cerca de 1 s, e no uso real o
+# orcamento vale 72 h e quem nao decide expira. O histogram_quantile interpola
+# linearmente dentro do balde, entao com o primeiro balde em 60 s toda decisao
+# rapida saia com p90 de 54 s (0,9 x 60), inclusive a unica de uma recusa.
 TEMPO_DE_DECISAO = Histogram(
     "pytstop_orcamentos_tempo_decisao_segundos",
     "Tempo entre a geracao do orcamento e a decisao do cliente (link ou "
     "atendente), por decisao.",
     ["decisao"],
-    buckets=(60, 300, 900, 3600, 14400, 43200, 86400, 172800, 259200),
+    buckets=(
+        0.1,
+        0.5,
+        1,
+        2,
+        5,
+        15,
+        30,
+        60,
+        300,
+        900,
+        3600,
+        14400,
+        43200,
+        86400,
+        172800,
+        259200,
+    ),
 )
 # So estas duas decisoes existem; outra e defeito: vai para o log, nao vira serie
 # nova e nao derruba o caso de uso (a decisao ja comitou).
