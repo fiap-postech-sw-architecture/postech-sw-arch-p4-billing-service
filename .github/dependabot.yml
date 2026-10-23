@@ -14,7 +14,7 @@
 # comenta isso em cada PR.
 #
 # O que o Dependabot nao cobre e a versao ficou fixada de proposito, a ser
-# subida a mao: mongo e percona/mongodb_exporter em k8s/ (README, Implantacao),
+# subida a mao: mongo e percona/mongodb_exporter em k8s/ (docs/implantacao.md),
 # mongo e rabbitmq do compose e dos testes de integracao, o SonarQube do ci.yml
 # e o scanner de scripts/sonar, o trivy, o kubeconform, o pip-audit e o
 # diff-cover (Makefile e workflows) e o gitleaks (security.yml).

@@ -32,8 +32,8 @@ def test_cliente_fala_uuid_padrao_em_utc_e_tem_limites_explicitos() -> None:
 def test_teto_da_transacao_e_de_10_segundos() -> None:
     # O with_transaction do driver repete conflito e falha transitoria por ate
     # 120 s, fora do timeoutMS do cliente; o servico limita a transacao inteira
-    # a 10 s (README e MEMORY), e o estouro vira ExecutionTimeout, que o
-    # consumidor manda para a fila de retry.
+    # a 10 s (docs/regras-do-servico.md e MEMORY), e o estouro vira
+    # ExecutionTimeout, que o consumidor manda para a fila de retry.
     assert LIMITE_DA_TRANSACAO_SEGUNDOS == 10.0
 
 

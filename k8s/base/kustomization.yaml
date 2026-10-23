@@ -1,7 +1,7 @@
 # Billing Service no namespace pytstop-billing: um Deployment por processo
 # (api, relay, consumidor, prazos), o MongoDB em StatefulSet com o exporter, o
 # Job de inicializacao, o HPA da API, as NetworkPolicies e a borda no Kong
-# (README, Implantacao). Nenhum Secret aqui: os do servico vem do make deploy
+# (docs/implantacao.md). Nenhum Secret aqui: os do servico vem do make deploy
 # do platform e entram por secretKeyRef. Nao aplique o base direto: use um
 # overlay (kind, kind-ci ou k3s) pelo make kind-deploy, que chama o
 # implantar-servicos.sh do platform.

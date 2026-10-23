@@ -997,9 +997,10 @@ class TestPrazosDoColetor:
                 texto = generate_latest(registro)
                 duracao = time.monotonic() - inicio
             assert texto == b""
-            # O README promete "cerca de 2 s". Os limites sao literais de proposito
-            # (nao PRAZO_DA_RASPAGEM_S): o de baixo prova que a chamada esperou o
-            # prazo em vez de falhar logo, o de cima reprova prazo maior.
+            # docs/observabilidade.md promete "cerca de 2 s". Os limites sao
+            # literais de proposito (nao PRAZO_DA_RASPAGEM_S): o de baixo prova que
+            # a chamada esperou o prazo em vez de falhar logo, o de cima reprova
+            # prazo maior.
             assert 1.8 < duracao < 2.8
             _confere_coletor_positivo(registro)
 
