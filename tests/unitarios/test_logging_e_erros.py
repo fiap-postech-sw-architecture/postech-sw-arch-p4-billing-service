@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from pymongo.errors import (
@@ -39,6 +39,7 @@ from src.compartilhado.infraestrutura.logging import (
 )
 from src.compartilhado.infraestrutura.metricas import (
     ROTA_NAO_ROTEADA,
+    _metodo,
     configurar_metricas,
 )
 from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
@@ -688,6 +689,14 @@ def test_metodo_fora_do_vocabulario_agrega_em_outro(
 
     assert _requisicoes_sem_rota("OUTRO") == antes + 1
     assert f'method="{metodo}"' not in cliente.get("/metrics").text
+
+
+def test_metodo_em_minusculas_tambem_agrega_em_outro() -> None:
+    # Com --http h11 o uvicorn entrega o metodo como veio ("get"); o TestClient
+    # sobe para maiusculas, entao o caso vai direto a funcao do rotulo.
+    requisicao = Request({"type": "http", "method": "get", "headers": []})
+
+    assert _metodo(requisicao) == "OUTRO"
 
 
 def test_rede_de_seguranca_sem_o_middleware_tambem_responde_o_envelope() -> None:
