@@ -407,7 +407,7 @@ Uma ressalva. O httpx injeta o `traceparent` em toda chamada, inclusive nas ao M
 
 | Métrica | Tipo e rótulos | Processo | Quando conta |
 |---|---|---|---|
-| `http_request_duration_seconds` | histograma `method`, `rota` (template), `status` | API | fim de cada requisição |
+| `http_request_duration_seconds` | histograma `method` (GET, POST, PUT, PATCH, DELETE, HEAD e OPTIONS; qualquer outro vira `OUTRO`), `rota` (template), `status` | API | fim de cada requisição |
 | `pytstop_orcamentos_tempo_decisao_segundos` | histograma `decisao` (`aprovado`, `recusado`); baldes de 1 min a 3 dias | API | depois do commit da decisão, pelo link ou pelo atendente: da geração à decisão. O expirado não entra |
 | `pytstop_pagamentos_valor_centavos_total` | contador `estado` (`confirmado`, `estornado`) | API (webhook e simulador), `prazos` (conciliação), consumidor (estorno) | o pagamento entra em `CONFIRMADO` ou o confirmado vai a `ESTORNADO`, em centavos inteiros. Na API e no `prazos`, depois do commit; no consumidor, pelo menos uma vez, como as demais contagens do pagamento. A aprovação tardia estornada direto não entra (está em `pytstop_pagamentos_estornados_total`) |
 | `pytstop_pagamentos_estornados_total` | contador `motivo` (`compensacao`, `pagamento_apos_encerramento`) | API, `prazos`, consumidor | estorno concluído no provedor |
@@ -480,22 +480,22 @@ O gate é de 95% no total, com linhas e ramos somados (`fail_under` no `.coverag
 As tabelas abaixo, por contexto e camada, não são digitadas: o [`scripts/cobertura_resumo.py`](scripts/cobertura_resumo.py) as escreve entre os marcadores a partir do `coverage.xml` do `make test`, com o link do run do CI que tem o mesmo `src/`. O `make test` reprova o trecho editado à mão, com as contas erradas, com a taxa fora do formato, com um contexto que não existe ou com o link de outro repositório ([`test_documentacao.py`](tests/unitarios/test_documentacao.py)). O CI repete a medida, por pacote, no summary do job `test` de cada run ([Actions → CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/workflows/ci.yml)), com o `diff-cover` do pull request logo abaixo.
 
 <!-- cobertura:inicio -->
-**100,00% no gate** (linhas e ramos somados): 4.547 linhas, 4.547 cobertas (100,0%), e 624 ramos, 624 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 39529545384 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/39529545384). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
+**100,00% no gate** (linhas e ramos somados): 4.551 linhas, 4.551 cobertas (100,0%), e 624 ramos, 624 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 39935825688 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/39935825688). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
 
 | Contexto | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
 | `src` (processos) | 570 | 570 | 100,0% |
-| `src/compartilhado` | 1.576 | 1.576 | 100,0% |
+| `src/compartilhado` | 1.580 | 1.580 | 100,0% |
 | `src/orcamento` | 672 | 672 | 100,0% |
 | `src/pagamento` | 1.292 | 1.292 | 100,0% |
 | `src/precos` | 437 | 437 | 100,0% |
-| **total** | 4.547 | 4.547 | 100,0% |
+| **total** | 4.551 | 4.551 | 100,0% |
 
 | Camada | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
 | `dominio` | 895 | 895 | 100,0% |
 | `aplicacao` | 773 | 773 | 100,0% |
-| `infraestrutura` | 1.661 | 1.661 | 100,0% |
+| `infraestrutura` | 1.665 | 1.665 | 100,0% |
 | `interfaces` | 648 | 648 | 100,0% |
 
 <!-- cobertura:fim -->
@@ -521,33 +521,34 @@ O `mutmut` não roda neste repositório. A versão 3.8.0 espera o pacote em `src
 AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
 ```
 
-(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 74 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
+(`mutmut/stats.py`, `record_trampoline_hit`). Renomear o pacote ou remendar a ferramenta mudaria o que se mede, então a alternativa são mutantes escritos à mão: [`scripts/mutantes.toml`](scripts/mutantes.toml) lista 76 defeitos plausíveis nos módulos críticos, e [`scripts/mutacao_manual.py`](scripts/mutacao_manual.py) aplica um por vez numa cópia do código (`mutants/`, fora do git) e roda só os testes que deveriam pegá-lo.
 
-**Resultado** em 19/10/2026: 72 mortos de 72 medidos (100%) em 4,4 min (cerca de 5 min com a máquina carregada), com 2 equivalentes de fora da conta.
+**Resultado** em 23/10/2026: 74 mortos de 74 medidos (100%) em 4,8 min (cerca de 5 min com a máquina carregada), com 2 equivalentes de fora da conta.
 
 | Área | Mutantes | Mortos | Equivalentes |
 |---|---:|---:|---:|
 | `Dinheiro` | 8 | 7 | 1 |
 | Status do orçamento | 9 | 9 | 0 |
 | Status do pagamento | 10 | 10 | 0 |
-| Validação do JWT | 12 | 11 | 1 |
+| Validação do JWT | 14 | 13 | 1 |
 | Idempotência | 7 | 7 | 0 |
 | Consumidor | 5 | 5 | 0 |
 | Relay | 9 | 9 | 0 |
 | Compensação da saga | 5 | 5 | 0 |
 | Observabilidade | 9 | 9 | 0 |
-| **total** | **74** | **72** | **2** |
+| **total** | **76** | **74** | **2** |
 
 - **Limites que só a mutação mostrou, hoje com teste:**
   - moeda de 4 letras aceita (`test_moeda_fora_do_iso_4217_e_rejeitada`, caso `quatro-letras`);
   - cópia do JWKS ainda valendo na hora exata do limite de 1 h (`test_copia_velha_vale_ate_1_hora_quando_a_renovacao_falha`);
   - corpo no teto de 64 KiB tratado como grande demais (`test_corpo_no_teto_exato_ainda_passa_do_limite_de_tamanho`);
   - expiração de pagamento que a outra escrita já tirou de `SOLICITADO` gerando log de erro (`test_pagamento_que_deixou_de_estar_vencido_nao_vira_erro`);
-  - leeway de 10 s do `exp` do JWT (J12): `test_leeway_de_10_segundos_no_exp` cerca o valor entre 9 e 12 s e `test_leeway_e_o_do_contrato_com_o_os_service` o fixa.
+  - leeway de 10 s do `exp` do JWT (J12): `test_leeway_de_10_segundos_no_exp` cerca o valor entre 9 e 12 s e `test_leeway_e_o_do_contrato_com_o_os_service` o fixa;
+  - arredondamento para cima do `Retry-After` do 503 do JWKS (J13) e dos segundos até a próxima prova do disjuntor (J14), ambos com `ceil` virando `floor`: `test_retry_after_arredonda_para_cima_o_que_falta_da_memoria_da_falha` e `test_segundos_para_nova_tentativa_arredonda_para_cima` usam espera fracionária, porque com espera inteira os dois arredondamentos dão o mesmo número.
 - **Equivalentes**, cada um com a condição em que vale no campo `equivalente` do `mutantes.toml`:
   - D01, o teto exato do `Dinheiro` (`>=` virando `>`): só para +10^10, que a checagem seguinte, depois do arredondamento, recusa com a mesma mensagem. Para -10^10 a recusa é a mesma exceção, mas a mensagem muda, de "acima de 10 dígitos inteiros" para "Valor nao pode ser negativo", e nenhum teste confere a mensagem desse caso.
   - J01, `HS256` na lista de algoritmos do JWKS: equivale no resultado (o token segue dando 401, só muda o texto do erro do PyJWT, que a API não usa), e só enquanto valem duas condições: o PyJWT amarra a chave ao algoritmo dela (na 2.15, o `decode` com um `PyJWK` recusa `Token algorithm 'HS256' does not match the key's algorithm 'RS256'`) e o validador passa um `PyJWK` ao `decode`. Sem elas, a lista `RS256` seria a única barreira, e nenhum teste a prende.
-- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 74 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
+- **O que o percentual não é:** a lista é curada, então ele diz que a suíte pega esses 76 defeitos, e não é comparável ao de uma ferramenta que gera os mutantes sozinha.
 
 Para refazer:
 

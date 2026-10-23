@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from pymongo.errors import (
@@ -37,10 +37,15 @@ from src.compartilhado.infraestrutura.logging import (
     redigir_pii_erro,
     scrub_pii,
 )
-from src.compartilhado.infraestrutura.metricas import configurar_metricas
+from src.compartilhado.infraestrutura.metricas import (
+    ROTA_NAO_ROTEADA,
+    _metodo,
+    configurar_metricas,
+)
 from src.compartilhado.infraestrutura.mongo import DocumentoInvalidoError
 from src.compartilhado.interfaces.error_handler import registrar_error_handlers
 from src.compartilhado.interfaces.middleware import SecurityHeadersMiddleware
+from tests.conftest import valor_da_metrica
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -649,6 +654,49 @@ def test_metricas_por_template_de_rota(cliente: TestClient) -> None:
     assert 'rota="/erro/{nome}"' in texto
     assert 'rota="nao_roteada"' in texto
     assert "/erro/nao-encontrado" not in texto
+
+
+def _requisicoes_sem_rota(metodo: str) -> float:
+    # Sem rota casada a resposta e 404, qualquer que seja o metodo.
+    return valor_da_metrica(
+        "http_request_duration_seconds_count",
+        method=metodo,
+        rota=ROTA_NAO_ROTEADA,
+        status="404",
+    )
+
+
+@pytest.mark.parametrize(
+    "metodo", ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+)
+def test_metodo_conhecido_e_o_proprio_rotulo(cliente: TestClient, metodo: str) -> None:
+    antes = _requisicoes_sem_rota(metodo)
+
+    cliente.request(metodo, "/qualquer/coisa")
+
+    assert _requisicoes_sem_rota(metodo) == antes + 1
+
+
+@pytest.mark.parametrize("metodo", ["PROPFIND", "TRACE", "CONNECT", "BREW"])
+def test_metodo_fora_do_vocabulario_agrega_em_outro(
+    cliente: TestClient, metodo: str
+) -> None:
+    # O metodo e texto do chamador: sem o vocabulario fechado, cada token novo
+    # criaria uma serie nova no histograma.
+    antes = _requisicoes_sem_rota("OUTRO")
+
+    cliente.request(metodo, "/qualquer/coisa")
+
+    assert _requisicoes_sem_rota("OUTRO") == antes + 1
+    assert f'method="{metodo}"' not in cliente.get("/metrics").text
+
+
+def test_metodo_em_minusculas_tambem_agrega_em_outro() -> None:
+    # Com --http h11 o uvicorn entrega o metodo como veio ("get"); o TestClient
+    # sobe para maiusculas, entao o caso vai direto a funcao do rotulo.
+    requisicao = Request({"type": "http", "method": "get", "headers": []})
+
+    assert _metodo(requisicao) == "OUTRO"
 
 
 def test_rede_de_seguranca_sem_o_middleware_tambem_responde_o_envelope() -> None:

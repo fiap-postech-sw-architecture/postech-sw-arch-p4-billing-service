@@ -273,6 +273,36 @@ class TestCacheDoJwks:
         assert REGISTRY.get_sample_value("pytstop_jwks_falhas_total") == antes + 1
 
     @pytest.mark.parametrize(
+        ("passou", "esperado"),
+        [
+            pytest.param(0.5, 5, id="faltam-4-5-s"),
+            pytest.param(2.5, 3, id="faltam-2-5-s"),
+            pytest.param(3.75, 2, id="faltam-1-25-s"),
+        ],
+    )
+    def test_retry_after_arredonda_para_cima_o_que_falta_da_memoria_da_falha(
+        self,
+        validador: ValidadorDeTokenJWKS,
+        jwks_falso: JwksFalso,
+        emitir_token: Callable[..., str],
+        relogio: Relogio,
+        passou: float,
+        esperado: int,
+    ) -> None:
+        jwks_falso.erro = fora_do_ar()
+        token = emitir_token("admin")
+        with pytest.raises(JwksIndisponivelError):
+            validador.validar(token)
+        relogio.agora += passou
+
+        with pytest.raises(JwksIndisponivelError) as erro:
+            validador.validar(token)
+
+        # Para baixo, o cliente voltaria antes do fim da memoria da falha.
+        assert erro.value.retry_after == esperado
+        assert jwks_falso.buscas == 1
+
+    @pytest.mark.parametrize(
         "corpo",
         [
             pytest.param({"keys": []}, id="sem-chaves"),

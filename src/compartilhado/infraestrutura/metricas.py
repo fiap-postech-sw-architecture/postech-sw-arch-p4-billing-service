@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 # em vez de explodir a cardinalidade com paths arbitrarios.
 ROTA_NAO_ROTEADA: Final = "nao_roteada"
 
+# O metodo vem do chamador e pode ser qualquer token: so os conhecidos viram label.
+_METODOS: Final = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+)
+_METODO_DESCONHECIDO: Final = "OUTRO"
+
 HTTP_DURACAO = Histogram(
     "http_request_duration_seconds",
     "Duracao das requests HTTP da API por rota.",
@@ -46,10 +52,14 @@ class MetricasHTTPMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             HTTP_DURACAO.labels(
-                method=request.method,
+                method=_metodo(request),
                 rota=_rota_template(request),
                 status=str(status),
             ).observe(time.perf_counter() - inicio)
+
+
+def _metodo(request: Request) -> str:
+    return request.method if request.method in _METODOS else _METODO_DESCONHECIDO
 
 
 def _rota_template(request: Request) -> str:
