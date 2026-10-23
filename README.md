@@ -40,11 +40,11 @@ make smoke
 
 O `make check` pede Docker. Ele confere o `uv.lock`, roda o ruff, o `import-linter`, o actionlint, o mypy em modo strict e o bandit e executa o pytest com o gate de cobertura de 95% e o `diff-cover` de 90% no código novo. O `make smoke` prova a imagem pelo entrypoint real, como o smoke do CI.
 
-- **Unitários:** domínio e estados dos agregados, adapter do Mercado Pago (respx), circuit breaker, JWKS, contrato das mensagens, configuração e telemetria.
-- **Integração:** testcontainers com MongoDB 7.0.43 em replica set e RabbitMQ 4.3.6 reais, para a API, os casos de uso, o rastreamento, o relay e o consumidor.
+- **Unitários**: domínio e estados dos agregados, adapter do Mercado Pago (respx), circuit breaker, JWKS, contrato das mensagens, configuração e telemetria.
+- **Integração**: testcontainers com MongoDB 7.0.43 em replica set e RabbitMQ 4.3.6 reais, para a API, os casos de uso, o rastreamento, o relay e o consumidor.
 - **Contrato** (`tests/contratos`): a cópia de `contratos/` confere com o `platform` no commit de origem.
-- **Documentos:** o OpenAPI, a coleção Postman, os `curl` dos exemplos, a arquitetura e os links seguem o código.
-- **BDD:** o fluxo completo da saga em Gherkin é do `platform` ([`saga_atendimento.feature`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/e2e/features/saga_atendimento.feature)) e roda no `deploy-kind` do CD deste serviço.
+- **Documentos**: o OpenAPI, a coleção Postman, os `curl` dos exemplos, a arquitetura e os links seguem o código.
+- **BDD**: o fluxo completo da saga em Gherkin é do `platform` ([`saga_atendimento.feature`](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/e2e/features/saga_atendimento.feature)) e roda no `deploy-kind` do CD deste serviço.
 
 Cada tipo de teste, o gate e os resumos do CI estão em [docs/testes.md](docs/testes.md).
 
@@ -105,9 +105,9 @@ RabbitMQ 4.3.6 com a topologia da plataforma (ADR-036; RFC-004, seções 5.1 a 5
 | Publica | `pytstop.eventos`, routing key `evento.billing.<tipo em snake_case>` | os 13 eventos da seção [Eventos](docs/mensageria.md#eventos), com o usuário `billing` |
 | Retry | `pytstop.retry`, routing key `billing.comandos.retry.<1s\|5s\|15s\|60s\|300s>` | cópia do comando com `x-tentativa` de 1 a 5 |
 
-- **Outbox e relay:** o caso de uso grava o evento na outbox, na mesma transação do estado, e o relay (`python -m src.relay`) o publica com confirmação do broker. Cada linha é reivindicada com lease e token, então mais de um relay roda ao mesmo tempo, e a quinta falha de publicação a marca `dead`.
+- **Outbox e relay**: o caso de uso grava o evento na outbox, na mesma transação do estado, e o relay (`python -m src.relay`) o publica com confirmação do broker. Cada linha é reivindicada com lease e token, então mais de um relay roda ao mesmo tempo, e a quinta falha de publicação a marca `dead`.
 - **Consumidor** (`python -m src.consumidor`): prefetch 1, ack manual e handler na transação da própria mensagem. O mesmo `id` de novo republica o desfecho registrado, sem repetir o efeito (idempotência). Erro transitório volta pela fila de retry; erro permanente, a sexta falha ou a cópia recusada vão para `billing.comandos.dlq`, e o redrive é `make redrive` do `platform`.
-- **Contratos:** [`contratos/`](contratos) é cópia do `platform` no commit de `contratos/ORIGEM`: os schemas e exemplos das mensagens, o `asyncapi.yaml` e a topologia do broker.
+- **Contratos**: [`contratos/`](contratos) é cópia do `platform` no commit de `contratos/ORIGEM`: os schemas e exemplos das mensagens, o `asyncapi.yaml` e a topologia do broker.
 
 A participação na saga (comando, evento de resposta e repetição), o envelope, a saúde dos processos, a retenção, o reprocesso de linha `dead` e as métricas estão em [docs/mensageria.md](docs/mensageria.md); os 13 eventos, em [Eventos](docs/mensageria.md#eventos).
 
@@ -145,11 +145,11 @@ O [CD automatizado](docs/cicd.md), as [dependências automatizadas](docs/depende
 
 ## Segurança
 
-- **Autenticação (ADR-039):** JWT RS256 emitido pelo OS Service, validado pela chave pública do JWKS (`JWKS_URL`, timeout de 2 s, cópia fresca por 10 min; com o OS fora, a última cópia boa vale por até 1 h e 3 falhas seguidas abrem um circuit breaker por 30 s), conferindo assinatura, `iss` (`pytstop-os-service`), `aud` (`pytstop`), `exp`, `sub` (UUID do usuário), `type=access` e `papel`, com 10 s de tolerância de relógio. Toda falha de credencial responde o mesmo 401; papel válido sem permissão, 403; JWKS indisponível e sem cópia, 503 com `Retry-After`.
-- **Link de decisão:** token HMAC do orçamento e do prazo (segundo cheio, igual ao `valido_ate`), sem login. Token inválido ou expirado, orçamento inexistente ou já decidido: o mesmo 404, na consulta e na decisão.
-- **Webhook e provedor:** o webhook valida a `x-signature` (HMAC-SHA256) e consulta o provedor para saber o status, sem confiar no corpo. O texto livre da recusa do Mercado Pago não entra em log, e o evento e a API levam uma mensagem fixa ([regras do serviço](docs/regras-do-servico.md#mercado-pago)).
-- **Papéis e LGPD:** a tabela de papéis por rota e o parágrafo da LGPD estão em [docs/arquitetura.md](docs/arquitetura.md#6-segurança-e-lgpd). O Billing não guarda nome, documento nem contato de cliente e, por isso, não tem fluxo de anonimização.
-- **Segredos e rede:** nenhum segredo está nos manifests, e o `make deploy` do `platform` os gera. Os pods rodam sem root, com a raiz somente leitura, e a NetworkPolicy nega a entrada por padrão ([docs/implantacao.md](docs/implantacao.md)). O CI roda `pip-audit`, `trivy` e `gitleaks`.
+- **Autenticação (ADR-039)**: JWT RS256 emitido pelo OS Service, validado pela chave pública do JWKS (`JWKS_URL`, timeout de 2 s, cópia fresca por 10 min; com o OS fora, a última cópia boa vale por até 1 h e 3 falhas seguidas abrem um circuit breaker por 30 s), conferindo assinatura, `iss` (`pytstop-os-service`), `aud` (`pytstop`), `exp`, `sub` (UUID do usuário), `type=access` e `papel`, com 10 s de tolerância de relógio. Toda falha de credencial responde o mesmo 401; papel válido sem permissão, 403; JWKS indisponível e sem cópia, 503 com `Retry-After`.
+- **Link de decisão**: token HMAC do orçamento e do prazo (segundo cheio, igual ao `valido_ate`), sem login. Token inválido ou expirado, orçamento inexistente ou já decidido: o mesmo 404, na consulta e na decisão.
+- **Webhook e provedor**: o webhook valida a `x-signature` (HMAC-SHA256) e consulta o provedor para saber o status, sem confiar no corpo. O texto livre da recusa do Mercado Pago não entra em log, e o evento e a API levam uma mensagem fixa ([regras do serviço](docs/regras-do-servico.md#mercado-pago)).
+- **Papéis e LGPD**: a tabela de papéis por rota e o parágrafo da LGPD estão em [docs/arquitetura.md](docs/arquitetura.md#6-segurança-e-lgpd). O Billing não guarda nome, documento nem contato de cliente e, por isso, não tem fluxo de anonimização.
+- **Segredos e rede**: nenhum segredo está nos manifests, e o `make deploy` do `platform` os gera. Os pods rodam sem root, com a raiz somente leitura, e a NetworkPolicy nega a entrada por padrão ([docs/implantacao.md](docs/implantacao.md)). O CI roda `pip-audit`, `trivy` e `gitleaks`.
 
 ### Troca de senhas e chaves
 
