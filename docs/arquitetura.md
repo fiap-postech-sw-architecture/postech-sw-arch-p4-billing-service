@@ -4,7 +4,7 @@ O Billing Service é um dos três serviços do PytStop na fase 4 do Tech Challen
 
 - **Arquitetura global.** A divisão dos serviços, o catálogo de mensagens, a borda, a observabilidade e a implantação estão na [RFC-004](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md) e nos [ADR-034 a ADR-043](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/tree/main/docs/arquitetura) do `platform`.
 - **Este documento.** O que é deste serviço: responsabilidades, camadas e módulos, o modelo completo do banco (a [seção 7.4 da RFC-004](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md#74-billing-service-mongodb-7) o delega para cá), os fluxos passo a passo, os comandos consumidos e os eventos publicados. É a documentação da arquitetura do serviço que a [gap analysis](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/requisitos/fase4/gap-analysis-fase-4.md) da fase pede no RNF-051 (a arquitetura de cada serviço, com os comandos e eventos que ele consome e publica).
-- **API e operação.** O [README](../README.md) traz a operação (configuração, implantação, testes, mutação), um `curl` por rota em [Exemplos da API](../README.md#exemplos-da-api) e a evidência de cobertura (RNF-050). O OpenAPI exportado e a coleção Postman com exemplos (RNF-052) estão em [`docs/api/`](api/); a coleção do fluxo completo, que roda com newman, é do `platform`.
+- **API e operação.** O [README](../README.md) resume a operação e aponta os documentos de `docs/` (configuração, implantação, testes, mutação); há um `curl` por rota em [Exemplos da API](api/exemplos.md), e a evidência de cobertura (RNF-050) está em [Cobertura](../README.md#cobertura). O OpenAPI exportado e a coleção Postman com exemplos (RNF-052) estão em [`docs/api/`](api/); a coleção do fluxo completo, que roda com newman, é do `platform`.
 
 Conferido em 18/10/2026 contra o código de `src/` da `main` do Billing (commit `d6d2776`), contra a `ETAPA_ESPERADA` da `main` do OS Service (commit `e2bf48d`, só a coluna "Etapa esperada" da seção 5) e contra a RFC-004 da `main` do `platform` (commit `c4066ac`). Os testes de `tests/unitarios/test_documentacao.py` seguram o que o código decide: os nomes dos campos e a coluna "Validador" das coleções (o tipo e as marcas PK e UK do ER ficam de fora), os índices, os estados dos agregados e, nas tabelas da seção 5, quais mensagens existem, a routing key (a chave pela qual o exchange escolhe a fila), quem publica, quem consome e a fila. Ficam sem teste as colunas "Resposta" (só se confere que o evento citado existe), "Etapa esperada" e "Quando sai".
 
@@ -71,7 +71,7 @@ Todos saem da mesma imagem e do mesmo código; muda o comando (`entrypoint.sh`).
 | banco | `python -m src.banco` | Cria as coleções com validador, os índices e marca a versão do banco; idempotente (rodar de novo não muda o resultado). É o Job de inicialização no Kubernetes e o serviço `init` do compose | MongoDB |
 | aguarda-banco | `python -m src.banco aguardar` | initContainer dos Deployments: espera a versão do banco que o código conhece | MongoDB |
 
-O `python -m src.seed` cadastra os preços de demonstração que faltam. As portas, as sondas, o arquivo de vida de cada processo e os manifests estão no [README](../README.md#implantação).
+O `python -m src.seed` cadastra os preços de demonstração que faltam. As portas, as sondas, o arquivo de vida de cada processo e os manifests estão em [Implantação](implantacao.md).
 
 ## 2. Camadas e módulos
 
@@ -652,7 +652,7 @@ sequenceDiagram
 ```
 
 - **Gravação.** O caso de uso registra o evento na unidade de trabalho, que grava a linha da outbox no commit. O envelope fora do contrato é defeito deste serviço e aborta a transação.
-- **Relay** ([`relay.py`](../src/compartilhado/infraestrutura/mensageria/relay.py)): reivindica uma linha por vez com um `find_one_and_update` atômico, que grava um token e o lease. Toda marcação posterior exige o token, então um relay atrasado não marca como entregue o que outro retomou. Sem rota, nack ou recusa do broker contam tentativa, com atraso crescente, e a quinta falha vira `dead`; queda do broker devolve a linha sem gastar tentativa. O tamanho do lease, os atrasos e a reconexão estão no README, em [Mensageria](../README.md#mensageria).
+- **Relay** ([`relay.py`](../src/compartilhado/infraestrutura/mensageria/relay.py)): reivindica uma linha por vez com um `find_one_and_update` atômico, que grava um token e o lease. Toda marcação posterior exige o token, então um relay atrasado não marca como entregue o que outro retomou. Sem rota, nack ou recusa do broker contam tentativa, com atraso crescente, e a quinta falha vira `dead`; queda do broker devolve a linha sem gastar tentativa. O tamanho do lease, os atrasos e a reconexão estão em [Mensageria](mensageria.md).
 - **Consumidor** ([`consumidor.py`](../src/compartilhado/infraestrutura/mensageria/consumidor.py)): o handler roda na transação da mensagem, que o consumidor abre e comita. O mesmo `id` de novo passa pelo caso de uso, idempotente pela chave de negócio, que republica o desfecho sem repetir o efeito. Erro transitório publica a cópia na fila de retry do nível da nova tentativa; erro permanente, a sexta falha ou a cópia recusada vão para a DLQ. O redrive da DLQ é `make redrive` do `platform`, depois de corrigida a causa.
 - **Polling.** O relay do Billing consulta a outbox em intervalos, como a [RFC-004, seção 5.4](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md#54-garantias-de-entrega) descreve para o MongoDB.
 
@@ -742,7 +742,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 **Segredos e dados sensíveis:**
 
 - O token do link de decisão e o do checkout são credenciais: saem mascarados do log, do access log e do atributo de URL dos spans. O `link_decisao` e o `checkout_url` nunca vão para log nem para atributo de span. O id da preferência (que compõe o link do checkout), o id do pagamento e a query da busca também não: o span de cliente do httpx leva o template da rota (`/v1/payments/{id}`), não a URL.
-- O `ORCAMENTO_LINK_SECRET` é obrigatório e forte fora de desenvolvimento (o valor de demonstração é recusado no boot); o `MP_ACCESS_TOKEN` e o `MP_WEBHOOK_SECRET` vêm de Secret, e o valor de cada um não está em nenhum arquivo do repositório. Como obtê-los no cluster está no README, em [Implantação](../README.md#implantação).
+- O `ORCAMENTO_LINK_SECRET` é obrigatório e forte fora de desenvolvimento (o valor de demonstração é recusado no boot); o `MP_ACCESS_TOKEN` e o `MP_WEBHOOK_SECRET` vêm de Secret, e o valor de cada um não está em nenhum arquivo do repositório. Como obtê-los no cluster está em [Implantação](implantacao.md).
 - O texto livre da recusa do provedor (`message` e `description`) não entra em nenhum log. A exceção usa `Provedor de pagamento recusou a operacao`: novos `estornos_automaticos[].falha`, o `motivo` do `EstornoDePagamentoFalhou` e o corpo do 409 do webhook levam esse texto. A consulta apresenta falhas antigas com a mesma mensagem fixa, sem alterar o documento salvo, e mantém `falha: null` para sucesso.
 - Logs e erros passam por um mascaramento de CPF, CNPJ, e-mail, telefone e chaves sensíveis, inclusive o traceback; os spans não levam o texto das exceções nem o caminho cru da URL.
 
@@ -750,7 +750,7 @@ A LGPD (Lei Geral de Proteção de Dados) trata dado de pessoa natural; o que el
 
 **Retenção.** Linha entregue da outbox por 7 dias, linha `dead` por 30 e `mensagens_processadas` por 30, por índice TTL (seção 3.5). Orçamentos, pagamentos e preços não expiram por tempo.
 
-**Infraestrutura** ([README, Implantação](../README.md#implantação)): pods sem root, raiz somente leitura, sem token de ServiceAccount e com seccomp `RuntimeDefault`; NetworkPolicy que nega toda entrada e libera só o necessário; no MongoDB, o usuário `billing` serve aos processos e ao Job, o `exporter` (só `clusterMonitor`) serve ao exporter, e o `root` só ao primeiro boot do volume e ao initContainer `replica-set` do Job; nenhum segredo nos manifestos.
+**Infraestrutura** ([Implantação](implantacao.md)): pods sem root, raiz somente leitura, sem token de ServiceAccount e com seccomp `RuntimeDefault`; NetworkPolicy que nega toda entrada e libera só o necessário; no MongoDB, o usuário `billing` serve aos processos e ao Job, o `exporter` (só `clusterMonitor`) serve ao exporter, e o `root` só ao primeiro boot do volume e ao initContainer `replica-set` do Job; nenhum segredo nos manifestos.
 
 ## 7. Observabilidade
 
@@ -760,7 +760,7 @@ Métricas, traces e logs seguem o [ADR-043](https://github.com/fiap-postech-sw-a
 - **Traces.** O contexto W3C atravessa a outbox e os cabeçalhos AMQP: a publicação do relay é filha de quem gravou, o consumidor abre o span de consumo como filho da publicação, e o evento que a saga publica depois de uma decisão, de um webhook ou de um prazo aponta para o contexto de quem retomou o passo por span link.
 - **Logs.** JSON com `correlation_id` (a ordem), `trace_id` e `span_id`, sem dado pessoal nem texto livre do provedor. O `event` vem em inglês.
 
-A tabela das séries, o que não é exportado e por quê, e como ver o Jaeger, o Grafana e o Prometheus estão no [README, Observabilidade](../README.md#observabilidade).
+A tabela das séries, o que não é exportado e por quê, e como ver o Jaeger, o Grafana e o Prometheus estão em [Observabilidade](observabilidade.md).
 
 ## 8. Decisões
 
