@@ -137,7 +137,7 @@ Os spans, a amostragem, [o que não é exportado, e por quê](docs/observabilida
 
 ## CI/CD
 
-A `main` é protegida desde o primeiro commit: toda mudança entra por pull request com squash e os 9 checks do CI verdes.
+A `main` tem ruleset ativo desde o dia da criação do repositório (06/10/2026, 13:50, horário de Brasília): depois do `Initial commit` e do PR #1, toda mudança entra por pull request com squash e com os 9 checks do CI verdes.
 
 Os workflows ficam em [`.github/workflows`](.github/workflows): o `ci.yml` (lint, tipos, segurança do código, testes com gate de cobertura, SonarQube e build da imagem com manifests e smoke), o `security.yml` (pip-audit, gitleaks e trivy) e o [`cd.yml`](.github/workflows/cd.yml). Os dois primeiros somam os 9 checks. O `cd.yml` roda na `main` depois do CI e da segurança verdes e chama o workflow reutilizável do `platform`, fixado por SHA: ele publica a imagem no GHCR e implanta num kind efêmero (Kubernetes dentro de contêineres do runner), com smoke e E2E da saga. O Dependabot atualiza o uv, as actions e as imagens do Docker toda semana.
 
