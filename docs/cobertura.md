@@ -21,4 +21,4 @@ O `make diff-cover` lê o `coverage.xml` do `make test` e exige que ele exista e
 
 ## Oscilação
 
-Com o mesmo `src/`, o `make test` no macOS e o CI medem o mesmo valor. Conferido em 23/10/2026: o macOS mediu 4.551 linhas e 624 ramos, todos cobertos (100,00%), os mesmos números do run 39935825688 que a tabela do README cita. A tabela vale para o `src/` desse run; se uma medida local diferir, compare primeiro o `src/` e o `.coveragerc` e veja o `diff-cover` do pull request, no summary do job `test`.
+Com o mesmo `src/`, o `make test` no macOS e o CI medem o mesmo valor. Conferido em 06/11/2026: o macOS mediu 4.551 linhas e 624 ramos, todos cobertos (100,00%), os mesmos números do run 42214157918 que a tabela do README cita. A tabela vale para o `src/` desse run; se uma medida local diferir, compare primeiro o `src/` e o `.coveragerc` e veja o `diff-cover` do pull request, no summary do job `test`.
