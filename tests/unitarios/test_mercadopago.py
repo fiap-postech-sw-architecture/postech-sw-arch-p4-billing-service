@@ -598,7 +598,7 @@ class TestEstornar:
 class TestCancelarCobranca:
     PREFERENCIA = "202809963-920c288b-4ebb-40be-966f-700250fa5370"
 
-    def test_expira_a_preferencia_agora(self, esperas: Esperas) -> None:
+    def test_expira_a_preferencia_um_minuto_a_frente(self, esperas: Esperas) -> None:
         gateway = MercadoPagoGateway(
             ConfiguracaoMercadoPago(access_token=TOKEN, notification_url=NOTIFICACAO),
             breaker=CircuitBreaker("mp-cancelar", falha=FalhaTransitoriaError),
@@ -618,10 +618,12 @@ class TestCancelarCobranca:
             gateway.fechar()
         # Idempotente: a falha transitoria e repetida.
         assert rota.call_count == 2
+        # Data futura: com o instante atual o Mercado Pago responde 400
+        # invalid_date (sandbox real, 14/11/2026).
         assert json.loads(rota.calls.last.request.content) == {
             "expires": True,
-            "expiration_date_to": "2026-10-06T12:00:00.000+00:00",
-            "date_of_expiration": "2026-10-06T12:00:00.000+00:00",
+            "expiration_date_to": "2026-10-06T12:01:00.000+00:00",
+            "date_of_expiration": "2026-10-06T12:01:00.000+00:00",
         }
 
     def test_referencia_invalida_e_recusada_sem_chamar(

@@ -4,8 +4,8 @@ Contrato (documentacao oficial, referencias nos testes de contrato):
 
 - ``POST /checkout/preferences``: itens, ``external_reference`` = id do
   pagamento, ``notification_url`` e expiracao -> ``id`` + ``init_point``;
-- ``PUT /checkout/preferences/{id}``: expira a preferencia agora (cancela o
-  checkout na compensacao);
+- ``PUT /checkout/preferences/{id}``: expira a preferencia em
+  ``FOLGA_DO_FECHAMENTO`` (cancela o checkout na compensacao);
 - ``GET /v1/payments/{id}``: status do pagamento (fonte de verdade);
 - ``GET /v1/payments/search?external_reference=``: tentativas da cobranca
   (conciliacao ativa, ADR-040 passo 4);
@@ -36,7 +36,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, timedelta
 from decimal import Decimal
 from itertools import product
 from typing import TYPE_CHECKING, Any, Final, NoReturn
@@ -112,6 +112,12 @@ _STATUS: Final = {
     "charged_back": StatusNoProvedor.EM_ANDAMENTO,
 }
 _ESTORNO_CONCLUIDO = "approved"
+# O Mercado Pago recusa fechar a preferencia com data que nao e futura: o
+# ``agora`` enviado ja e passado quando a chamada chega, e a resposta e 400
+# ``invalid_date`` (sandbox real, 14/11/2026; com +2 e +3 min o PUT passou).
+# A folga curta fecha o checkout logo; um pagamento aprovado dentro dela e
+# aprovacao tardia, que o Billing ja estorna sozinho.
+FOLGA_DO_FECHAMENTO: Final = timedelta(minutes=1)
 _ESTORNO_RECUSADO = frozenset({"rejected", "cancelled"})
 
 # Id de pagamento do Mercado Pago (numerico); a regex so impede que um valor
@@ -267,12 +273,13 @@ class MercadoPagoGateway:
         )
 
     def cancelar_cobranca(self, referencia_preferencia: str) -> None:
-        """Expira a preferencia agora: o checkout e os pix/boletos gerados nele
-        deixam de aceitar pagamento. Repetir da o mesmo resultado (retry ok)."""
+        """Expira a preferencia em ``FOLGA_DO_FECHAMENTO``: o checkout e os
+        pix/boletos gerados nele deixam de aceitar pagamento. Repetir da o
+        mesmo resultado (retry ok)."""
         if not _REFERENCIA_VALIDA.fullmatch(referencia_preferencia):
             msg = "Referencia de preferencia invalida para cancelamento"
             raise GatewayPagamentoRecusouError(msg)
-        agora = _data_mp(self._relogio())
+        fim = _data_mp(self._relogio() + FOLGA_DO_FECHAMENTO)
         self._enviar(
             "cancelar_cobranca",
             "PUT",
@@ -281,8 +288,8 @@ class MercadoPagoGateway:
             repetir=True,
             json={
                 "expires": True,
-                "expiration_date_to": agora,
-                "date_of_expiration": agora,
+                "expiration_date_to": fim,
+                "date_of_expiration": fim,
             },
         )
 
