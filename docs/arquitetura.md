@@ -575,7 +575,7 @@ sequenceDiagram
     alt não existe
         C->>DB: lápide CANCELADA, outbox PagamentoCancelado
     else SOLICITADO
-        C->>MP: PUT /checkout/preferences/{id} expira agora
+        C->>MP: PUT /checkout/preferences/{id} expira em 1 min
         C->>DB: CANCELADO, outbox PagamentoCancelado
     else CONFIRMADO
         C->>MP: POST /v1/payments/{id}/refunds com X-Idempotency-Key estorno-{pagamento_id}
@@ -600,7 +600,7 @@ sequenceDiagram
     end
 ```
 
-1. **`EstornarPagamento`.** O agregado diz o plano pelo estado. No `SOLICITADO`, fecha o checkout no provedor; se o provedor recusar fechar, a compensação conclui do mesmo jeito, com métrica e o log `checkout_close_refused` (só o código), e quem pagar nele depois cai no estorno automático. No `CONFIRMADO`, confere antes se o pagamento já foi estornado no provedor (pelo painel) e só então estorna; recusa do provedor vira `EstornoDePagamentoFalhou`, e o OS para a saga em falha na compensação, à espera do operador. Estorno ainda em processamento é erro transitório: o comando volta pela fila de retry.
+1. **`EstornarPagamento`.** O agregado diz o plano pelo estado. No `SOLICITADO`, fecha o checkout no provedor, com a expiração 1 minuto à frente: o Mercado Pago recusa data que não é futura (400 `invalid_date`, visto na sandbox real em 14/11/2026), e quem pagar dentro desse minuto cai no estorno automático; se o provedor recusar fechar, a compensação conclui do mesmo jeito, com métrica e o log `checkout_close_refused` (só o código), e quem pagar nele depois cai no estorno automático. No `CONFIRMADO`, confere antes se o pagamento já foi estornado no provedor (pelo painel) e só então estorna; recusa do provedor vira `EstornoDePagamentoFalhou`, e o OS para a saga em falha na compensação, à espera do operador. Estorno ainda em processamento é erro transitório: o comando volta pela fila de retry.
 2. **`CancelarOrcamento`.** Acha o orçamento pelo `ordem_id`; o `orcamento_id` do comando, quando vem, tem de ser o desse orçamento, senão o comando é recusado como não encontrado e vai para a DLQ.
 3. **Lápide.** A compensação que chega antes do comando original (o passo em voo, [RFC-004, seção 4.5](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-platform/blob/main/docs/arquitetura/rfc/fase4/rfc-004-microsservicos-saga.md#45-contramedidas-de-isolamento)) grava o agregado já cancelado, sem cobrança nem linhas, e responde. O original, quando chegar, acha a lápide pelo índice único de `ordem_id` e é descartado. Se a geração (ou a solicitação) comitar entre a leitura e a escrita da lápide, a compensação repete e cancela o que existe.
 
