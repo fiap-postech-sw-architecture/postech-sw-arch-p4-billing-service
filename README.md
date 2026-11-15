@@ -57,22 +57,22 @@ Mutantes escritos à mão nos módulos críticos (o `mutmut` não roda neste rep
 O gate é de 95% no total, com linhas e ramos somados (`fail_under` no `.coveragerc`), e o código novo precisa de 90% (`make diff-cover`), como pede o ADR-041 (RNF-050). As tabelas não são digitadas: o [`scripts/cobertura_resumo.py`](scripts/cobertura_resumo.py) as escreve a partir do `coverage.xml` do `make test`, com o link do run do CI que tem o mesmo `src/`.
 
 <!-- cobertura:inicio -->
-**100,00% no gate** (linhas e ramos somados): 4.551 linhas, 4.551 cobertas (100,0%), e 624 ramos, 624 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 42214157918 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/42214157918). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
+**100,00% no gate** (linhas e ramos somados): 4.552 linhas, 4.552 cobertas (100,0%), e 624 ramos, 624 cobertos (100,0%), medidos pelo `make test` com o `src/` do [run 43668805420 do CI](https://github.com/fiap-postech-sw-architecture/postech-sw-arch-p4-billing-service/actions/runs/43668805420). Tabelas geradas por `scripts/cobertura_resumo.py` a partir do `coverage.xml` desse `make test`.
 
 | Contexto | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
 | `src` (processos) | 570 | 570 | 100,0% |
 | `src/compartilhado` | 1.580 | 1.580 | 100,0% |
 | `src/orcamento` | 672 | 672 | 100,0% |
-| `src/pagamento` | 1.292 | 1.292 | 100,0% |
+| `src/pagamento` | 1.293 | 1.293 | 100,0% |
 | `src/precos` | 437 | 437 | 100,0% |
-| **total** | 4.551 | 4.551 | 100,0% |
+| **total** | 4.552 | 4.552 | 100,0% |
 
 | Camada | Linhas | Cobertas | Cobertura |
 |---|---:|---:|---:|
 | `dominio` | 895 | 895 | 100,0% |
 | `aplicacao` | 773 | 773 | 100,0% |
-| `infraestrutura` | 1.665 | 1.665 | 100,0% |
+| `infraestrutura` | 1.666 | 1.666 | 100,0% |
 | `interfaces` | 648 | 648 | 100,0% |
 
 <!-- cobertura:fim -->
